@@ -354,7 +354,7 @@ See [Tuning and monitoring](tuning-monitoring.md#status-pages) for the polling r
 | `auroraAnnounce` | channel | `False` | Announce G3+ storm watches and sustained storm conditions in this channel. Works without `auroraEnabled` |
 | `auroraAnnouncePlaces` | channel | empty | Optional space-separated places for this channel's announcements; `_` stands for a space, as in `Sault_Ste._Marie`. Adds cloud cover for them and holds a storm line until one is dark. A place that matches nothing is skipped (warned once in the log) |
 
-The tool reads NOAA SWPC (`services.swpc.noaa.gov`) and Open-Meteo (`geocoding-api.open-meteo.com`, `api.open-meteo.com`). No API keys are needed. The tool and the announcer share one cache: solar wind for 2 minutes, aurora probability for 10 minutes, storm alerts for 5 minutes, the Kp forecast for 3 hours, cloud cover for 1 hour per place (a 3-day forecast), and place lookups for 24 hours (misses for 1 hour). A failed fetch is not cached. See [Aurora](../user/aurora.md).
+The tool reads NOAA SWPC (`services.swpc.noaa.gov`) and Open-Meteo (`geocoding-api.open-meteo.com`, `api.open-meteo.com`). No API keys are needed. The tool and the announcer share one cache: solar wind for 2 minutes, aurora probability for 10 minutes, storm alerts for 5 minutes, the Kp forecast for 3 hours, cloud cover for 1 hour per place (a 5-day forecast), and place lookups for 24 hours (misses for 1 hour). A failed fetch is not cached. See [Aurora](../user/aurora.md).
 
 Announcements go to every channel with `auroraAnnounce` on; set `auroraAnnouncePlaces` to add cloud cover and hold storm alerts until it is dark there. The bot checks every 5 minutes and posts two kinds of line, both fixed templates with no model rewrite:
 

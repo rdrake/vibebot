@@ -253,7 +253,7 @@ def test_cloud_series_junk_hourly_is_fetch_error(hourly):
         sw.cloud_series(0, 0, opener=opener_for({"hourly": hourly}))
 
 
-def test_cloud_series_whole_three_days_then_window_filter():
+def test_cloud_series_whole_five_days_then_window_filter():
     times = [f"2026-10-11T{h:02d}:00" for h in range(0, 8)]
     opener = opener_for(
         {"hourly": {"time": times, "cloud_cover": [10, 20, 30, 40, 50, 60, 70, 80]}}
@@ -268,7 +268,7 @@ def test_cloud_series_whole_three_days_then_window_filter():
     assert got == [(datetime(2026, 10, 11, h, tzinfo=UTC), 30 + 10 * (h - 2)) for h in (2, 3, 4, 5)]
     url = opener.request.full_url
     assert url.startswith("https://api.open-meteo.com/v1/forecast?")
-    assert "hourly=cloud_cover" in url and "timezone=UTC" in url and "forecast_days=3" in url
+    assert "hourly=cloud_cover" in url and "timezone=UTC" in url and "forecast_days=5" in url
 
 
 def test_cloud_series_skips_null_and_junk_hours():

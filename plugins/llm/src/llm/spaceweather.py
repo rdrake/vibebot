@@ -573,14 +573,17 @@ def geocode(query: str, *, opener: Any = None) -> Place | None:
 
 
 def cloud_series(lat: float, lon: float, *, opener: Any = None) -> list[tuple[datetime, int]]:
-    """Hourly cloud cover percent (UTC) for the next three forecast days, oldest first."""
+    """Hourly cloud cover percent (UTC) for five forecast days from today, oldest first.
+
+    Five days covers a NOAA watch night up to D+3 at any UTC offset.
+    """
     qs = urllib.parse.urlencode(
         {
             "latitude": lat,
             "longitude": lon,
             "hourly": "cloud_cover",
             "timezone": "UTC",
-            "forecast_days": 3,
+            "forecast_days": 5,
         }
     )
     data = fetch_json(f"{FORECAST_URL}?{qs}", max_bytes=MAX_BYTES, opener=opener)

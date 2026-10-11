@@ -364,6 +364,23 @@ def test_geocode_outage_holds_storm_line(sw) -> None:
     assert sent[1].endswith("Clouds now: Ottawa 40%.")
 
 
+def test_partial_cloud_window_is_none(sw) -> None:
+    start = NIGHT
+    end = NIGHT + timedelta(hours=8)
+    sw._series.return_value = [(start + timedelta(hours=h), 10) for h in range(3)]
+    assert sw._sw_mean_cloud(OTTAWA, start, end, now=NOW) is None  # ends 6 h short
+
+
+def test_cloud_window_ending_within_an_hour_of_series_end_counts(sw) -> None:
+    start = NIGHT
+    sw._series.return_value = [(start + timedelta(hours=h), 10) for h in range(8)]
+    # Last row is start+7h; end at start+7h59m is within an hour of it.
+    end = start + timedelta(hours=7, minutes=59)
+    assert sw._sw_mean_cloud(OTTAWA, start, end, now=NOW) == 10
+    sw._sw_cache.clear()
+    assert sw._sw_mean_cloud(OTTAWA, start, end + timedelta(minutes=2), now=NOW) is None
+
+
 def test_cloud_failure_renders_question_mark(sw, mocker) -> None:
     sw._series.side_effect = spaceweather.FetchError("x")
     _pass(sw, NOW)

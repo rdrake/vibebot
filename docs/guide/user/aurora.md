@@ -88,6 +88,6 @@ The places are the channel's, set by the operator (`auroraAnnouncePlaces`),
 never ones the bot knows about you. A watch is for NOAA's day, which runs
 midnight to midnight UTC, so "night of Oct 12" is the local night that falls
 mostly inside it. A `?` means there is no cloud figure for that place: the
-forecast couldn't be read, the night is past its 3 days, or it has no dark
-hours then. A place the bot
-couldn't look up is left out.
+forecast couldn't be read, it ends before the night does (it runs 5 days from
+today, UTC), or the place has no dark hours then. A place the bot couldn't look
+up is left out.

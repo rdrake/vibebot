@@ -1729,12 +1729,16 @@ class LLM(callbacks.Plugin):
     def _sw_mean_cloud(
         self, place: spaceweather.Place, start: datetime, end: datetime, *, now: datetime
     ) -> int | None:
+        """Mean cloud over ``[start, end]``; None on failure or when the forecast
+        ends more than an hour before ``end`` (a partial night is no figure)."""
         try:
-            rows = self._sw_cloud_rows(place, start, end, now=now)
+            series = self._sw_cloud_series(place, now=now)
         except spaceweather.FetchError as exc:
             self.log.info("spaceweather: cloud cover failed for %s: %s", place.name, exc)
             return None
-        return spaceweather.mean_cloud(rows)
+        if not series or series[-1][0] < end - timedelta(hours=1):
+            return None
+        return spaceweather.mean_cloud(spaceweather.hours_within(series, start=start, end=end))
 
     @staticmethod
     def _sw_dark_hours(place: spaceweather.Place, night: date) -> tuple[datetime, datetime] | None:
@@ -8976,7 +8980,17 @@ class LLM(callbacks.Plugin):
         if cached is not None and now - cached[0] < ttl:
             return cached[1]
         value = loader()
+        prefix = key.partition(":")[0] + ":" if ":" in key else None
         with self._sw_lock:
+            if prefix is not None:
+                # Per-place keys: drop this family's expired entries so the
+                # dict stays bounded by the places asked about within ``ttl``.
+                for k in [
+                    k
+                    for k, (at, _v) in self._sw_cache.items()
+                    if k.startswith(prefix) and now - at >= ttl
+                ]:
+                    del self._sw_cache[k]
             self._sw_cache[key] = (now, value)
         return value
 
@@ -9010,18 +9024,25 @@ class LLM(callbacks.Plugin):
             "alerts", self._SW_ALERTS_TTL, now, lambda: self._sw_swpc(spaceweather.ALERTS_PATH)
         )
 
-    def _sw_cloud_rows(
-        self, place: spaceweather.Place, start: datetime, end: datetime, *, now: datetime
+    def _sw_cloud_series(
+        self, place: spaceweather.Place, *, now: datetime
     ) -> list[tuple[datetime, int]]:
-        """Hourly cloud cover within ``[start, end]``, from the place's cached 3-day series."""
+        """The place's cached 5-day hourly cloud series, keyed by lat/lon to 2 dp."""
         lat, lon = round(place.lat, 2), round(place.lon, 2)
-        series = self._sw_cached(
+        return self._sw_cached(
             f"clouds:{lat},{lon}",
             self._SW_CLOUDS_TTL,
             now,
             lambda: spaceweather.cloud_series(lat, lon),
         )
-        return spaceweather.hours_within(series, start=start, end=end)
+
+    def _sw_cloud_rows(
+        self, place: spaceweather.Place, start: datetime, end: datetime, *, now: datetime
+    ) -> list[tuple[datetime, int]]:
+        """Hourly cloud cover within ``[start, end]``, from the place's cached series."""
+        return spaceweather.hours_within(
+            self._sw_cloud_series(place, now=now), start=start, end=end
+        )
 
     def _aurora_solar_wind(self, now: datetime) -> dict:
         samples = self._sw_samples(now)
