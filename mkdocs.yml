@@ -69,6 +69,7 @@ nav:
     - Reminders: user/reminders.md
     - Scheduled tasks: user/scheduled-tasks.md
     - Service status: user/service-status.md
+    - Aurora: user/aurora.md
   - Plugins:
     - Overview: plugins/index.md
     - LLM: plugins/llm.md
