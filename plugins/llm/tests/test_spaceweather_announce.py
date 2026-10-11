@@ -269,43 +269,57 @@ def test_new_episode_after_end_announces_again(sw) -> None:
     assert len(_pass(sw, NIGHT + timedelta(minutes=5), wind=-14.0)) == 1
     assert _pass(sw, NIGHT + timedelta(hours=2), wind=2.0) == []
     assert sw._sw_state.episode is None
-    assert sw._sw_state.episode_acked  # kept through the 3 h resume window
+    assert sw._sw_state.episode_acked  # kept: a storm resuming must stay told
     assert _pass(sw, NIGHT + timedelta(hours=5, minutes=10), wind=2.0) == []
-    assert sw._sw_state.episode_acked == {}  # window over: the storm is done
-    assert len(_pass(sw, NIGHT + timedelta(hours=9), wind=-14.0)) == 1
+    assert len(_pass(sw, NIGHT + timedelta(hours=9), wind=-14.0)) == 1  # >3 h later: new
 
 
-def test_brief_northward_turn_is_the_same_storm(sw) -> None:
-    """180 min at -15, 20 min at +5, then -15 again: one storm, one line."""
+def _storm_with_gap(sw, gap_minutes: int) -> tuple[list, list]:
+    """180 min at -15, ``gap_minutes`` at +5, then -15 until the episode is
+    running again; a pass every 5 min. Returns (lines sent, episode starts)."""
     sw._channels = {"#a", "#b"}
+    sw._registry["auroraAnnouncePlaces"] = []  # always dark: the gap is the variable
     t0 = NIGHT - timedelta(hours=1)
+    resume = 180 + gap_minutes
 
-    def bz_at(ts):
-        minute = (ts - NIGHT).total_seconds() / 60
+    def bz_at(minute: float) -> float:
         if minute < 0:
             return 2.0
-        if minute < 180:
+        if minute < 180 or minute >= resume:
             return -15.0
-        if minute < 200:
-            return 5.0
-        return -15.0
+        return 5.0
 
-    sent = []
-    starts = []
+    sent: list = []
+    starts: list = []
     now = NIGHT
-    while now <= NIGHT + timedelta(minutes=320):
+    while now <= NIGHT + timedelta(minutes=resume + 200):
+        count = int((now - t0).total_seconds() // 60) + 1
         sw._samples = [
-            Sample(ts=t0 + timedelta(minutes=i), bz=bz_at(t0 + timedelta(minutes=i)),
-                   bt=15.0, speed=620.0)
-            for i in range(int((now - t0).total_seconds() // 60) + 1)
+            Sample(ts=(ts := t0 + timedelta(minutes=i)),
+                   bz=bz_at((ts - NIGHT).total_seconds() / 60), bt=15.0, speed=620.0)
+            for i in range(count)
         ]  # fmt: skip
         sent += _pass(sw, now)
         if sw._sw_state.episode is not None:
             starts.append(sw._sw_state.episode.start)
         now += timedelta(minutes=5)
+    assert sw._sw_state.episode is not None  # the storm did come back
+    return sent, starts
+
+
+@pytest.mark.parametrize("gap", [20, 90])
+def test_northward_turn_within_window_is_the_same_storm(sw, gap) -> None:
+    """A gap shorter than 3 h: one storm, one line per channel, and the
+    duration still runs from the original start."""
+    sent, starts = _storm_with_gap(sw, gap)
     assert sorted(ch for ch, _ in sent) == ["#a", "#b"]
-    assert len(set(starts)) == 1  # duration runs from the original start
-    assert sw._sw_state.episode.start == starts[0]
+    assert len(set(starts)) == 1
+
+
+def test_northward_turn_past_window_is_a_new_storm(sw) -> None:
+    sent, starts = _storm_with_gap(sw, 240)
+    assert sorted(ch for ch, _ in sent) == ["#a", "#a", "#b", "#b"]
+    assert len(set(starts)) == 2
 
 
 def test_channel_new_mid_episode_acked_silently(sw) -> None:

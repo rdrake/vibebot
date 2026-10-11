@@ -24,6 +24,7 @@ AI on IRC. Ask questions, generate code, create images, and hold conversations w
 - **Code generation.** `@code` produces syntax-highlighted output served as an HTTP link, keeping IRC clean.
 - **Image generation.** `@draw` creates images from text descriptions.
 - **Illustrated stories.** `@story` builds an illustrated story or explainer page and posts the link.
+- **[Aurora](user/aurora.md).** Ask whether the northern lights are likely at a place, or have a channel told when NOAA forecasts a strong storm.
 - **[Reminders](user/reminders.md) and [scheduled tasks](user/scheduled-tasks.md).** Natural-language reminders, plus recurring LLM runs with the full native tool set.
 - **Stored facts.** The bot picks up durable facts from your conversations, with [two-stage promotion](operator/memory-promotion.md) so casual remarks don't stick. Say "remember that I use Arch" and it saves immediately; review or prune the list with `@memories`.
 - **[The verse](operator/verse.md).** A per-channel world model with avatars, user-driven roleplay, and a persistent entity graph.
