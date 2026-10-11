@@ -1526,6 +1526,36 @@ conf.registerGlobalValue(
 
 conf.registerChannelValue(
     LLM,
+    "auroraEnabled",
+    registry.Boolean(
+        False,
+        _("""Give the chat model the aurora tool: NOAA aurora probability, solar
+        wind, Kp, darkness and cloud cover for a named place. Off by default."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "spaceWeatherBzThreshold",
+    registry.Float(
+        -10.0,
+        _("""Bz (nT) the solar wind must stay below, for spaceWeatherBzHours, to
+        count as storm conditions. Values outside -50..-3 fall back to -10."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "spaceWeatherBzHours",
+    registry.PositiveFloat(
+        3.0,
+        _("""Hours the Bz threshold must hold to count as storm conditions.
+        Clamped to 1..12."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "statusAnnounce",
     registry.Boolean(
         False,

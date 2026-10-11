@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import supybot.callbacks as callbacks
 import supybot.conf as conf
@@ -32,7 +33,15 @@ from supybot import world
 from supybot.commands import getopts, optional, wrap
 from supybot.i18n import PluginInternationalization
 
-from . import apikeys, ircquery, limnoria_bridge, meme, meme_topics, statuspage
+from . import (
+    apikeys,
+    ircquery,
+    limnoria_bridge,
+    meme,
+    meme_topics,
+    spaceweather,
+    statuspage,
+)
 from .assistant import PENDING_TASK_TOOLS
 from .context import ContextConfig, ConversationContext, Role
 from .executor import LLMExecutor, RecursiveSubmitError
@@ -197,6 +206,18 @@ _OWN_MSGID_CAP = 2000
 # One per recent speaker per channel; anyone quieter than that is too stale
 # to react to anyway.
 _LAST_MSGID_CAP = 2000
+
+
+def _parse_iso_utc(tag: Any) -> datetime | None:
+    """An ISO-8601 string as an aware UTC datetime; ``None`` if unreadable."""
+    if not isinstance(tag, str):
+        return None
+    try:
+        ts = datetime.fromisoformat(tag)
+    except ValueError:
+        return None
+    return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
+
 
 # Longest emoji the react tool accepts, in code points. ZWJ sequences
 # (👨‍👩‍👧, 🏳️‍🌈) take several; anything longer is text, not a reaction.
@@ -1167,6 +1188,12 @@ class LLM(callbacks.Plugin):
         self._status_query_cache: dict[str, statuspage.Snapshot] = {}
         self._status_query_failed_at: dict[str, float] = {}
         self._status_cursor: str | None = None
+        # Aurora tool caches. _sw_lock guards all three and is never held
+        # across a network fetch.
+        self._sw_lock = threading.Lock()
+        self._sw_ovation: tuple[datetime, dict] | None = None
+        self._sw_rtsw: tuple[datetime, list[spaceweather.Sample]] | None = None
+        self._sw_places: dict[str, tuple[float, spaceweather.Place | None]] = {}
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_status_poll")
         self._schedule_status_poll()
@@ -8049,6 +8076,10 @@ class LLM(callbacks.Plugin):
                     meme_schemas, meme_handlers = self._build_meme_tool(msg)
                     bridge_schemas = [*(bridge_schemas or []), *meme_schemas]
                     bridge_handlers = {**(bridge_handlers or {}), **meme_handlers}
+                if self.registryValue("auroraEnabled", channel):
+                    aurora_schemas, aurora_handlers = self._build_aurora_tool()
+                    bridge_schemas = [*(bridge_schemas or []), *aurora_schemas]
+                    bridge_handlers = {**(bridge_handlers or {}), **aurora_handlers}
                 # Combine bridge tools with any verse tools from the route.
                 bridge_list = list(bridge_schemas) if bridge_schemas else []
                 verse_list = list(extra_tools_override) if extra_tools_override else []
@@ -8590,6 +8621,229 @@ class LLM(callbacks.Plugin):
         if hosted is None:
             return None, error
         return f"{hosted} — {' | '.join([choice.template.id, *choice.lines])}", ""
+
+    # --- aurora tool ---------------------------------------------------------
+
+    _SW_OVATION_TTL = timedelta(minutes=10)
+    _SW_RTSW_TTL = timedelta(seconds=60)
+    _SW_OVATION_STALE = timedelta(minutes=60)
+    _SW_PLACE_HIT_TTL = 24 * 3600.0
+    _SW_PLACE_MISS_TTL = 3600.0
+    _SW_OVATION_NOTE = (
+        "poleward_max is the strongest aurora within 10° toward the pole; "
+        "a stand-in for what is visible low on the horizon"
+    )
+
+    def _sw_params(self) -> tuple[float, float]:
+        """(Bz threshold nT, window hours), validated; bad values fall back."""
+        try:
+            threshold = float(self.registryValue("spaceWeatherBzThreshold"))
+        except (TypeError, ValueError):
+            threshold = -10.0
+        if not -50.0 <= threshold <= -3.0:
+            self.log.warning("spaceWeatherBzThreshold %r is outside -50..-3; using -10", threshold)
+            threshold = -10.0
+        try:
+            hours = float(self.registryValue("spaceWeatherBzHours"))
+        except (TypeError, ValueError):
+            hours = 3.0
+        return threshold, min(12.0, max(1.0, hours))
+
+    def _sw_place(self, query: str) -> spaceweather.Place | None:
+        """Geocode with a cache: hits 24 h, misses 1 h, FetchError never."""
+        key = query.strip().casefold()
+        now = time.monotonic()
+        with self._sw_lock:
+            cached = self._sw_places.get(key)
+            if cached is not None:
+                at, place = cached
+                ttl = self._SW_PLACE_HIT_TTL if place is not None else self._SW_PLACE_MISS_TTL
+                if now - at < ttl:
+                    return place
+        place = spaceweather.geocode(query.strip())
+        with self._sw_lock:
+            self._sw_places[key] = (now, place)
+        return place
+
+    def _sw_ovation_grid(self, now: datetime) -> dict:
+        with self._sw_lock:
+            cached = self._sw_ovation
+        if cached is not None and now - cached[0] < self._SW_OVATION_TTL:
+            return cached[1]
+        grid = spaceweather.fetch_json(
+            spaceweather.SWPC + spaceweather.OVATION_PATH,
+            max_bytes=spaceweather.OVATION_MAX_BYTES,
+        )
+        with self._sw_lock:
+            self._sw_ovation = (now, grid)
+        return grid
+
+    def _sw_samples(self, now: datetime) -> list[spaceweather.Sample]:
+        with self._sw_lock:
+            cached = self._sw_rtsw
+        if cached is not None and now - cached[0] < self._SW_RTSW_TTL:
+            return cached[1]
+        mag = spaceweather.fetch_json(
+            spaceweather.SWPC + spaceweather.MAG_PATH, max_bytes=spaceweather.MAX_BYTES
+        )
+        wind = spaceweather.fetch_json(
+            spaceweather.SWPC + spaceweather.WIND_PATH, max_bytes=spaceweather.MAX_BYTES
+        )
+        samples = spaceweather.parse_rtsw(mag, wind)
+        with self._sw_lock:
+            self._sw_rtsw = (now, samples)
+        return samples
+
+    def _aurora_payload(self, place: str, *, now: datetime) -> dict:
+        """Facts for the aurora tool. Each feed fails alone into ``unavailable``."""
+        try:
+            found = self._sw_place(place)
+        except spaceweather.FetchError as exc:
+            self.log.warning("aurora: geocode failed for %r: %s", place, exc)
+            return {"error": "place lookup is unavailable right now"}
+        if found is None:
+            return {"error": "couldn't find that place"}
+
+        errors = (spaceweather.FetchError, spaceweather.InvalidPayload)
+        out: dict[str, Any] = {"place": found.name, "lat": found.lat, "lon": found.lon}
+        unavailable: list[str] = []
+
+        try:
+            samples = self._sw_samples(now)
+            threshold, hours = self._sw_params()
+            episode = spaceweather.advance_episode(
+                None, samples, threshold_nt=threshold, hours=hours, now=now
+            )
+            bz = next((s.bz for s in reversed(samples) if s.bz is not None), None)
+            speed = next((s.speed for s in reversed(samples) if s.speed is not None), None)
+            out["now"] = {
+                "bz_nt": bz,
+                "speed_kms": speed,
+                "storm_minutes": (
+                    int((now - episode.start).total_seconds() // 60) if episode else 0
+                ),
+                "lead_minutes": episode.lead_minutes if episode else None,
+            }
+        except errors as exc:
+            self.log.warning("aurora: solar wind unavailable: %s", exc)
+            unavailable.append("solar_wind")
+
+        try:
+            hit = spaceweather.ovation_at(self._sw_ovation_grid(now), found.lat, found.lon)
+            observed = _parse_iso_utc(hit["observed"])
+            ovation: dict[str, Any] = {
+                "overhead_pct": hit["overhead_pct"],
+                "poleward_max_pct": hit["poleward_max_pct"],
+                "poleward_max_lat": hit["poleward_max_lat"],
+                "valid_until": hit["forecast_time"],
+                "note": self._SW_OVATION_NOTE,
+            }
+            if observed is None or now - observed > self._SW_OVATION_STALE:
+                ovation["stale"] = True
+            out["ovation"] = ovation
+        except (*errors, KeyError, TypeError, ValueError) as exc:
+            self.log.warning("aurora: ovation unavailable: %s", exc)
+            unavailable.append("ovation")
+
+        try:
+            rows = spaceweather.fetch_json(
+                spaceweather.SWPC + spaceweather.KP_PATH, max_bytes=spaceweather.MAX_BYTES
+            )
+            out["kp_next_24h"] = [
+                {"start": b["start"].isoformat(), "kp": b["kp"], "scale": b["scale"]}
+                for b in spaceweather.parse_kp(rows, now=now)
+            ]
+        except errors as exc:
+            self.log.warning("aurora: kp unavailable: %s", exc)
+            unavailable.append("kp")
+
+        try:
+            alerts = spaceweather.fetch_json(
+                spaceweather.SWPC + spaceweather.ALERTS_PATH, max_bytes=spaceweather.MAX_BYTES
+            )
+            levels = spaceweather.effective_levels(
+                spaceweather.parse_watches(alerts), today=now.date()
+            )
+            top = max(levels.values(), default=0)
+            if top >= 1:
+                out["active_watch"] = {
+                    "level": f"G{top}",
+                    "dates": sorted(d.isoformat() for d, lvl in levels.items() if lvl == top),
+                }
+        except errors as exc:
+            self.log.warning("aurora: alerts unavailable: %s", exc)
+            unavailable.append("alerts")
+
+        try:
+            zone = ZoneInfo(found.tz)
+            tz_name = found.tz
+        except (ZoneInfoNotFoundError, ValueError):
+            zone, tz_name = ZoneInfo("UTC"), "UTC"
+        local = now.astimezone(zone)
+        night = local.date() if local.hour >= 12 else local.date() - timedelta(days=1)
+        start, end = spaceweather.dark_window(found.lat, found.lon, night, tz_name)
+        if start is None:
+            out["dark"] = {"never_dark": True, "tz": "local"}
+        else:
+            dark: dict[str, Any] = {"from": start.astimezone(zone).strftime("%H:%M"), "tz": "local"}
+            if end is None:
+                dark["dark_until_dawn_not_found"] = True
+            else:
+                dark["until"] = end.astimezone(zone).strftime("%H:%M")
+            out["dark"] = dark
+            try:
+                cover = spaceweather.cloud_cover(
+                    found.lat,
+                    found.lon,
+                    start=start,
+                    end=end if end is not None else start + timedelta(hours=12),
+                )
+                out["cloud_pct_while_dark"] = [
+                    {"hour": ts.astimezone(zone).strftime("%H:00"), "pct": pct} for ts, pct in cover
+                ]
+            except errors as exc:
+                self.log.warning("aurora: clouds unavailable: %s", exc)
+                unavailable.append("clouds")
+
+        if unavailable:
+            out["unavailable"] = unavailable
+        return out
+
+    def _build_aurora_tool(self):
+        """Build the ``aurora`` tool schema + handler."""
+        from .assistant import ToolResult
+
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "aurora",
+                "description": (
+                    "Aurora / northern-lights odds for a place: NOAA aurora probability, "
+                    "current solar wind, Kp for the next 24 h, when it gets dark, and "
+                    "cloud cover while dark. If the user names no place, use one from "
+                    "what you know about them; if you know none, ask."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "place": {
+                            "type": "string",
+                            "description": "City or place name, e.g. 'Oshawa' or 'Tromsø'.",
+                        }
+                    },
+                    "required": ["place"],
+                },
+            },
+        }
+
+        def handler(arguments: dict[str, Any]) -> ToolResult:
+            place = arguments.get("place")
+            if not isinstance(place, str) or not place.strip():
+                return ToolResult(content=json.dumps({"error": "Give a place name."}))
+            payload = self._aurora_payload(place, now=datetime.now(UTC))
+            return ToolResult(content=json.dumps(payload))
+
+        return [schema], {"aurora": handler}
 
     def _build_meme_tool(self, msg: IrcMsg):
         """Build the ``make_meme`` tool schema + handler.

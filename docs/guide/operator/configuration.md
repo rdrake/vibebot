@@ -346,6 +346,16 @@ See [Tuning and monitoring](tuning-monitoring.md) for the bridge's security mode
 
 See [Tuning and monitoring](tuning-monitoring.md#status-pages) for the polling rotation, staleness, and the RSS cutover order.
 
+## Aurora
+
+| Setting | Scope | Default | Description |
+|---------|-------|---------|-------------|
+| `auroraEnabled` | channel | `False` | Give the chat model the `aurora` tool: NOAA aurora probability, solar wind, Kp, darkness, and cloud cover for a named place |
+| `spaceWeatherBzThreshold` | global | `-10.0` | Bz in nT that the solar wind must stay below to count as storm conditions. Values outside -50 to -3 fall back to -10 with a warning |
+| `spaceWeatherBzHours` | global | `3.0` | Hours the threshold must hold. Clamped to 1-12 |
+
+The tool reads NOAA SWPC (`services.swpc.noaa.gov`) and Open-Meteo (`geocoding-api.open-meteo.com`, `api.open-meteo.com`). No API keys are needed. Aurora probability is cached for 10 minutes, solar wind for 60 seconds, and place lookups for 24 hours (misses for 1 hour). See [Aurora](../user/aurora.md).
+
 ## Reminders and scheduled tasks
 
 | Setting | Scope | Default | Description |
