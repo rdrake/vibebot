@@ -1693,13 +1693,16 @@ class LLM(callbacks.Plugin):
             if self.registryValue("auroraAnnounce", channel)
         ]
 
-    def _sw_channel_places(self, channel: str) -> list[tuple[str, spaceweather.Place]]:
-        """(label, place) for each configured place that resolves this pass.
+    def _sw_channel_places(self, channel: str) -> tuple[list[tuple[str, spaceweather.Place]], bool]:
+        """(label, place) for each configured place that resolves this pass,
+        and whether any lookup raised.
 
         Labels are the configured names, never the geocoder's. A lookup
-        failure skips the place for this pass only.
+        failure skips the place for this pass only; a place that matches
+        nothing is skipped (warned once).
         """
         out: list[tuple[str, spaceweather.Place]] = []
+        failed = False
         for raw in self.registryValue("auroraAnnouncePlaces", channel) or []:
             label = raw.replace("_", " ").strip()
             if not label:
@@ -1708,6 +1711,7 @@ class LLM(callbacks.Plugin):
                 place = self._sw_place(label)
             except spaceweather.FetchError as exc:
                 self.log.info("spaceweather: geocode failed for %r: %s", label, exc)
+                failed = True
                 continue
             if place is None:
                 key = label.casefold()
@@ -1720,7 +1724,7 @@ class LLM(callbacks.Plugin):
                     )
                 continue
             out.append((label, place))
-        return out
+        return out, failed
 
     def _sw_mean_cloud(
         self, place: spaceweather.Place, start: datetime, end: datetime
@@ -1793,7 +1797,7 @@ class LLM(callbacks.Plugin):
                 continue
             if self._status_monotonic() > deadline or self._llm_executor.closing:
                 return
-            places = self._sw_channel_places(ch)
+            places, _failed = self._sw_channel_places(ch)
             clouds = self._sw_night_clouds(places, min(news), now=now)
             line = spaceweather.render_watch_line(news, clouds)
             if self._deliver_spaceweather_line(ch, line):
@@ -1832,13 +1836,14 @@ class LLM(callbacks.Plugin):
                 continue
             if self._status_monotonic() > deadline or self._llm_executor.closing:
                 return
-            places = self._sw_channel_places(ch)
+            places, failed = self._sw_channel_places(ch)
             if places:
                 if not any(spaceweather.is_dark(p.lat, p.lon, now) for _l, p in places):
                     continue  # held until dark
-            elif self.registryValue("auroraAnnouncePlaces", ch):
-                continue  # places configured but none resolved: darkness unknown, retry
-            # No places configured: always dark, no cloud clause.
+            elif failed:
+                continue  # lookup outage, nothing resolved: darkness unknown, retry
+            # No usable places (none configured, or none match): always dark,
+            # no cloud clause.
             direction = "south" if places and all(p.lat < 0 for _l, p in places) else "north"
             end = now + timedelta(hours=self._SW_STORM_CLOUD_HOURS)
             clouds = {label: self._sw_mean_cloud(p, now, end) for label, p in places}
