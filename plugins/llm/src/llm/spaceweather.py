@@ -11,8 +11,12 @@ Kept free of Limnoria and ``llm.service`` imports for the same reason as
 
 from __future__ import annotations
 
+import json
 import math
 import re
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -435,3 +439,151 @@ def ovation_at(grid: dict, lat: float, lon: float) -> dict:
         "observed": grid.get("Observation Time"),
         "forecast_time": grid.get("Forecast Time"),
     }
+
+
+# --- Fetching ----------------------------------------------------------------
+
+SWPC = "https://services.swpc.noaa.gov"
+MAG_PATH = "/json/rtsw/rtsw_mag_1m.json"
+WIND_PATH = "/json/rtsw/rtsw_wind_1m.json"
+ALERTS_PATH = "/products/alerts.json"
+KP_PATH = "/products/noaa-planetary-k-index-forecast.json"
+OVATION_PATH = "/json/ovation_aurora_latest.json"
+
+GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+
+ALLOWED_HOSTS = frozenset(
+    {"services.swpc.noaa.gov", "geocoding-api.open-meteo.com", "api.open-meteo.com"}
+)
+
+MAX_BYTES = 1024 * 1024
+OVATION_MAX_BYTES = 2 * 1024 * 1024
+
+
+class FetchError(RuntimeError):
+    """A fixed-host fetch failed, was refused, or returned unusable data."""
+
+
+def _no_redirect_opener():
+    """An opener that refuses redirects (same idea as ``statuspage``)."""
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    return urllib.request.build_opener(_NoRedirect())
+
+
+def fetch_json(
+    url: str,
+    *,
+    timeout: float = 10.0,
+    max_bytes: int,
+    opener: Any = None,
+) -> Any:
+    """GET ``url`` and decode JSON; only the three allowed hosts, no redirects."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https" or parts.hostname not in ALLOWED_HOSTS:
+        raise FetchError(f"host not allowed: {parts.hostname}")
+    if opener is None:
+        opener = _no_redirect_opener()
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})  # noqa: S310
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            body = resp.read(max_bytes + 1)
+        if len(body) > max_bytes:
+            raise FetchError(f"response exceeds {max_bytes} bytes")
+        return json.loads(body)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        # HTTPError is a URLError subclass.
+        raise FetchError(f"{type(exc).__name__}: {exc}") from exc
+
+
+@dataclass(frozen=True)
+class Place:
+    name: str
+    lat: float
+    lon: float
+    tz: str
+
+
+def geocode(query: str, *, opener: Any = None) -> Place | None:
+    """Resolve a place name via Open-Meteo; ``None`` when nothing matches."""
+    qs = urllib.parse.urlencode({"name": query, "count": 1})
+    data = fetch_json(f"{GEOCODE_URL}?{qs}", max_bytes=MAX_BYTES, opener=opener)
+    results = data.get("results") if isinstance(data, dict) else None
+    if not results:
+        return None
+    r = results[0]
+    try:
+        region = r.get("admin1") or r.get("country")
+        name = f"{r['name']}, {region}" if region else str(r["name"])
+        return Place(name, float(r["latitude"]), float(r["longitude"]), str(r["timezone"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise FetchError(f"unexpected geocoding result: {exc}") from exc
+
+
+def cloud_cover(
+    lat: float,
+    lon: float,
+    *,
+    start: datetime,
+    end: datetime,
+    opener: Any = None,
+) -> list[tuple[datetime, int]]:
+    """Hourly cloud cover percent (UTC) for hours within ``[start, end]``."""
+    qs = urllib.parse.urlencode(
+        {
+            "latitude": lat,
+            "longitude": lon,
+            "hourly": "cloud_cover",
+            "timezone": "UTC",
+            "forecast_days": 7,
+        }
+    )
+    data = fetch_json(f"{FORECAST_URL}?{qs}", max_bytes=MAX_BYTES, opener=opener)
+    try:
+        times = data["hourly"]["time"]
+        covers = data["hourly"]["cloud_cover"]
+    except (KeyError, TypeError) as exc:
+        raise FetchError(f"unexpected forecast shape: {exc}") from exc
+    out: list[tuple[datetime, int]] = []
+    for tag, pct in zip(times, covers, strict=False):
+        value = _finite(pct)
+        if value is None:
+            continue
+        try:
+            ts = datetime.fromisoformat(tag).replace(tzinfo=UTC)
+        except (TypeError, ValueError):
+            continue
+        if start <= ts <= end:
+            out.append((ts, round(value)))
+    return out
+
+
+_KP_BLOCK = timedelta(hours=3)
+
+
+def parse_kp(rows: list[dict], *, now: datetime, hours: int = 24) -> list[dict]:
+    """3-hour Kp blocks overlapping ``[now, now + hours]``."""
+    horizon = now + timedelta(hours=hours)
+    out: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        start = _parse_ts(row.get("time_tag"))
+        kp = _finite(row.get("kp"))
+        if start is None or kp is None:
+            continue
+        if start + _KP_BLOCK > now and start < horizon:
+            out.append(
+                {
+                    "start": start,
+                    "kp": kp,
+                    "scale": row.get("noaa_scale"),
+                    "kind": row.get("observed"),
+                }
+            )
+    out.sort(key=lambda b: b["start"])
+    return out
