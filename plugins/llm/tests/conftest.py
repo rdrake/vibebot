@@ -1190,6 +1190,7 @@ def spaceweather_plugin():
     obj._SPACEWEATHER_POLL_INTERVAL = LLM._SPACEWEATHER_POLL_INTERVAL
     obj._SPACEWEATHER_PASS_BUDGET = LLM._SPACEWEATHER_PASS_BUDGET
     obj._SW_STORM_CLOUD_HOURS = LLM._SW_STORM_CLOUD_HOURS
+    obj._SW_STORM_RESUME_WINDOW = LLM._SW_STORM_RESUME_WINDOW
     obj._SW_BZ_THRESHOLD_NT = LLM._SW_BZ_THRESHOLD_NT
     obj._SW_BZ_HOURS = LLM._SW_BZ_HOURS
     obj._SW_MIN_WATCH_LEVEL = LLM._SW_MIN_WATCH_LEVEL
@@ -1199,6 +1200,7 @@ def spaceweather_plugin():
         "_sw_channel_places",
         "_sw_mean_cloud",
         "_sw_night_clouds",
+        "_sw_utc_day_dark_hours",
         "_sw_poll_watches",
         "_sw_poll_episode",
         "_run_spaceweather_poll",

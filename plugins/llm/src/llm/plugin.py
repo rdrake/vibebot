@@ -1748,24 +1748,45 @@ class LLM(callbacks.Plugin):
         # Polar night: still dark at the end of the scan, so take 12 hours.
         return start, end if end is not None else start + timedelta(hours=12)
 
-    def _sw_night_clouds(
-        self, places: list[tuple[str, spaceweather.Place]], night: date, *, now: datetime
-    ) -> dict[str, int | None]:
-        """Mean cloud over each place's remaining dark hours for ``night``.
+    def _sw_utc_day_dark_hours(
+        self, place: spaceweather.Place, day: date, *, now: datetime
+    ) -> tuple[datetime, datetime] | None:
+        """The remaining dark hours that go with UTC ``day`` at ``place``.
 
-        Only hours from ``now`` on count; a window already over gives way to
-        the next night's.
+        NOAA watch days are UTC days, and a local night straddles two of them.
+        The local night (``day`` - 1 or ``day``) overlapping the UTC day most is
+        the one meant; hours before ``now`` are dropped, and if that night is
+        already over the next one is used. None when it never gets dark.
         """
+        lo = datetime.combine(day, datetime.min.time(), UTC)
+        hi = lo + timedelta(days=1)
+        nights = [self._sw_dark_hours(place, day + timedelta(days=k)) for k in (-1, 0, 1)]
+        best, best_overlap = None, timedelta(0)
+        for i in (0, 1):
+            window = nights[i]
+            if window is None:
+                continue
+            overlap = min(window[1], hi) - max(window[0], lo)
+            if overlap > best_overlap:
+                best, best_overlap = i, overlap
+        if best is None:
+            return None
+        for window in nights[best:]:
+            if window is not None and window[1] > now:
+                return max(window[0], now), window[1]
+        return None
+
+    def _sw_night_clouds(
+        self, places: list[tuple[str, spaceweather.Place]], day: date, *, now: datetime
+    ) -> dict[str, int | None]:
+        """Mean cloud over each place's remaining dark hours for UTC ``day``."""
         clouds: dict[str, int | None] = {}
         for label, place in places:
-            window = self._sw_dark_hours(place, night)
-            if window is not None and window[1] <= now:
-                window = self._sw_dark_hours(place, night + timedelta(days=1))
+            window = self._sw_utc_day_dark_hours(place, day, now=now)
             if window is None:
-                clouds[label] = None  # never dark that night
+                clouds[label] = None  # no dark hours to report
                 continue
-            start, end = window
-            clouds[label] = self._sw_mean_cloud(place, max(start, now), end)
+            clouds[label] = self._sw_mean_cloud(place, *window)
         return clouds
 
     def _sw_poll_watches(
@@ -1819,6 +1840,23 @@ class LLM(callbacks.Plugin):
             hours=self._SW_BZ_HOURS,
             now=now,
         )
+        previous = state.episode
+        if previous is not None and episode is None:
+            state.last_episode, state.last_end = previous, now
+        elif (
+            previous is None
+            and episode is not None
+            and state.last_episode is not None
+            and state.last_end is not None
+            and episode.start - state.last_end <= self._SW_STORM_RESUME_WINDOW
+        ):
+            # A brief northward turn, not a new storm: keep the original start
+            # (so its acks still hold and duration runs from it) and the deepest Bz.
+            episode = replace(
+                episode,
+                start=state.last_episode.start,
+                min_bz=min(episode.min_bz, state.last_episode.min_bz),
+            )
         state.episode = episode
         seen, state.seen_channels = state.seen_channels, set(channels)
         if not state.episode_seeded:
@@ -1826,7 +1864,10 @@ class LLM(callbacks.Plugin):
             state.episode_seeded = True
             return
         if episode is None:
-            state.episode_acked.clear()
+            # Acks survive the resume window so a resumed storm stays told.
+            if state.last_end is None or now - state.last_end > self._SW_STORM_RESUME_WINDOW:
+                state.episode_acked.clear()
+                state.last_episode = state.last_end = None
             return
         for ch in channels:
             if state.episode_acked.get(ch) == episode.start:
@@ -2684,6 +2725,8 @@ class LLM(callbacks.Plugin):
     _SPACEWEATHER_POLL_INTERVAL = 300
     _SPACEWEATHER_PASS_BUDGET = 60
     _SW_STORM_CLOUD_HOURS = 3
+    # An episode starting this soon after the last one ended is the same storm.
+    _SW_STORM_RESUME_WINDOW = timedelta(hours=3)
     # Below this much remaining, the pass stops spending completions and posts
     # templates. The template has always been the primary path and the rewrite
     # an upgrade, so nothing is lost but prose.
@@ -8966,6 +9009,9 @@ class LLM(callbacks.Plugin):
 
         try:
             samples = self._sw_samples(now)
+            newest_bz = max((s.ts for s in samples if s.bz is not None), default=None)
+            if newest_bz is None or now - newest_bz > spaceweather.STALE_AFTER:
+                raise spaceweather.FetchError("no Bz in the last 15 minutes")
             episode = spaceweather.advance_episode(
                 None,
                 samples,

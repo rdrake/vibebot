@@ -33,8 +33,8 @@ EPISODE_END_BZ_NT = -5.0
 # Fraction of the window that must have data, and must meet the threshold.
 _COVERAGE = 0.8
 
-# Newest sample older than this means the feed is stale.
-_STALE = timedelta(minutes=15)
+# Newest Bz minute older than this means the feed is stale.
+STALE_AFTER = timedelta(minutes=15)
 
 _ONE_MINUTE = timedelta(minutes=1)
 
@@ -144,7 +144,7 @@ def storm_conditions(
     must not keep a stalled magnetometer feed looking fresh.
     """
     bz_times = [s.ts for s in samples if s.bz is not None]
-    if not bz_times or now - max(bz_times) > _STALE:
+    if not bz_times or now - max(bz_times) > STALE_AFTER:
         return False
     window_minutes = hours * 60
     bz = [
@@ -259,12 +259,8 @@ class Watch:
     levels: dict[date, int]
 
 
-_MONTHS = {
-    m: i
-    for i, m in enumerate(
-        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1
-    )
-}
+_MONTH_NAMES = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+_MONTHS = {m: i for i, m in enumerate(_MONTH_NAMES, 1)}
 _SERIAL_RE = re.compile(r"Serial Number:\s*(\d+)")
 _ISSUE_RE = re.compile(r"Issue Time:\s*(\d{4}) ([A-Z][a-z]{2}) (\d{2}) (\d{2})(\d{2}) UTC")
 _BY_DAY_RE = re.compile(
@@ -524,7 +520,9 @@ def geocode(query: str, *, opener: Any = None) -> Place | None:
     results = data.get("results") if isinstance(data, dict) else None
     if not results:
         return None
-    r = results[0]
+    r = results[0] if isinstance(results, list) else None
+    if not isinstance(r, dict):
+        raise FetchError(f"unexpected geocoding results: {type(results).__name__}")
     try:
         region = r.get("admin1") or r.get("country")
         name = f"{r['name']}, {region}" if region else str(r["name"])
@@ -557,6 +555,8 @@ def cloud_cover(
         covers = data["hourly"]["cloud_cover"]
     except (KeyError, TypeError) as exc:
         raise FetchError(f"unexpected forecast shape: {exc}") from exc
+    if not isinstance(times, list) or not isinstance(covers, list):
+        raise FetchError("unexpected forecast shape: hourly time/cloud_cover not lists")
     out: list[tuple[datetime, int]] = []
     for tag, pct in zip(times, covers, strict=False):
         value = _finite(pct)
@@ -613,6 +613,10 @@ class SwState:
     watches_seeded: bool = False
     episode_seeded: bool = False
     episode: Episode | None = None
+    # The episode that last ended and when. A new one starting soon after is
+    # the same storm resuming after a brief northward turn.
+    last_episode: Episode | None = None
+    last_end: datetime | None = None
     announced_levels: dict[str, dict[date, int]] = field(default_factory=dict)
     episode_acked: dict[str, datetime] = field(default_factory=dict)
     seen_channels: set[str] = field(default_factory=set)
@@ -631,7 +635,7 @@ def mean_cloud(rows: Sequence[tuple[datetime, int]]) -> int | None:
 
 
 def _day(d: date) -> str:
-    return f"{d:%b} {d.day}"
+    return f"{_MONTH_NAMES[d.month - 1]} {d.day}"
 
 
 def _date_span(dates: Sequence[date]) -> str:
@@ -666,7 +670,7 @@ def _clouds(label: str, clouds: dict[str, int | None]) -> str:
 def render_watch_line(levels: dict[date, int], clouds: dict[str, int | None]) -> str:
     return (
         f"\U0001f30c NOAA G{max(levels.values())} storm watch for {_date_span(list(levels))}."
-        + _clouds("Clouds tonight", clouds)
+        + _clouds(f"Clouds night of {_day(min(levels))}", clouds)
     )
 
 

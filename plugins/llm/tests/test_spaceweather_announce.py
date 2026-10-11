@@ -44,7 +44,11 @@ G3_OCT12 = _watch(10, "2026 Oct 11 0600", "Oct 12:  G3 (Strong)   Oct 13:  G3 (S
 
 
 NIGHT = datetime(2026, 10, 12, 1, 0, tzinfo=UTC)  # 21:00 EDT, dark in Ottawa
-CLOUDS_TONIGHT = " Clouds tonight: Ottawa 40%."
+TORONTO = Place("Toronto, Ontario", 43.70, -79.42, "America/Toronto")
+
+
+def _clouds_on(day: str) -> str:
+    return f" Clouds night of {day}: Ottawa 40%."
 
 
 @pytest.fixture
@@ -124,7 +128,7 @@ def test_new_channel_seeded_silently_for_watches(sw) -> None:
 def test_watch_announced_once(sw) -> None:
     _pass(sw, NOW)
     sent = _pass(sw, NOW + timedelta(minutes=5), alerts=[G3_OCT12])
-    assert sent == [("#a", "🌌 NOAA G3 storm watch for Oct 12–13." + CLOUDS_TONIGHT)]
+    assert sent == [("#a", "🌌 NOAA G3 storm watch for Oct 12–13." + _clouds_on("Oct 12"))]
     assert _pass(sw, NOW + timedelta(minutes=10)) == []
 
 
@@ -140,7 +144,7 @@ def test_upgrade_g3_to_g4_reannounced(sw) -> None:
     _pass(sw, NOW + timedelta(minutes=5), alerts=[G3_OCT12])
     upgrade = _watch(11, "2026 Oct 11 1100", "Oct 12:  G4 (Severe)   Oct 13:  G3 (Strong)   ")
     sent = _pass(sw, NOW + timedelta(minutes=10), alerts=[G3_OCT12, upgrade])
-    assert sent == [("#a", "🌌 NOAA G4 storm watch for Oct 12." + CLOUDS_TONIGHT)]
+    assert sent == [("#a", "🌌 NOAA G4 storm watch for Oct 12." + _clouds_on("Oct 12"))]
     downgrade = _watch(12, "2026 Oct 11 1130", "Oct 12:  G3 (Strong)   ")
     assert _pass(sw, NOW + timedelta(minutes=15), alerts=[downgrade]) == []
 
@@ -151,7 +155,7 @@ def test_g2_watch_below_min_level_ignored(sw) -> None:
     assert _pass(sw, NOW + timedelta(minutes=5), alerts=real) == []
     sw._SW_MIN_WATCH_LEVEL = 2  # the gate, not the parse
     sent = _pass(sw, NOW + timedelta(minutes=10))
-    assert sent == [("#a", "🌌 NOAA G2 storm watch for Oct 11." + CLOUDS_TONIGHT)]
+    assert sent == [("#a", "🌌 NOAA G2 storm watch for Oct 11." + _clouds_on("Oct 11"))]
 
 
 def test_partial_delivery_retries_only_failed_channel(sw) -> None:
@@ -170,11 +174,23 @@ def test_watch_clouds_over_dark_window(sw) -> None:
     sw._places = {"Ottawa": OTTAWA, "Sault Ste. Marie": spaceweather.FetchError("x")}
     _pass(sw, NOW)
     sent = _pass(sw, NOW + timedelta(minutes=5), alerts=[G3_OCT12])
-    assert sent == [("#a", "🌌 NOAA G3 storm watch for Oct 12–13." + CLOUDS_TONIGHT)]
+    assert sent == [("#a", "🌌 NOAA G3 storm watch for Oct 12–13." + _clouds_on("Oct 12"))]
+    assert sw._clouds.call_count == 1  # Sault Ste. Marie's lookup failed: left out
+
+
+def test_watch_clouds_use_local_night_covering_the_utc_day(sw) -> None:
+    """NOAA watch days are UTC days. In Toronto, UTC Oct 12 is mostly the
+    local night of Oct 11 (23:43Z Oct 11 to 10:27Z Oct 12), not Oct 12's."""
+    sw._sw_night_clouds([("Toronto", TORONTO)], date(2026, 10, 12), now=NOW)
     kw = sw._clouds.call_args.kwargs
-    # Oct 12 dark window in Ottawa, local evening to next morning, in UTC.
-    assert kw["start"].date() == date(2026, 10, 12) and kw["start"].hour >= 23
-    assert kw["end"].date() == date(2026, 10, 13)
+    assert datetime(2026, 10, 11, 23, 30, tzinfo=UTC) < kw["start"]
+    assert kw["start"] < datetime(2026, 10, 11, 23, 59, tzinfo=UTC)
+    assert datetime(2026, 10, 12, 10, 15, tzinfo=UTC) < kw["end"]
+    assert kw["end"] < datetime(2026, 10, 12, 10, 40, tzinfo=UTC)
+    later = datetime(2026, 10, 12, 2, 0, tzinfo=UTC)
+    sw._sw_night_clouds([("Toronto", TORONTO)], date(2026, 10, 12), now=later)
+    assert sw._clouds.call_args.kwargs["start"] == later  # clipped to now
+    assert sw._clouds.call_args.kwargs["end"] == kw["end"]
 
 
 def test_watch_clouds_start_now_when_dark_already_began(sw) -> None:
@@ -253,8 +269,43 @@ def test_new_episode_after_end_announces_again(sw) -> None:
     assert len(_pass(sw, NIGHT + timedelta(minutes=5), wind=-14.0)) == 1
     assert _pass(sw, NIGHT + timedelta(hours=2), wind=2.0) == []
     assert sw._sw_state.episode is None
-    assert sw._sw_state.episode_acked == {}
-    assert len(_pass(sw, NIGHT + timedelta(hours=6), wind=-14.0)) == 1
+    assert sw._sw_state.episode_acked  # kept through the 3 h resume window
+    assert _pass(sw, NIGHT + timedelta(hours=5, minutes=10), wind=2.0) == []
+    assert sw._sw_state.episode_acked == {}  # window over: the storm is done
+    assert len(_pass(sw, NIGHT + timedelta(hours=9), wind=-14.0)) == 1
+
+
+def test_brief_northward_turn_is_the_same_storm(sw) -> None:
+    """180 min at -15, 20 min at +5, then -15 again: one storm, one line."""
+    sw._channels = {"#a", "#b"}
+    t0 = NIGHT - timedelta(hours=1)
+
+    def bz_at(ts):
+        minute = (ts - NIGHT).total_seconds() / 60
+        if minute < 0:
+            return 2.0
+        if minute < 180:
+            return -15.0
+        if minute < 200:
+            return 5.0
+        return -15.0
+
+    sent = []
+    starts = []
+    now = NIGHT
+    while now <= NIGHT + timedelta(minutes=320):
+        sw._samples = [
+            Sample(ts=t0 + timedelta(minutes=i), bz=bz_at(t0 + timedelta(minutes=i)),
+                   bt=15.0, speed=620.0)
+            for i in range(int((now - t0).total_seconds() // 60) + 1)
+        ]  # fmt: skip
+        sent += _pass(sw, now)
+        if sw._sw_state.episode is not None:
+            starts.append(sw._sw_state.episode.start)
+        now += timedelta(minutes=5)
+    assert sorted(ch for ch, _ in sent) == ["#a", "#b"]
+    assert len(set(starts)) == 1  # duration runs from the original start
+    assert sw._sw_state.episode.start == starts[0]
 
 
 def test_channel_new_mid_episode_acked_silently(sw) -> None:
@@ -410,7 +461,7 @@ def test_render_watch_line_spans(levels, span) -> None:
 
 def test_render_watch_line_unknown_cloud() -> None:
     line = spaceweather.render_watch_line({date(2026, 10, 12): 3}, {"Ottawa": None, "Oshawa": 5})
-    assert line.endswith("Clouds tonight: Ottawa ?, Oshawa 5%.")
+    assert line.endswith("Clouds night of Oct 12: Ottawa ?, Oshawa 5%.")
 
 
 def test_watch_news_only_rises_at_or_above_min() -> None:
