@@ -2543,7 +2543,7 @@ class TestChatProfileBridgeWiring:
 
         # Override registry: enable bridge with one allowed plugin.
         plugin.registryValue.side_effect = make_registry_side_effect(
-            {"bridgeEnabled": True, "bridgeAllowedPlugins": ["Misc"]}
+            {"bridgeEnabled": True, "bridgeAllowedPlugins": ["Misc"], "auroraEnabled": False}
         )
 
         fake_cmd = mocker.MagicMock(
@@ -2577,7 +2577,9 @@ class TestChatProfileBridgeWiring:
         THEN assistant_request receives extra_tools=None and extra_handlers=None."""
         plugin, mock_irc, mock_msg = plugin_env
 
-        # Default conftest registry has bridgeEnabled=False — no override needed.
+        # Default conftest registry has bridgeEnabled=False. The aurora tool is
+        # on by default, so turn it off to see the bridge's absence alone.
+        plugin.registryValue.side_effect = make_registry_side_effect({"auroraEnabled": False})
         plugin.llm_service.detect_images.return_value = []
         plugin.llm_service.assistant_request.side_effect = None
         plugin.llm_service.assistant_request.return_value = self._make_assistant_result()

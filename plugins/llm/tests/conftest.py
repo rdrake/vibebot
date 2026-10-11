@@ -660,6 +660,10 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "botLoopReplyLimit": 3,
         "botLoopWindow": 300,
         "botLoopHostSuffixes": ["Bot.AfterNET.Org"],
+        # Aurora (mirrors config.py: tool on, announcements opt-in)
+        "auroraEnabled": True,
+        "auroraAnnounce": False,
+        "auroraAnnouncePlaces": [],
         # Draw command
         "drawTimeout": 60,
         "drawAutoRewriteMax": 2,
@@ -1135,11 +1139,7 @@ def spaceweather_plugin():
     from llm import spaceweather
 
     obj = MagicMock()
-    obj._registry = {
-        "spaceWeatherBzThreshold": -10.0,
-        "spaceWeatherBzHours": 3.0,
-        "spaceWeatherMinWatchLevel": 3,
-    }
+    obj._registry = {}
     obj._chan_registry = {}
     obj.registryValue = lambda key, channel=None, *a, **k: obj._chan_registry.get(
         (key, channel), obj._registry.get(key)
@@ -1190,9 +1190,11 @@ def spaceweather_plugin():
     obj._SPACEWEATHER_POLL_INTERVAL = LLM._SPACEWEATHER_POLL_INTERVAL
     obj._SPACEWEATHER_PASS_BUDGET = LLM._SPACEWEATHER_PASS_BUDGET
     obj._SW_STORM_CLOUD_HOURS = LLM._SW_STORM_CLOUD_HOURS
+    obj._SW_BZ_THRESHOLD_NT = LLM._SW_BZ_THRESHOLD_NT
+    obj._SW_BZ_HOURS = LLM._SW_BZ_HOURS
+    obj._SW_MIN_WATCH_LEVEL = LLM._SW_MIN_WATCH_LEVEL
+    obj._sw_dark_hours = LLM._sw_dark_hours  # staticmethod: no binding
     for name in (
-        "_sw_params",
-        "_sw_min_watch_level",
         "_sw_announce_channels",
         "_sw_channel_places",
         "_sw_mean_cloud",

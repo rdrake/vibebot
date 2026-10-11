@@ -315,7 +315,7 @@ class TestChatWiring:
     def test_ask_advertises_make_meme_when_enabled(self, meme_plugin) -> None:
         plugin, irc, msg = meme_plugin
         plugin.registryValue.side_effect = make_registry_side_effect(
-            {"memeEnabled": True, "ircLookupEnabled": False}
+            {"memeEnabled": True, "ircLookupEnabled": False, "auroraEnabled": False}
         )
         plugin.llm_service.detect_images.return_value = []
         plugin.llm_service.assistant_request.side_effect = None
@@ -331,7 +331,7 @@ class TestChatWiring:
     def test_ask_omits_make_meme_when_disabled(self, meme_plugin) -> None:
         plugin, irc, msg = meme_plugin
         plugin.registryValue.side_effect = make_registry_side_effect(
-            {"memeEnabled": False, "ircLookupEnabled": False}
+            {"memeEnabled": False, "ircLookupEnabled": False, "auroraEnabled": False}
         )
         plugin.llm_service.detect_images.return_value = []
         plugin.llm_service.assistant_request.side_effect = None

@@ -3,8 +3,8 @@
 Ask the bot whether the northern lights are likely at a place. It reads
 NOAA's live aurora forecast, the current solar wind, and the Kp forecast for
 the next 24 hours, then adds when it gets dark there and how cloudy it will
-be while it is. An operator turns this on per channel with `auroraEnabled`;
-see [Aurora](../operator/configuration.md#aurora).
+be while it is. It is on in every channel unless an operator turns
+`auroraEnabled` off; see [Aurora](../operator/configuration.md#aurora).
 
 ## Asking
 
@@ -33,9 +33,8 @@ it asks.
 - **Toward the pole** is the strongest probability within 10 degrees toward
   the pole. It stands in for what you would see low on the horizon.
 - **Storm conditions** means the solar wind's Bz has stayed strongly
-  southward for hours. That is a heuristic, not a guarantee of a storm. The
-  threshold and duration are operator settings (`spaceWeatherBzThreshold`,
-  `spaceWeatherBzHours`).
+  southward for hours: Bz at or below -10 nT for most of the last 3 hours.
+  That is a heuristic, not a guarantee of a storm.
 - **Dark** means the sun is more than 12 degrees below the horizon.
 
 When a source can't be reached, the bot leaves that part out and says so.
@@ -43,11 +42,12 @@ An aurora forecast more than an hour old is marked stale.
 
 ## Announcements
 
-An operator can have the bot post to a channel on its own, with
-`spaceWeatherAnnounce`. It posts when NOAA issues a strong geomagnetic storm
-watch (G3 or higher unless the operator changes it), and again if a watch is
-raised. It also posts once when storm conditions set in, as soon as it is dark
-at one of the channel's places.
+An operator can have the bot post to a channel on its own with
+`auroraAnnounce`. Announcements go to every channel with `auroraAnnounce` on;
+set `auroraAnnouncePlaces` to add cloud cover and hold storm alerts until it is
+dark there. It posts when NOAA issues a strong geomagnetic storm watch (G3 or higher), and
+again if a watch is raised. It also posts once when storm conditions set in, as soon as it is dark
+at one of the channel's places (at once if it has none).
 
 ```
 <VibeBot> 🌌 NOAA G3 storm watch for Oct 12–13. Clouds tonight: Ottawa 20%,
@@ -56,6 +56,6 @@ at one of the channel's places.
           to Earth). Look north. Clouds now: Ottawa 10%, Toronto 90%.
 ```
 
-The places are the channel's, set by the operator (`spaceWeatherPlaces`),
+The places are the channel's, set by the operator (`auroraAnnouncePlaces`),
 never ones the bot knows about you. A `?` means the cloud forecast couldn't be
 read.
