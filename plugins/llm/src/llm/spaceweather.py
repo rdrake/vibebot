@@ -12,10 +12,12 @@ Kept free of Limnoria and ``llm.service`` imports for the same reason as
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 # Distance from L1 to Earth, km. Lead time = distance / wind speed.
 L1_DISTANCE_KM = 1.5e6
@@ -233,3 +235,203 @@ def advance_episode(
         mean_ey=ey if ey is not None else current.mean_ey,
         lead_minutes=_lead_minutes(speed),
     )
+
+
+# --- Watches -----------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Watch:
+    """One NOAA geomagnetic storm watch issuance (WATA*). Level 0 is below G1."""
+
+    serial: int
+    issued: datetime
+    levels: dict[date, int]
+
+
+_MONTHS = {
+    m: i
+    for i, m in enumerate(
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1
+    )
+}
+_SERIAL_RE = re.compile(r"Serial Number:\s*(\d+)")
+_ISSUE_RE = re.compile(r"Issue Time:\s*(\d{4}) ([A-Z][a-z]{2}) (\d{2}) (\d{2})(\d{2}) UTC")
+_BY_DAY_RE = re.compile(
+    r"Predicted by Day:\s*\n(.*?)(?:\nTHIS SUPERSEDES|\nComment:|\Z)", re.DOTALL
+)
+_DAY_RE = re.compile(r"([A-Z][a-z]{2}) (\d{2}):\s+(?:G(\d)\b|None)")
+
+
+def _day_levels(text: str, issued: datetime) -> dict[date, int]:
+    levels: dict[date, int] = {}
+    block = _BY_DAY_RE.search(text)
+    if block is None:
+        return levels
+    for mon, day, g in _DAY_RE.findall(block.group(1)):
+        month = _MONTHS.get(mon)
+        if month is None:
+            continue
+        try:
+            d = date(issued.year, month, int(day))
+            if d < issued.date() - timedelta(days=180):  # December issue, January day
+                d = date(issued.year + 1, month, int(day))
+        except ValueError:
+            continue
+        levels[d] = int(g) if g else 0
+    return levels
+
+
+def parse_watches(alerts: list[dict]) -> list[Watch]:
+    """Geomagnetic storm watches (message code WATA*) from the SWPC alerts feed.
+
+    A cancellation yields ``levels == {}``. Entries that are not watches, or
+    whose serial or issue time cannot be read, are skipped.
+    """
+    watches = []
+    for alert in alerts:
+        text = alert.get("message") if isinstance(alert, dict) else None
+        if not isinstance(text, str) or "Space Weather Message Code: WATA" not in text:
+            continue
+        serial = _SERIAL_RE.search(text)
+        issue = _ISSUE_RE.search(text)
+        if serial is None or issue is None or issue.group(2) not in _MONTHS:
+            continue
+        try:
+            issued = datetime(
+                int(issue.group(1)),
+                _MONTHS[issue.group(2)],
+                int(issue.group(3)),
+                int(issue.group(4)),
+                int(issue.group(5)),
+                tzinfo=UTC,
+            )
+        except ValueError:
+            continue
+        levels = {} if "CANCEL" in text else _day_levels(text, issued)
+        watches.append(Watch(serial=int(serial.group(1)), issued=issued, levels=levels))
+    return watches
+
+
+def effective_levels(watches: list[Watch], *, today: date) -> dict[date, int]:
+    """Level per date from the newest issuance alone; dates before today dropped."""
+    if not watches:
+        return {}
+    newest = max(watches, key=lambda w: (w.issued, w.serial))
+    return {d: lvl for d, lvl in newest.levels.items() if d >= today}
+
+
+# --- Darkness ----------------------------------------------------------------
+
+# Dark means the sun is more than 12 degrees below the horizon (nautical twilight).
+DARK_ALTITUDE_DEG = -12.0
+
+
+def sun_altitude(lat: float, lon: float, when: datetime) -> float:
+    """Geometric solar altitude in degrees (NOAA solar-position equations, no refraction)."""
+    utc = when.astimezone(UTC)
+    jd = (utc - datetime(2000, 1, 1, 12, tzinfo=UTC)).total_seconds() / 86400 + 2451545.0
+    t = (jd - 2451545.0) / 36525
+    l0 = (280.46646 + t * (36000.76983 + t * 0.0003032)) % 360
+    m = math.radians(357.52911 + t * (35999.05029 - 0.0001537 * t))
+    ecc = 0.016708634 - t * (0.000042037 + 0.0000001267 * t)
+    center = (
+        math.sin(m) * (1.914602 - t * (0.004817 + 0.000014 * t))
+        + math.sin(2 * m) * (0.019993 - 0.000101 * t)
+        + math.sin(3 * m) * 0.000289
+    )
+    true_long = l0 + center
+    omega = math.radians(125.04 - 1934.136 * t)
+    app_long = math.radians(true_long - 0.00569 - 0.00478 * math.sin(omega))
+    obliq = (
+        23
+        + (26 + (21.448 - t * (46.815 + t * (0.00059 - t * 0.001813))) / 60) / 60
+        + 0.00256 * math.cos(omega)
+    )
+    obliq_r = math.radians(obliq)
+    decl = math.asin(math.sin(obliq_r) * math.sin(app_long))
+    y = math.tan(obliq_r / 2) ** 2
+    l0_r = math.radians(l0)
+    eq_time = 4 * math.degrees(
+        y * math.sin(2 * l0_r)
+        - 2 * ecc * math.sin(m)
+        + 4 * ecc * y * math.sin(m) * math.cos(2 * l0_r)
+        - 0.5 * y * y * math.sin(4 * l0_r)
+        - 1.25 * ecc * ecc * math.sin(2 * m)
+    )
+    minutes = utc.hour * 60 + utc.minute + utc.second / 60
+    true_solar = (minutes + eq_time + 4 * lon) % 1440
+    hour_angle = math.radians(true_solar / 4 - 180)
+    lat_r = math.radians(lat)
+    cos_zenith = math.sin(lat_r) * math.sin(decl) + math.cos(lat_r) * math.cos(decl) * math.cos(
+        hour_angle
+    )
+    return 90 - math.degrees(math.acos(max(-1.0, min(1.0, cos_zenith))))
+
+
+def is_dark(lat: float, lon: float, when: datetime) -> bool:
+    return sun_altitude(lat, lon, when) < DARK_ALTITUDE_DEG
+
+
+def dark_window(
+    lat: float, lon: float, night: date, tz: str
+) -> tuple[datetime | None, datetime | None]:
+    """First dark minute and the first light minute after it, as UTC datetimes.
+
+    Scans from local noon on ``night`` to local noon the next day. ``(None, None)``
+    means it never gets dark (midnight sun); ``(start, None)`` means it is still
+    dark at the end of the scan (polar night).
+    """
+    zone = ZoneInfo(tz)
+    begin = datetime.combine(night, time(12), zone).astimezone(UTC)
+    end = datetime.combine(night + timedelta(days=1), time(12), zone).astimezone(UTC)
+    step = timedelta(minutes=10)
+
+    def first(want_dark: bool, since: datetime) -> datetime | None:
+        t = since
+        while t <= end:
+            if is_dark(lat, lon, t) == want_dark:
+                if t == since:
+                    return t
+                back = t
+                while (
+                    back - _ONE_MINUTE > since
+                    and is_dark(lat, lon, back - _ONE_MINUTE) == want_dark
+                ):
+                    back -= _ONE_MINUTE
+                return back
+            t += step
+        return None
+
+    start = first(True, begin)
+    if start is None:
+        return None, None
+    return start, first(False, start)
+
+
+# --- OVATION -----------------------------------------------------------------
+
+_POLEWARD_SPAN_DEG = 10
+
+
+def ovation_at(grid: dict, lat: float, lon: float) -> dict:
+    """Aurora percentage overhead and the best within 10 degrees poleward.
+
+    The OVATION grid is 1-degree cells with longitude 0..359. Poleward is toward
+    the place's own pole, so a southern place searches south. Cells absent from
+    the grid count as 0.
+    """
+    lon_i = round(lon) % 360
+    lat_i = round(lat)
+    column = {int(la): pct for lo, la, pct in grid["coordinates"] if lo == lon_i}
+    pole = 90 if lat_i >= 0 else -90
+    sign = 1 if pole > 0 else -1
+    lats = [lat_i + sign * i for i in range(_POLEWARD_SPAN_DEG + 1) if abs(lat_i + sign * i) <= 90]
+    best_lat = max(lats, key=lambda la: (column.get(la, 0), -abs(la - lat_i)))
+    return {
+        "overhead_pct": column.get(lat_i, 0),
+        "poleward_max_pct": column.get(best_lat, 0),
+        "poleward_max_lat": best_lat,
+        "observed": grid.get("Observation Time"),
+        "forecast_time": grid.get("Forecast Time"),
+    }
