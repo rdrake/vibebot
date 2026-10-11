@@ -8780,8 +8780,15 @@ class LLM(callbacks.Plugin):
         except (ZoneInfoNotFoundError, ValueError):
             zone, tz_name = ZoneInfo("UTC"), "UTC"
         local = now.astimezone(zone)
-        night = local.date() if local.hour >= 12 else local.date() - timedelta(days=1)
+        # After dawn "tonight" is the coming night; before dawn, the night
+        # still in progress.
+        night = local.date()
         start, end = spaceweather.dark_window(found.lat, found.lon, night, tz_name)
+        if local.hour < 12:
+            prev = night - timedelta(days=1)
+            p_start, p_end = spaceweather.dark_window(found.lat, found.lon, prev, tz_name)
+            if p_start is not None and p_start <= now and (p_end is None or now < p_end):
+                start, end = p_start, p_end
         if start is None:
             out["dark"] = {"never_dark": True, "tz": "local"}
         else:
