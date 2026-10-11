@@ -138,8 +138,13 @@ def _window(
 def storm_conditions(
     samples: Sequence[Sample], *, threshold_nt: float, hours: float, now: datetime
 ) -> bool:
-    """True when Bz stayed at or below the threshold for most of the trailing window."""
-    if not samples or now - max(s.ts for s in samples) > _STALE:
+    """True when Bz stayed at or below the threshold for most of the trailing window.
+
+    Staleness is judged on the newest minute that has Bz: plasma-only minutes
+    must not keep a stalled magnetometer feed looking fresh.
+    """
+    bz_times = [s.ts for s in samples if s.bz is not None]
+    if not bz_times or now - max(bz_times) > _STALE:
         return False
     window_minutes = hours * 60
     bz = [
@@ -266,6 +271,9 @@ _BY_DAY_RE = re.compile(
     r"Predicted by Day:\s*\n(.*?)(?:\nTHIS SUPERSEDES|\nComment:|\Z)", re.DOTALL
 )
 _DAY_RE = re.compile(r"([A-Z][a-z]{2}) (\d{2}):\s+(?:G(\d)\b|None)")
+# A cancellation is a line that starts with CANCEL ("CANCEL WATCH: ..."); the
+# word inside comment text is not one.
+_CANCEL_RE = re.compile(r"^[ \t]*CANCEL", re.MULTILINE)
 
 
 def _day_levels(text: str, issued: datetime) -> dict[date, int]:
@@ -313,7 +321,7 @@ def parse_watches(alerts: list[dict]) -> list[Watch]:
             )
         except ValueError:
             continue
-        levels = {} if "CANCEL" in text else _day_levels(text, issued)
+        levels = {} if _CANCEL_RE.search(text) else _day_levels(text, issued)
         watches.append(Watch(serial=int(serial.group(1)), issued=issued, levels=levels))
     return watches
 

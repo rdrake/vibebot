@@ -132,6 +132,16 @@ def test_stale_feed_does_not_start():
     assert spaceweather.advance_episode(None, samples, now=NOW, **STORM) is None
 
 
+def test_wind_only_minutes_do_not_keep_stalled_bz_fresh():
+    """A stalled magnetometer with a live plasma feed is still stale for Bz."""
+    bz = _series(190, -12.0, end=NOW - timedelta(minutes=20))
+    wind_only = [
+        Sample(ts=NOW - timedelta(minutes=i), bz=None, bt=None, speed=600.0)
+        for i in range(19, -1, -1)
+    ]
+    assert not spaceweather.storm_conditions(bz + wind_only, now=NOW, **STORM)
+
+
 def test_trailing_mean_needs_min_points():
     assert spaceweather.trailing_mean_bz(_series(23, -12.0), now=NOW) is None
     assert spaceweather.trailing_mean_bz(_series(24, -12.0), now=NOW) == pytest.approx(-12.0)
