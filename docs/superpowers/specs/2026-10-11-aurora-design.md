@@ -23,7 +23,7 @@ darkness, and cloud cover. Major events only: no routine Kp chatter.
 | Signal | Lead time | Role |
 |---|---|---|
 | NOAA G3+ watch (`alerts.json`) | 1–3 days | Day-ahead heads-up |
-| Bz ≤ −10 nT sustained ≥ 3 h at L1 | ~45 min after arrival at L1 | "Storm is underway" trigger |
+| Bz ≤ −10 nT sustained ≥ 3 h at L1 | ~45 min after arrival at L1 | "Storm conditions" trigger (heuristic) |
 | OVATION aurora grid | ~30–90 min | Per-place odds in the tool |
 | Kp forecast / observed | 3 h blocks | Context in the tool; not an announcement trigger |
 
@@ -112,7 +112,7 @@ A poller thread modelled on the status announcer, every 5 min.
 
 1. **Watch:** a new G3+ watch serial → one line per configured channel.
    Clouds: for each configured place, mean cloud cover over that place's
-   dark hours on the watched night(s), when within Open-Meteo's range.
+   dark hours on the first watched night at or above the minimum level.
 2. **Storm:** a Bz episode qualifies **and** at least one configured place
    for the channel is dark → one line per channel per episode. If the
    episode qualifies in daylight, it announces once darkness arrives,
@@ -126,7 +126,7 @@ Example lines (deterministic; the model does not write these):
 
 - `🌌 NOAA G3 storm watch for Oct 12–13. Clouds tonight: Ottawa 20%,
   Toronto 85%.`
-- `🌌 Major storm underway: Bz −14 nT for 3h10m at 620 km/s (~40 min to
+- `🌌 Aurora storm conditions: Bz −14 nT for 3h10m at 620 km/s (~40 min to
   Earth). Look north. Clouds now: Ottawa 10%, Toronto 90%.`
 
 ### Config (no backwards compatibility)
