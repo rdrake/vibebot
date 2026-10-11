@@ -284,3 +284,43 @@ def test_tool_advertised_when_enabled(plugin_env) -> None:
 
 def test_tool_hidden_when_disabled(plugin_env) -> None:
     assert _ask_tools(plugin_env, False)["extra_tools"] is None
+
+
+class TestTonightWindow:
+    def test_before_dawn_gets_night_in_progress(self, env) -> None:
+        plugin, _feeds, _geo, clouds = env
+        now = datetime(2026, 10, 12, 7, 0, tzinfo=UTC)  # 03:00 EDT, still dark
+        p = _payload(plugin, now=now)
+
+        kwargs = clouds.call_args.kwargs
+        assert kwargs["start"] < now < kwargs["end"]
+        assert p["dark"]["from"] > "19:00"
+
+    def test_morning_after_dawn_gets_this_evening(self, env) -> None:
+        plugin, _feeds, _geo, clouds = env
+        now = datetime(2026, 10, 12, 14, 0, tzinfo=UTC)  # 10:00 EDT
+        _payload(plugin, now=now)
+
+        kwargs = clouds.call_args.kwargs
+        assert kwargs["start"] > now
+        assert kwargs["start"].date() == now.date()
+
+    def test_no_dawn_clouds_cover_twelve_hours(self, env, mocker) -> None:
+        plugin, _feeds, _geo, clouds = env
+        start = NOW + timedelta(hours=1)
+        mocker.patch("llm.spaceweather.dark_window", return_value=(start, None))
+        p = _payload(plugin)
+
+        kwargs = clouds.call_args.kwargs
+        assert kwargs["start"] == start
+        assert kwargs["end"] == start + timedelta(hours=12)
+        assert "until" not in p["dark"]
+
+    def test_never_dark_has_no_cloud_key(self, env, mocker) -> None:
+        plugin, _feeds, _geo, clouds = env
+        mocker.patch("llm.spaceweather.dark_window", return_value=(None, None))
+        p = _payload(plugin)
+
+        assert p["dark"]["never_dark"] is True
+        assert "cloud_pct_while_dark" not in p
+        clouds.assert_not_called()
