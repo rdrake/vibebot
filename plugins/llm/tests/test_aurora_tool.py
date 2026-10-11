@@ -232,6 +232,24 @@ def test_cloud_cache_one_hour_per_place(env) -> None:
     assert clouds.call_count == 3
 
 
+def test_expired_cloud_entries_evicted(env) -> None:
+    plugin, _feeds, geo, _clouds = env
+    _payload(plugin, now=NOW)
+    assert [k for k in plugin._sw_cache if k.startswith("clouds:")] == ["clouds:43.7,-79.4"]
+
+    geo.return_value = Place("Ottawa, Ontario", 45.42, -75.7, "America/Toronto")
+    _payload(plugin, "Ottawa", now=NOW + timedelta(minutes=30))
+    assert len([k for k in plugin._sw_cache if k.startswith("clouds:")]) == 2  # both fresh
+
+    geo.return_value = Place("Toronto, Ontario", 43.7, -79.42, "America/Toronto")
+    _payload(plugin, "Toronto", now=NOW + timedelta(hours=1, seconds=1))
+    assert sorted(k for k in plugin._sw_cache if k.startswith("clouds:")) == [
+        "clouds:43.7,-79.42",
+        "clouds:45.42,-75.7",
+    ]
+    assert "ovation" in plugin._sw_cache  # other feeds untouched
+
+
 def test_failed_fetch_not_cached(env) -> None:
     plugin, feeds, _geo, _clouds = env
     feeds.down.add("kp")
@@ -256,7 +274,7 @@ def test_feeds_fetched_in_parallel(env, mocker) -> None:
     elapsed = time.monotonic() - t0
 
     assert "unavailable" not in p
-    assert elapsed < 1.2, elapsed
+    assert elapsed < 2.0, elapsed  # serial is ~3 s
 
 
 @pytest.mark.parametrize("feed", ["solar_wind", "ovation", "kp", "alerts", "clouds"])

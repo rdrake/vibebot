@@ -1204,6 +1204,7 @@ def spaceweather_plugin():
         "_sw_swpc",
         "_sw_alerts",
         "_sw_cloud_rows",
+        "_sw_cloud_series",
         "_sw_announce_channels",
         "_sw_channel_places",
         "_sw_mean_cloud",
