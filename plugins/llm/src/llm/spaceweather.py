@@ -18,6 +18,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
@@ -462,8 +463,15 @@ ALLOWED_HOSTS = frozenset(
     {"services.swpc.noaa.gov", "geocoding-api.open-meteo.com", "api.open-meteo.com"}
 )
 
+# Wire cap for a gzip body. The live RTSW feeds are 1.6-2.7 MB of JSON but
+# compress about tenfold; OVATION gzips to ~140 KB.
 MAX_BYTES = 1024 * 1024
-OVATION_MAX_BYTES = 2 * 1024 * 1024
+OVATION_MAX_BYTES = 1024 * 1024
+# Cap on the decoded JSON: a gzip body after inflating, or an identity body
+# from a server that ignored Accept-Encoding.
+MAX_DECOMPRESSED = 8 * 1024 * 1024
+
+USER_AGENT = "VibeBot/8 (aurora)"
 
 
 class FetchError(RuntimeError):
@@ -480,6 +488,20 @@ def _no_redirect_opener():
     return urllib.request.build_opener(_NoRedirect())
 
 
+def _gunzip(body: bytes, limit: int) -> bytes:
+    """Inflate one gzip member, never producing more than ``limit + 1`` bytes."""
+    inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    try:
+        out = inflater.decompress(body, limit + 1)
+    except zlib.error as exc:
+        raise FetchError(f"bad gzip body: {exc}") from exc
+    if len(out) > limit:
+        raise FetchError(f"decompressed response exceeds {limit} bytes")
+    if not inflater.eof:
+        raise FetchError("bad gzip body: truncated")
+    return out
+
+
 def fetch_json(
     url: str,
     *,
@@ -487,18 +509,37 @@ def fetch_json(
     max_bytes: int,
     opener: Any = None,
 ) -> Any:
-    """GET ``url`` and decode JSON; only the three allowed hosts, no redirects."""
+    """GET ``url`` and decode JSON; only the three allowed hosts, no redirects.
+
+    Asks for gzip. A gzip body may be at most ``max_bytes`` on the wire and
+    ``MAX_DECOMPRESSED`` once inflated; an identity body is held to
+    ``MAX_DECOMPRESSED`` directly.
+    """
     parts = urllib.parse.urlsplit(url)
     if parts.scheme != "https" or parts.hostname not in ALLOWED_HOSTS:
         raise FetchError(f"host not allowed: {parts.hostname}")
     if opener is None:
         opener = _no_redirect_opener()
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})  # noqa: S310
+    req = urllib.request.Request(  # noqa: S310
+        url,
+        headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "User-Agent": USER_AGENT,
+        },
+    )
+    limit = MAX_DECOMPRESSED
     try:
         with opener.open(req, timeout=timeout) as resp:
-            body = resp.read(max_bytes + 1)
-        if len(body) > max_bytes:
-            raise FetchError(f"response exceeds {max_bytes} bytes")
+            encoding = (resp.headers.get("Content-Encoding") or "identity").strip().lower()
+            if encoding not in ("gzip", "identity"):
+                raise FetchError(f"unsupported content-encoding: {encoding}")
+            cap = max_bytes if encoding == "gzip" else limit
+            body = resp.read(cap + 1)
+        if len(body) > cap:
+            raise FetchError(f"response exceeds {cap} bytes")
+        if encoding == "gzip":
+            body = _gunzip(body, limit)
         return json.loads(body)
     except (OSError, http.client.HTTPException, json.JSONDecodeError, UnicodeDecodeError) as exc:
         # OSError covers URLError/HTTPError/TimeoutError/ConnectionResetError.
@@ -531,22 +572,15 @@ def geocode(query: str, *, opener: Any = None) -> Place | None:
         raise FetchError(f"unexpected geocoding result: {exc}") from exc
 
 
-def cloud_cover(
-    lat: float,
-    lon: float,
-    *,
-    start: datetime,
-    end: datetime,
-    opener: Any = None,
-) -> list[tuple[datetime, int]]:
-    """Hourly cloud cover percent (UTC) for hours within ``[start, end]``."""
+def cloud_series(lat: float, lon: float, *, opener: Any = None) -> list[tuple[datetime, int]]:
+    """Hourly cloud cover percent (UTC) for the next three forecast days, oldest first."""
     qs = urllib.parse.urlencode(
         {
             "latitude": lat,
             "longitude": lon,
             "hourly": "cloud_cover",
             "timezone": "UTC",
-            "forecast_days": 7,
+            "forecast_days": 3,
         }
     )
     data = fetch_json(f"{FORECAST_URL}?{qs}", max_bytes=MAX_BYTES, opener=opener)
@@ -566,9 +600,15 @@ def cloud_cover(
             ts = datetime.fromisoformat(tag).replace(tzinfo=UTC)
         except (TypeError, ValueError):
             continue
-        if start <= ts <= end:
-            out.append((ts, round(value)))
+        out.append((ts, round(value)))
     return out
+
+
+def hours_within(
+    rows: Sequence[tuple[datetime, int]], *, start: datetime, end: datetime
+) -> list[tuple[datetime, int]]:
+    """The rows whose hour falls within ``[start, end]``."""
+    return [(ts, pct) for ts, pct in rows if start <= ts <= end]
 
 
 _KP_BLOCK = timedelta(hours=3)

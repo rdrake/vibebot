@@ -69,10 +69,12 @@ def sw(spaceweather_plugin, mocker):
         return p._alerts
 
     p._fetch = mocker.patch("llm.spaceweather.fetch_json", side_effect=fetch)
-    p._clouds = mocker.patch(
-        "llm.spaceweather.cloud_cover",
-        side_effect=lambda lat, lon, *, start, end: [(start, 40)],
+    june = datetime(2026, 6, 1, tzinfo=UTC)  # through December: the polar tests
+    p._series = mocker.patch(
+        "llm.spaceweather.cloud_series",
+        return_value=[(june + timedelta(hours=h), 40) for h in range(214 * 24)],
     )
+    p._clouds = mocker.spy(spaceweather, "hours_within")
     return p
 
 
@@ -363,7 +365,7 @@ def test_geocode_outage_holds_storm_line(sw) -> None:
 
 
 def test_cloud_failure_renders_question_mark(sw, mocker) -> None:
-    mocker.patch("llm.spaceweather.cloud_cover", side_effect=spaceweather.FetchError("x"))
+    sw._series.side_effect = spaceweather.FetchError("x")
     _pass(sw, NOW)
     (sent,) = _pass(sw, NIGHT, wind=-14.0)
     assert sent[1].endswith("Clouds now: Ottawa ?.")

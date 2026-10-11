@@ -1183,6 +1183,8 @@ def spaceweather_plugin():
 
     obj._safe_queue = fake_queue
 
+    obj._sw_lock = threading.Lock()
+    obj._sw_cache = {}
     obj._sw_state = spaceweather.SwState()
     obj._sw_place_warned = set()
     obj._sw_poll_inflight = threading.Event()
@@ -1194,8 +1196,14 @@ def spaceweather_plugin():
     obj._SW_BZ_THRESHOLD_NT = LLM._SW_BZ_THRESHOLD_NT
     obj._SW_BZ_HOURS = LLM._SW_BZ_HOURS
     obj._SW_MIN_WATCH_LEVEL = LLM._SW_MIN_WATCH_LEVEL
+    obj._SW_ALERTS_TTL = LLM._SW_ALERTS_TTL
+    obj._SW_CLOUDS_TTL = LLM._SW_CLOUDS_TTL
     obj._sw_dark_hours = LLM._sw_dark_hours  # staticmethod: no binding
     for name in (
+        "_sw_cached",
+        "_sw_swpc",
+        "_sw_alerts",
+        "_sw_cloud_rows",
         "_sw_announce_channels",
         "_sw_channel_places",
         "_sw_mean_cloud",

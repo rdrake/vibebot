@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import gzip
 import http.client
 import io
 import json
+import os
 import urllib.error
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +18,10 @@ FIXTURES = Path(__file__).parent / "fixtures" / "spaceweather"
 
 
 class FakeResponse(io.BytesIO):
+    def __init__(self, body: bytes, headers: dict | None = None):
+        super().__init__(body)
+        self.headers = headers or {}
+
     def __enter__(self):
         return self
 
@@ -25,16 +31,25 @@ class FakeResponse(io.BytesIO):
 
 
 class FakeOpener:
-    def __init__(self, body: bytes = b"{}", raises: Exception | None = None):
+    def __init__(
+        self,
+        body: bytes = b"{}",
+        raises: Exception | None = None,
+        headers: dict | None = None,
+    ):
         self.body = body
         self.raises = raises
+        self.headers = headers
         self.request = None
 
     def open(self, req, timeout=None):  # noqa: ARG002
         self.request = req
         if self.raises:
             raise self.raises
-        return FakeResponse(self.body)
+        return FakeResponse(self.body, self.headers)
+
+
+GZIP = {"Content-Encoding": "gzip"}
 
 
 def opener_for(payload) -> FakeOpener:
@@ -62,10 +77,92 @@ def test_redirect_refused():
     assert nr.redirect_request(req, None, 302, "Found", {}, "http://169.254.169.254/") is None
 
 
-def test_oversize_body_raises():
+def test_oversize_gzip_body_raises():
+    # Random digits barely compress, so the wire body is well over 1000 bytes.
+    body = gzip.compress(json.dumps([int(b) for b in os.urandom(1000)]).encode())
+    assert len(body) > 1000
+    with pytest.raises(sw.FetchError, match="exceeds 1000"):
+        sw.fetch_json(sw.SWPC + sw.KP_PATH, max_bytes=1000, opener=FakeOpener(body, headers=GZIP))
+
+
+def test_oversize_identity_body_raises(monkeypatch):
+    monkeypatch.setattr(sw, "MAX_DECOMPRESSED", 1000)
     opener = FakeOpener(b"[" + b"1," * 600 + b"1]")
-    with pytest.raises(sw.FetchError):
+    with pytest.raises(sw.FetchError, match="exceeds 1000"):
         sw.fetch_json(sw.SWPC + sw.KP_PATH, max_bytes=1000, opener=opener)
+
+
+def _rtsw_body(target: int) -> bytes:
+    """An RTSW-shaped mag list at least ``target`` bytes long."""
+    row = {
+        "time_tag": "2026-10-11T12:00:00",
+        "active": True,
+        "source": "ACE",
+        "range": 2,
+        "scale": None,
+        "sensitivity": 0,
+        "manual_mode": False,
+        "sample_size": 60,
+        "bt": 5.1,
+        "bx_gse": -1.2,
+        "by_gse": 3.4,
+        "bz_gse": -2.1,
+        "theta_gse": -24.5,
+        "phi_gse": 109.4,
+        "bx_gsm": -1.2,
+        "by_gsm": 3.9,
+        "bz_gsm": -1.1,
+        "theta_gsm": -12.4,
+        "phi_gsm": 107.0,
+        "max_telemetry_flag": 0,
+        "max_data_flag": 0,
+        "overall_quality": 0,
+    }
+    n = target // len(json.dumps(row)) + 1
+    return json.dumps([row] * n).encode()
+
+
+@pytest.mark.parametrize("gzipped", [True, False])
+def test_full_size_rtsw_feed_fetches(gzipped):
+    # Live rtsw_wind_1m.json is ~2.7 MB uncompressed, over the 1 MB wire cap.
+    raw = _rtsw_body(2_800_000)
+    assert len(raw) > 2_700_000
+    opener = FakeOpener(gzip.compress(raw), headers=GZIP) if gzipped else FakeOpener(raw)
+    got = sw.fetch_json(sw.SWPC + sw.WIND_PATH, max_bytes=sw.MAX_BYTES, opener=opener)
+    assert len(got) == len(json.loads(raw))
+
+
+def test_gzip_bomb_raises():
+    bomb = gzip.compress(b" " * (sw.MAX_DECOMPRESSED + 1))
+    assert len(bomb) < sw.MAX_BYTES
+    with pytest.raises(sw.FetchError, match="decompressed"):
+        sw.fetch_json(
+            sw.SWPC + sw.KP_PATH, max_bytes=sw.MAX_BYTES, opener=FakeOpener(bomb, headers=GZIP)
+        )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [b"not gzip at all", gzip.compress(b"[1, 2, 3]")[:-6], gzip.compress(b"[1]")[:5]],
+    ids=["garbage", "truncated-trailer", "truncated-header"],
+)
+def test_corrupt_gzip_raises(body):
+    with pytest.raises(sw.FetchError):
+        sw.fetch_json(sw.SWPC + sw.KP_PATH, max_bytes=1000, opener=FakeOpener(body, headers=GZIP))
+
+
+def test_unsupported_encoding_raises():
+    opener = FakeOpener(b"[1]", headers={"Content-Encoding": "br"})
+    with pytest.raises(sw.FetchError, match="br"):
+        sw.fetch_json(sw.SWPC + sw.KP_PATH, max_bytes=1000, opener=opener)
+
+
+def test_request_asks_for_gzip_and_names_itself():
+    opener = opener_for([1])
+    sw.fetch_json(sw.SWPC + sw.KP_PATH, max_bytes=1000, opener=opener)
+    assert opener.request.get_header("Accept-encoding") == "gzip"
+    assert opener.request.get_header("User-agent") == "VibeBot/8 (aurora)"
+    assert opener.request.get_header("Accept") == "application/json"
 
 
 def test_http_500_is_fetch_error():
@@ -151,47 +248,39 @@ def test_geocode_junk_results_is_fetch_error(results):
     "hourly",
     [{"time": None, "cloud_cover": [1]}, {"time": ["x"], "cloud_cover": 5}, None, []],
 )
-def test_cloud_cover_junk_hourly_is_fetch_error(hourly):
+def test_cloud_series_junk_hourly_is_fetch_error(hourly):
     with pytest.raises(sw.FetchError):
-        sw.cloud_cover(
-            0,
-            0,
-            start=datetime(2026, 10, 11, tzinfo=UTC),
-            end=datetime(2026, 10, 12, tzinfo=UTC),
-            opener=opener_for({"hourly": hourly}),
-        )
+        sw.cloud_series(0, 0, opener=opener_for({"hourly": hourly}))
 
 
-def test_cloud_cover_window_filter():
+def test_cloud_series_whole_three_days_then_window_filter():
     times = [f"2026-10-11T{h:02d}:00" for h in range(0, 8)]
     opener = opener_for(
         {"hourly": {"time": times, "cloud_cover": [10, 20, 30, 40, 50, 60, 70, 80]}}
     )
-    got = sw.cloud_cover(
-        43.7,
-        -79.42,
+    rows = sw.cloud_series(43.7, -79.42, opener=opener)
+    assert len(rows) == 8
+    got = sw.hours_within(
+        rows,
         start=datetime(2026, 10, 11, 2, 0, tzinfo=UTC),
         end=datetime(2026, 10, 11, 5, 0, tzinfo=UTC),
-        opener=opener,
     )
     assert got == [(datetime(2026, 10, 11, h, tzinfo=UTC), 30 + 10 * (h - 2)) for h in (2, 3, 4, 5)]
     url = opener.request.full_url
     assert url.startswith("https://api.open-meteo.com/v1/forecast?")
-    assert "hourly=cloud_cover" in url and "timezone=UTC" in url and "forecast_days=7" in url
+    assert "hourly=cloud_cover" in url and "timezone=UTC" in url and "forecast_days=3" in url
 
 
-def test_cloud_cover_skips_null_hours():
+def test_cloud_series_skips_null_and_junk_hours():
     opener = opener_for(
-        {"hourly": {"time": ["2026-10-11T00:00", "2026-10-11T01:00"], "cloud_cover": [None, 5]}}
+        {
+            "hourly": {
+                "time": ["2026-10-11T00:00", "2026-10-11T01:00", "junk"],
+                "cloud_cover": [None, 5, 7],
+            }
+        }
     )
-    got = sw.cloud_cover(
-        0,
-        0,
-        start=datetime(2026, 10, 11, tzinfo=UTC),
-        end=datetime(2026, 10, 12, tzinfo=UTC),
-        opener=opener,
-    )
-    assert got == [(datetime(2026, 10, 11, 1, tzinfo=UTC), 5)]
+    assert sw.cloud_series(0, 0, opener=opener) == [(datetime(2026, 10, 11, 1, tzinfo=UTC), 5)]
 
 
 def test_parse_kp_next_24h():
@@ -226,6 +315,7 @@ def test_parse_kp_includes_block_in_progress_and_skips_junk():
 class _BrokenRead:
     def __init__(self, exc: Exception):
         self.exc = exc
+        self.headers = {}
 
     def __enter__(self):
         return self
