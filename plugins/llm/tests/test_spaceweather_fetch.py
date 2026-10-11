@@ -141,6 +141,27 @@ def test_geocode_no_results_is_none():
     assert sw.geocode("Nowhereville", opener=opener_for({"generationtime_ms": 0.5})) is None
 
 
+@pytest.mark.parametrize("results", [["Toronto"], [None], {"0": {}}])
+def test_geocode_junk_results_is_fetch_error(results):
+    with pytest.raises(sw.FetchError):
+        sw.geocode("Toronto", opener=opener_for({"results": results}))
+
+
+@pytest.mark.parametrize(
+    "hourly",
+    [{"time": None, "cloud_cover": [1]}, {"time": ["x"], "cloud_cover": 5}, None, []],
+)
+def test_cloud_cover_junk_hourly_is_fetch_error(hourly):
+    with pytest.raises(sw.FetchError):
+        sw.cloud_cover(
+            0,
+            0,
+            start=datetime(2026, 10, 11, tzinfo=UTC),
+            end=datetime(2026, 10, 12, tzinfo=UTC),
+            opener=opener_for({"hourly": hourly}),
+        )
+
+
 def test_cloud_cover_window_filter():
     times = [f"2026-10-11T{h:02d}:00" for h in range(0, 8)]
     opener = opener_for(

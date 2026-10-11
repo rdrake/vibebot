@@ -124,22 +124,23 @@ restart never repeats a line.
 
 Example lines (deterministic; the model does not write these):
 
-- `🌌 NOAA G3 storm watch for Oct 12–13. Clouds tonight: Ottawa 20%,
+- `🌌 NOAA G3 storm watch for Oct 12–13. Clouds night of Oct 12: Ottawa 20%,
   Toronto 85%.`
 - `🌌 Aurora storm conditions: Bz −14 nT for 3h10m at 620 km/s (~40 min to
   Earth). Look north. Clouds now: Ottawa 10%, Toronto 90%.`
 
 ### Config (no backwards compatibility)
 
-- `auroraEnabled` (channel, bool, default off) — exposes the tool
-- `spaceWeatherAnnounce` (channel, bool, default off)
-- `spaceWeatherPlaces` (channel, space-separated list of places, geocoded
-  once and cached)
-- `spaceWeatherBzThreshold` (global, default −10)
-- `spaceWeatherBzHours` (global, default 3)
-- `spaceWeatherMinWatchLevel` (global, default 3)
+- `auroraEnabled` (channel, bool, default on) — exposes the tool
+- `auroraAnnounce` (channel, bool, default off) — announcements in this channel
+- `auroraAnnouncePlaces` (channel, space-separated list of places, `_` for a
+  space, geocoded and cached; optional) — adds cloud cover and holds storm
+  lines until one of them is dark
 
-Prod change: set `spaceWeatherAnnounce` and `spaceWeatherPlaces` in
+The thresholds are fixed constants, not settings: Bz −10 nT for 3 h, and
+watches at G3 or higher.
+
+Prod change: set `auroraAnnounce` (and optionally `auroraAnnouncePlaces`) in
 `bot.conf` with the bot stopped.
 
 ## Testing

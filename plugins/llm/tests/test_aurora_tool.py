@@ -166,6 +166,14 @@ def test_other_feeds_report_unavailable(env, mocker) -> None:
     assert "ovation" in p
 
 
+def test_stale_solar_wind_is_unavailable(env) -> None:
+    plugin, _feeds, _geo, _clouds = env
+    p = _payload(plugin, now=NOW + timedelta(minutes=20))  # newest Bz is 21 min old
+
+    assert "now" not in p
+    assert "solar_wind" in p["unavailable"]
+
+
 def test_ovation_cache_10_min(env) -> None:
     plugin, feeds, _geo, _clouds = env
     _payload(plugin, now=NOW)

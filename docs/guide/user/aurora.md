@@ -50,12 +50,15 @@ again if a watch is raised. It also posts once when storm conditions set in, as 
 at one of the channel's places (at once if it has none).
 
 ```
-<VibeBot> 🌌 NOAA G3 storm watch for Oct 12–13. Clouds tonight: Ottawa 20%,
-          Toronto 85%.
+<VibeBot> 🌌 NOAA G3 storm watch for Oct 12–13. Clouds night of Oct 12:
+          Ottawa 20%, Toronto 85%.
 <VibeBot> 🌌 Aurora storm conditions: Bz -14 nT for 3h10m at 620 km/s (~40 min
           to Earth). Look north. Clouds now: Ottawa 10%, Toronto 90%.
 ```
 
 The places are the channel's, set by the operator (`auroraAnnouncePlaces`),
-never ones the bot knows about you. A `?` means the cloud forecast couldn't be
-read.
+never ones the bot knows about you. A watch is for NOAA's day, which runs
+midnight to midnight UTC, so "night of Oct 12" is the local night that falls
+mostly inside it. A `?` means there is no cloud figure for that place: the
+forecast couldn't be read, or it has no dark hours then. A place the bot
+couldn't look up is left out.
