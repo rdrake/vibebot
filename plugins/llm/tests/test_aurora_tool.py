@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -39,9 +40,12 @@ class Feeds:
         self.calls: list[str] = []
         self.down: set[str] = set()
         self.observed = NOW - timedelta(minutes=5)
+        self.delay = 0.0
 
     def __call__(self, url, *, timeout=10.0, max_bytes, opener=None):
         self.calls.append(url)
+        if self.delay:
+            time.sleep(self.delay)
         paths = {
             spaceweather.OVATION_PATH: "ovation",
             spaceweather.MAG_PATH: "mag",
@@ -79,12 +83,18 @@ def env(plugin_env, mocker):
     feeds = Feeds()
     mocker.patch("llm.spaceweather.fetch_json", side_effect=feeds)
     geo = mocker.patch("llm.spaceweather.geocode", return_value=OSHAWA)
-    start = datetime(2026, 10, 12, 0, 0, tzinfo=UTC)
+    start = datetime(2026, 10, 11, 0, 0, tzinfo=UTC)
     clouds = mocker.patch(
-        "llm.spaceweather.cloud_cover",
-        return_value=[(start + timedelta(hours=h), 20) for h in range(1, 4)],
+        "llm.spaceweather.cloud_series",
+        return_value=[(start + timedelta(hours=h), 20) for h in range(72)],
     )
     return plugin, feeds, geo, clouds
+
+
+@pytest.fixture
+def window(mocker):
+    """Spy on the dark-window slice of the cached cloud series."""
+    return mocker.spy(spaceweather, "hours_within")
 
 
 def _payload(plugin, place="Oshawa", now=NOW) -> dict:
@@ -122,15 +132,15 @@ def test_payload_shape(env) -> None:
     json.dumps(p)
 
 
-def test_dark_is_tonight_in_place_tz(env) -> None:
-    plugin, _feeds, _geo, clouds = env
+def test_dark_is_tonight_in_place_tz(env, window) -> None:
+    plugin, _feeds, _geo, _clouds = env
     p = _payload(plugin)
 
     assert p["dark"]["tz"] == "local"
     assert p["dark"]["from"] > "19:00"
     assert p["dark"]["until"] < "08:00"
     assert p["cloud_pct_while_dark"][0]["pct"] == 20
-    kwargs = clouds.call_args.kwargs
+    kwargs = window.call_args.kwargs
     assert kwargs["start"].tzinfo is UTC
     assert kwargs["end"] > kwargs["start"]
 
@@ -184,14 +194,122 @@ def test_ovation_cache_10_min(env) -> None:
     assert feeds.count(spaceweather.OVATION_PATH) == 2
 
 
-def test_rtsw_cache_60_s(env) -> None:
+_SECOND = timedelta(seconds=1)
+
+
+@pytest.mark.parametrize(
+    ("path", "ttl"),
+    [
+        (spaceweather.MAG_PATH, timedelta(minutes=2)),
+        (spaceweather.WIND_PATH, timedelta(minutes=2)),
+        (spaceweather.KP_PATH, timedelta(hours=3)),
+        (spaceweather.ALERTS_PATH, timedelta(minutes=5)),
+    ],
+    ids=["mag", "wind", "kp", "alerts"],
+)
+def test_feed_cache_ttl(env, path, ttl) -> None:
     plugin, feeds, _geo, _clouds = env
     _payload(plugin, now=NOW)
-    _payload(plugin, now=NOW + timedelta(seconds=30))
+    _payload(plugin, now=NOW + ttl - _SECOND)
+    assert feeds.count(path) == 1
+
+    _payload(plugin, now=NOW + ttl + _SECOND)
+    assert feeds.count(path) == 2
+
+
+def test_cloud_cache_one_hour_per_place(env) -> None:
+    plugin, _feeds, geo, clouds = env
+    _payload(plugin, now=NOW)
+    _payload(plugin, now=NOW + timedelta(hours=1) - _SECOND)
+    assert clouds.call_count == 1
+    assert clouds.call_args.args == (43.9, -78.9)
+
+    _payload(plugin, now=NOW + timedelta(hours=1) + _SECOND)
+    assert clouds.call_count == 2
+
+    geo.return_value = Place("Ottawa, Ontario", 45.42, -75.7, "America/Toronto")
+    _payload(plugin, "Ottawa", now=NOW + timedelta(hours=1) + _SECOND)
+    assert clouds.call_count == 3
+
+
+def test_failed_fetch_not_cached(env) -> None:
+    plugin, feeds, _geo, _clouds = env
+    feeds.down.add("kp")
+    assert "kp" in _payload(plugin)["unavailable"]
+    feeds.down.clear()
+    assert "unavailable" not in _payload(plugin, now=NOW + _SECOND)
+    assert feeds.count(spaceweather.KP_PATH) == 2
+
+
+def test_feeds_fetched_in_parallel(env, mocker) -> None:
+    plugin, feeds, _geo, clouds = env
+    feeds.delay = 0.5
+    rows = clouds.return_value
+
+    def slow_clouds(*_a, **_kw):
+        time.sleep(0.5)
+        return rows
+
+    clouds.side_effect = slow_clouds
+    t0 = time.monotonic()
+    p = _payload(plugin)
+    elapsed = time.monotonic() - t0
+
+    assert "unavailable" not in p
+    assert elapsed < 1.2, elapsed
+
+
+@pytest.mark.parametrize("feed", ["solar_wind", "ovation", "kp", "alerts", "clouds"])
+def test_one_failing_feed_is_alone_in_unavailable(env, feed) -> None:
+    plugin, feeds, _geo, clouds = env
+    feeds.delay = 0.05  # overlap the fetches
+    if feed == "clouds":
+        clouds.side_effect = FetchError("down")
+    else:
+        feeds.down.add({"solar_wind": "wind"}.get(feed, feed))
+    p = _payload(plugin)
+
+    assert p["unavailable"] == [feed]
+    present = {
+        "solar_wind": "now",
+        "ovation": "ovation",
+        "kp": "kp_next_24h",
+        "clouds": "cloud_pct_while_dark",
+    }
+    for name, key in present.items():
+        assert (key in p) is (name != feed), key
+
+
+def test_payload_key_order_unchanged(env, mocker) -> None:
+    plugin, _feeds, _geo, _clouds = env
+    from llm.spaceweather import Watch
+
+    watch = Watch(serial=1, issued=NOW, levels={NOW.date(): 3})
+    mocker.patch("llm.spaceweather.parse_watches", return_value=[watch])
+    assert list(_payload(plugin)) == [
+        "place",
+        "lat",
+        "lon",
+        "now",
+        "ovation",
+        "kp_next_24h",
+        "active_watch",
+        "dark",
+        "cloud_pct_while_dark",
+    ]
+
+
+def test_announcer_and_tool_share_alerts_cache(env, mocker) -> None:
+    plugin, feeds, _geo, _clouds = env
+    mocker.patch.object(plugin, "_sw_announce_channels", return_value=["#a"])
+    mocker.patch.object(plugin, "_sw_now", return_value=NOW)
+    plugin._run_spaceweather_poll()
+    assert feeds.count(spaceweather.ALERTS_PATH) == 1
     assert feeds.count(spaceweather.MAG_PATH) == 1
 
-    _payload(plugin, now=NOW + timedelta(seconds=90))
-    assert feeds.count(spaceweather.MAG_PATH) == 2
+    _payload(plugin, now=NOW + timedelta(minutes=1))
+    assert feeds.count(spaceweather.ALERTS_PATH) == 1
+    assert feeds.count(spaceweather.MAG_PATH) == 1
 
 
 def test_ovation_stale_flag(env) -> None:
@@ -289,31 +407,31 @@ def test_tool_hidden_when_disabled(plugin_env) -> None:
 
 
 class TestTonightWindow:
-    def test_before_dawn_gets_night_in_progress(self, env) -> None:
-        plugin, _feeds, _geo, clouds = env
+    def test_before_dawn_gets_night_in_progress(self, env, window) -> None:
+        plugin, _feeds, _geo, _clouds = env
         now = datetime(2026, 10, 12, 7, 0, tzinfo=UTC)  # 03:00 EDT, still dark
         p = _payload(plugin, now=now)
 
-        kwargs = clouds.call_args.kwargs
+        kwargs = window.call_args.kwargs
         assert kwargs["start"] < now < kwargs["end"]
         assert p["dark"]["from"] > "19:00"
 
-    def test_morning_after_dawn_gets_this_evening(self, env) -> None:
-        plugin, _feeds, _geo, clouds = env
+    def test_morning_after_dawn_gets_this_evening(self, env, window) -> None:
+        plugin, _feeds, _geo, _clouds = env
         now = datetime(2026, 10, 12, 14, 0, tzinfo=UTC)  # 10:00 EDT
         _payload(plugin, now=now)
 
-        kwargs = clouds.call_args.kwargs
+        kwargs = window.call_args.kwargs
         assert kwargs["start"] > now
         assert kwargs["start"].date() == now.date()
 
-    def test_no_dawn_clouds_cover_twelve_hours(self, env, mocker) -> None:
-        plugin, _feeds, _geo, clouds = env
+    def test_no_dawn_clouds_cover_twelve_hours(self, env, window, mocker) -> None:
+        plugin, _feeds, _geo, _clouds = env
         start = NOW + timedelta(hours=1)
         mocker.patch("llm.spaceweather.dark_window", return_value=(start, None))
         p = _payload(plugin)
 
-        kwargs = clouds.call_args.kwargs
+        kwargs = window.call_args.kwargs
         assert kwargs["start"] == start
         assert kwargs["end"] == start + timedelta(hours=12)
         assert "until" not in p["dark"]

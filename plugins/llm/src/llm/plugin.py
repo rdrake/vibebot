@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
@@ -1188,11 +1189,10 @@ class LLM(callbacks.Plugin):
         self._status_query_cache: dict[str, statuspage.Snapshot] = {}
         self._status_query_failed_at: dict[str, float] = {}
         self._status_cursor: str | None = None
-        # Aurora tool caches. _sw_lock guards all three and is never held
-        # across a network fetch.
+        # Aurora feed caches, shared by the tool and the storm announcer.
+        # _sw_lock guards both dicts and is never held across a network fetch.
         self._sw_lock = threading.Lock()
-        self._sw_ovation: tuple[datetime, dict] | None = None
-        self._sw_rtsw: tuple[datetime, list[spaceweather.Sample]] | None = None
+        self._sw_cache: dict[str, tuple[datetime, Any]] = {}
         self._sw_places: dict[str, tuple[float, spaceweather.Place | None]] = {}
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_status_poll")
@@ -1727,10 +1727,10 @@ class LLM(callbacks.Plugin):
         return out, failed
 
     def _sw_mean_cloud(
-        self, place: spaceweather.Place, start: datetime, end: datetime
+        self, place: spaceweather.Place, start: datetime, end: datetime, *, now: datetime
     ) -> int | None:
         try:
-            rows = spaceweather.cloud_cover(place.lat, place.lon, start=start, end=end)
+            rows = self._sw_cloud_rows(place, start, end, now=now)
         except spaceweather.FetchError as exc:
             self.log.info("spaceweather: cloud cover failed for %s: %s", place.name, exc)
             return None
@@ -1786,7 +1786,7 @@ class LLM(callbacks.Plugin):
             if window is None:
                 clouds[label] = None  # no dark hours to report
                 continue
-            clouds[label] = self._sw_mean_cloud(place, *window)
+            clouds[label] = self._sw_mean_cloud(place, *window, now=now)
         return clouds
 
     def _sw_poll_watches(
@@ -1887,7 +1887,7 @@ class LLM(callbacks.Plugin):
             # no cloud clause.
             direction = "south" if places and all(p.lat < 0 for _l, p in places) else "north"
             end = now + timedelta(hours=self._SW_STORM_CLOUD_HOURS)
-            clouds = {label: self._sw_mean_cloud(p, now, end) for label, p in places}
+            clouds = {label: self._sw_mean_cloud(p, now, end, now=now) for label, p in places}
             line = spaceweather.render_storm_line(
                 episode, now=now, clouds=clouds, direction=direction
             )
@@ -1909,10 +1909,7 @@ class LLM(callbacks.Plugin):
             deadline = self._status_monotonic() + self._SPACEWEATHER_PASS_BUDGET
             errors = (spaceweather.FetchError, spaceweather.InvalidPayload)
             try:
-                alerts = spaceweather.fetch_json(
-                    spaceweather.SWPC + spaceweather.ALERTS_PATH,
-                    max_bytes=spaceweather.MAX_BYTES,
-                )
+                alerts = self._sw_alerts(now)
                 self._sw_poll_watches(channels, alerts, now=now, deadline=deadline)
             except errors as exc:
                 self.log.info("spaceweather: alerts unavailable, skipping watches: %s", exc)
@@ -8933,8 +8930,12 @@ class LLM(callbacks.Plugin):
 
     # --- aurora tool ---------------------------------------------------------
 
+    # Feed cache lifetimes, shared by the tool and the announcer.
+    _SW_RTSW_TTL = timedelta(minutes=2)
     _SW_OVATION_TTL = timedelta(minutes=10)
-    _SW_RTSW_TTL = timedelta(seconds=60)
+    _SW_KP_TTL = timedelta(hours=3)
+    _SW_ALERTS_TTL = timedelta(minutes=5)
+    _SW_CLOUDS_TTL = timedelta(hours=1)
     _SW_OVATION_STALE = timedelta(minutes=60)
     _SW_PLACE_HIT_TTL = 24 * 3600.0
     _SW_PLACE_MISS_TTL = 3600.0
@@ -8964,64 +8965,80 @@ class LLM(callbacks.Plugin):
             self._sw_places[key] = (now, place)
         return place
 
-    def _sw_ovation_grid(self, now: datetime) -> dict:
+    def _sw_cached[T](self, key: str, ttl: timedelta, now: datetime, loader: Callable[[], T]) -> T:
+        """``loader()``'s value, reused while younger than ``ttl``.
+
+        The lock is never held during ``loader()``, so two callers may both
+        fetch on a cold key; the later store wins. Exceptions are not cached.
+        """
         with self._sw_lock:
-            cached = self._sw_ovation
-        if cached is not None and now - cached[0] < self._SW_OVATION_TTL:
+            cached = self._sw_cache.get(key)
+        if cached is not None and now - cached[0] < ttl:
             return cached[1]
-        grid = spaceweather.fetch_json(
-            spaceweather.SWPC + spaceweather.OVATION_PATH,
-            max_bytes=spaceweather.OVATION_MAX_BYTES,
-        )
+        value = loader()
         with self._sw_lock:
-            self._sw_ovation = (now, grid)
-        return grid
+            self._sw_cache[key] = (now, value)
+        return value
+
+    def _sw_swpc(self, path: str, max_bytes: int = spaceweather.MAX_BYTES) -> Any:
+        return spaceweather.fetch_json(spaceweather.SWPC + path, max_bytes=max_bytes)
+
+    def _sw_ovation_grid(self, now: datetime) -> dict:
+        return self._sw_cached(
+            "ovation",
+            self._SW_OVATION_TTL,
+            now,
+            lambda: self._sw_swpc(spaceweather.OVATION_PATH, spaceweather.OVATION_MAX_BYTES),
+        )
 
     def _sw_samples(self, now: datetime) -> list[spaceweather.Sample]:
-        with self._sw_lock:
-            cached = self._sw_rtsw
-        if cached is not None and now - cached[0] < self._SW_RTSW_TTL:
-            return cached[1]
-        mag = spaceweather.fetch_json(
-            spaceweather.SWPC + spaceweather.MAG_PATH, max_bytes=spaceweather.MAX_BYTES
+        def load() -> list[spaceweather.Sample]:
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="aurora-rtsw") as pool:
+                mag = pool.submit(self._sw_swpc, spaceweather.MAG_PATH)
+                wind = pool.submit(self._sw_swpc, spaceweather.WIND_PATH)
+                return spaceweather.parse_rtsw(mag.result(), wind.result())
+
+        return self._sw_cached("rtsw", self._SW_RTSW_TTL, now, load)
+
+    def _sw_kp_rows(self, now: datetime) -> Any:
+        return self._sw_cached(
+            "kp", self._SW_KP_TTL, now, lambda: self._sw_swpc(spaceweather.KP_PATH)
         )
-        wind = spaceweather.fetch_json(
-            spaceweather.SWPC + spaceweather.WIND_PATH, max_bytes=spaceweather.MAX_BYTES
+
+    def _sw_alerts(self, now: datetime) -> Any:
+        return self._sw_cached(
+            "alerts", self._SW_ALERTS_TTL, now, lambda: self._sw_swpc(spaceweather.ALERTS_PATH)
         )
-        samples = spaceweather.parse_rtsw(mag, wind)
-        with self._sw_lock:
-            self._sw_rtsw = (now, samples)
-        return samples
 
-    def _aurora_payload(self, place: str, *, now: datetime) -> dict:
-        """Facts for the aurora tool. Each feed fails alone into ``unavailable``."""
-        try:
-            found = self._sw_place(place)
-        except spaceweather.FetchError as exc:
-            self.log.warning("aurora: geocode failed for %r: %s", place, exc)
-            return {"error": "place lookup is unavailable right now"}
-        if found is None:
-            return {"error": "couldn't find that place"}
+    def _sw_cloud_rows(
+        self, place: spaceweather.Place, start: datetime, end: datetime, *, now: datetime
+    ) -> list[tuple[datetime, int]]:
+        """Hourly cloud cover within ``[start, end]``, from the place's cached 3-day series."""
+        lat, lon = round(place.lat, 2), round(place.lon, 2)
+        series = self._sw_cached(
+            f"clouds:{lat},{lon}",
+            self._SW_CLOUDS_TTL,
+            now,
+            lambda: spaceweather.cloud_series(lat, lon),
+        )
+        return spaceweather.hours_within(series, start=start, end=end)
 
-        errors = (spaceweather.FetchError, spaceweather.InvalidPayload)
-        out: dict[str, Any] = {"place": found.name, "lat": found.lat, "lon": found.lon}
-        unavailable: list[str] = []
-
-        try:
-            samples = self._sw_samples(now)
-            newest_bz = max((s.ts for s in samples if s.bz is not None), default=None)
-            if newest_bz is None or now - newest_bz > spaceweather.STALE_AFTER:
-                raise spaceweather.FetchError("no Bz in the last 15 minutes")
-            episode = spaceweather.advance_episode(
-                None,
-                samples,
-                threshold_nt=self._SW_BZ_THRESHOLD_NT,
-                hours=self._SW_BZ_HOURS,
-                now=now,
-            )
-            bz = next((s.bz for s in reversed(samples) if s.bz is not None), None)
-            speed = next((s.speed for s in reversed(samples) if s.speed is not None), None)
-            out["now"] = {
+    def _aurora_solar_wind(self, now: datetime) -> dict:
+        samples = self._sw_samples(now)
+        newest_bz = max((s.ts for s in samples if s.bz is not None), default=None)
+        if newest_bz is None or now - newest_bz > spaceweather.STALE_AFTER:
+            raise spaceweather.FetchError("no Bz in the last 15 minutes")
+        episode = spaceweather.advance_episode(
+            None,
+            samples,
+            threshold_nt=self._SW_BZ_THRESHOLD_NT,
+            hours=self._SW_BZ_HOURS,
+            now=now,
+        )
+        bz = next((s.bz for s in reversed(samples) if s.bz is not None), None)
+        speed = next((s.speed for s in reversed(samples) if s.speed is not None), None)
+        return {
+            "now": {
                 "bz_nt": bz,
                 "speed_kms": speed,
                 "storm_minutes": (
@@ -9029,56 +9046,49 @@ class LLM(callbacks.Plugin):
                 ),
                 "lead_minutes": episode.lead_minutes if episode else None,
             }
-        except errors as exc:
-            self.log.warning("aurora: solar wind unavailable: %s", exc)
-            unavailable.append("solar_wind")
+        }
 
-        try:
-            hit = spaceweather.ovation_at(self._sw_ovation_grid(now), found.lat, found.lon)
-            observed = _parse_iso_utc(hit["observed"])
-            ovation: dict[str, Any] = {
-                "overhead_pct": hit["overhead_pct"],
-                "poleward_max_pct": hit["poleward_max_pct"],
-                "poleward_max_lat": hit["poleward_max_lat"],
-                "valid_until": hit["forecast_time"],
-                "note": self._SW_OVATION_NOTE,
-            }
-            if observed is None or now - observed > self._SW_OVATION_STALE:
-                ovation["stale"] = True
-            out["ovation"] = ovation
-        except (*errors, KeyError, TypeError, ValueError) as exc:
-            self.log.warning("aurora: ovation unavailable: %s", exc)
-            unavailable.append("ovation")
+    def _aurora_ovation(self, found: spaceweather.Place, now: datetime) -> dict:
+        hit = spaceweather.ovation_at(self._sw_ovation_grid(now), found.lat, found.lon)
+        observed = _parse_iso_utc(hit["observed"])
+        ovation: dict[str, Any] = {
+            "overhead_pct": hit["overhead_pct"],
+            "poleward_max_pct": hit["poleward_max_pct"],
+            "poleward_max_lat": hit["poleward_max_lat"],
+            "valid_until": hit["forecast_time"],
+            "note": self._SW_OVATION_NOTE,
+        }
+        if observed is None or now - observed > self._SW_OVATION_STALE:
+            ovation["stale"] = True
+        return {"ovation": ovation}
 
-        try:
-            rows = spaceweather.fetch_json(
-                spaceweather.SWPC + spaceweather.KP_PATH, max_bytes=spaceweather.MAX_BYTES
-            )
-            out["kp_next_24h"] = [
+    def _aurora_kp(self, now: datetime) -> dict:
+        return {
+            "kp_next_24h": [
                 {"start": b["start"].isoformat(), "kp": b["kp"], "scale": b["scale"]}
-                for b in spaceweather.parse_kp(rows, now=now)
+                for b in spaceweather.parse_kp(self._sw_kp_rows(now), now=now)
             ]
-        except errors as exc:
-            self.log.warning("aurora: kp unavailable: %s", exc)
-            unavailable.append("kp")
+        }
 
-        try:
-            alerts = spaceweather.fetch_json(
-                spaceweather.SWPC + spaceweather.ALERTS_PATH, max_bytes=spaceweather.MAX_BYTES
-            )
-            levels = spaceweather.effective_levels(
-                spaceweather.parse_watches(alerts), today=now.date()
-            )
-            top = max(levels.values(), default=0)
-            if top >= 1:
-                out["active_watch"] = {
-                    "level": f"G{top}",
-                    "dates": sorted(d.isoformat() for d, lvl in levels.items() if lvl == top),
-                }
-        except errors as exc:
-            self.log.warning("aurora: alerts unavailable: %s", exc)
-            unavailable.append("alerts")
+    def _aurora_alerts(self, now: datetime) -> dict:
+        levels = spaceweather.effective_levels(
+            spaceweather.parse_watches(self._sw_alerts(now)), today=now.date()
+        )
+        top = max(levels.values(), default=0)
+        if top < 1:
+            return {}
+        return {
+            "active_watch": {
+                "level": f"G{top}",
+                "dates": sorted(d.isoformat() for d, lvl in levels.items() if lvl == top),
+            }
+        }
 
+    @staticmethod
+    def _aurora_dark(
+        found: spaceweather.Place, now: datetime
+    ) -> tuple[dict, ZoneInfo, tuple[datetime, datetime] | None]:
+        """(``dark`` payload, place zone, UTC window to read clouds for or None)."""
         try:
             zone = ZoneInfo(found.tz)
             tz_name = found.tz
@@ -9095,27 +9105,67 @@ class LLM(callbacks.Plugin):
             if p_start is not None and p_start <= now and (p_end is None or now < p_end):
                 start, end = p_start, p_end
         if start is None:
-            out["dark"] = {"never_dark": True, "tz": "local"}
+            return {"never_dark": True, "tz": "local"}, zone, None
+        dark: dict[str, Any] = {"from": start.astimezone(zone).strftime("%H:%M"), "tz": "local"}
+        if end is None:
+            dark["dark_until_dawn_not_found"] = True
         else:
-            dark: dict[str, Any] = {"from": start.astimezone(zone).strftime("%H:%M"), "tz": "local"}
-            if end is None:
-                dark["dark_until_dawn_not_found"] = True
-            else:
-                dark["until"] = end.astimezone(zone).strftime("%H:%M")
+            dark["until"] = end.astimezone(zone).strftime("%H:%M")
+        return dark, zone, (start, end if end is not None else start + timedelta(hours=12))
+
+    def _aurora_payload(self, place: str, *, now: datetime) -> dict:
+        """Facts for the aurora tool. Each feed fails alone into ``unavailable``.
+
+        The feeds are fetched concurrently on a per-call pool (not
+        ``_llm_executor``: this already runs on one of its workers).
+        """
+        try:
+            found = self._sw_place(place)
+        except spaceweather.FetchError as exc:
+            self.log.warning("aurora: geocode failed for %r: %s", place, exc)
+            return {"error": "place lookup is unavailable right now"}
+        if found is None:
+            return {"error": "couldn't find that place"}
+
+        dark, zone, window = self._aurora_dark(found, now)
+        errors = (spaceweather.FetchError, spaceweather.InvalidPayload)
+        feeds: dict[str, tuple[Callable[[], dict], tuple[type[Exception], ...]]] = {
+            "solar_wind": (lambda: self._aurora_solar_wind(now), errors),
+            "ovation": (
+                lambda: self._aurora_ovation(found, now),
+                (*errors, KeyError, TypeError, ValueError),
+            ),
+            "kp": (lambda: self._aurora_kp(now), errors),
+            "alerts": (lambda: self._aurora_alerts(now), errors),
+        }
+        if window is not None:
+            start, end = window
+
+            def clouds() -> dict:
+                cover = self._sw_cloud_rows(found, start, end, now=now)
+                return {
+                    "cloud_pct_while_dark": [
+                        {"hour": ts.astimezone(zone).strftime("%H:00"), "pct": pct}
+                        for ts, pct in cover
+                    ]
+                }
+
+            feeds["clouds"] = (clouds, errors)
+
+        out: dict[str, Any] = {"place": found.name, "lat": found.lat, "lon": found.lon}
+        unavailable: list[str] = []
+        with ThreadPoolExecutor(max_workers=5, thread_name_prefix="aurora") as pool:
+            futures = {name: pool.submit(fn) for name, (fn, _caught) in feeds.items()}
+            for name, fut in futures.items():
+                if name == "clouds":
+                    out["dark"] = dark
+                try:
+                    out.update(fut.result())
+                except feeds[name][1] as exc:
+                    self.log.warning("aurora: %s unavailable: %s", name, exc)
+                    unavailable.append(name)
+        if "dark" not in out:
             out["dark"] = dark
-            try:
-                cover = spaceweather.cloud_cover(
-                    found.lat,
-                    found.lon,
-                    start=start,
-                    end=end if end is not None else start + timedelta(hours=12),
-                )
-                out["cloud_pct_while_dark"] = [
-                    {"hour": ts.astimezone(zone).strftime("%H:00"), "pct": pct} for ts, pct in cover
-                ]
-            except errors as exc:
-                self.log.warning("aurora: clouds unavailable: %s", exc)
-                unavailable.append("clouds")
 
         if unavailable:
             out["unavailable"] = unavailable

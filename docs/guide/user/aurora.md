@@ -63,7 +63,10 @@ it asks.
 - **Dark** means the sun is more than 12 degrees below the horizon.
 
 When a source can't be reached, the bot leaves that part out and says so.
-An aurora forecast more than an hour old is marked stale.
+An aurora forecast more than an hour old is marked stale. Answers can lag by
+a few minutes: the bot reuses solar wind for 2 minutes, storm alerts for 5,
+the aurora forecast for 10, cloud cover for an hour and the Kp forecast for 3
+hours.
 
 ## Announcements
 
@@ -85,5 +88,6 @@ The places are the channel's, set by the operator (`auroraAnnouncePlaces`),
 never ones the bot knows about you. A watch is for NOAA's day, which runs
 midnight to midnight UTC, so "night of Oct 12" is the local night that falls
 mostly inside it. A `?` means there is no cloud figure for that place: the
-forecast couldn't be read, or it has no dark hours then. A place the bot
+forecast couldn't be read, the night is past its 3 days, or it has no dark
+hours then. A place the bot
 couldn't look up is left out.
