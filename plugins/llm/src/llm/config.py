@@ -1556,6 +1556,39 @@ conf.registerGlobalValue(
 
 conf.registerChannelValue(
     LLM,
+    "spaceWeatherAnnounce",
+    registry.Boolean(
+        False,
+        _("""Announce NOAA geomagnetic storm watches at or above
+        spaceWeatherMinWatchLevel, and sustained storm conditions in the solar
+        wind, in this channel. Checked every 5 minutes. Off by default."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "spaceWeatherPlaces",
+    registry.SpaceSeparatedListOfStrings(
+        [],
+        _("""Places whose darkness and cloud cover go with this channel's
+        announcements; _ stands for a space (Sault_Ste._Marie). A storm line
+        waits until at least one of them is dark. Empty means announce at once
+        with no cloud figures."""),
+    ),
+)
+
+conf.registerGlobalValue(
+    LLM,
+    "spaceWeatherMinWatchLevel",
+    registry.NonNegativeInteger(
+        3,
+        _("""Lowest NOAA G level of storm watch to announce (3 = G3, strong).
+        Clamped to 1..5."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "statusAnnounce",
     registry.Boolean(
         False,

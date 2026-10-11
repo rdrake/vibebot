@@ -15,7 +15,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta, timezone, tzinfo
+from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlparse
@@ -1198,6 +1198,15 @@ class LLM(callbacks.Plugin):
             schedule.removeEvent("llm_status_poll")
         self._schedule_status_poll()
 
+        # Storm announcer. _sw_state is advanced by the poller only, one pass
+        # at a time (_sw_poll_inflight), so it needs no lock.
+        self._sw_state = spaceweather.SwState()
+        self._sw_poll_inflight = threading.Event()
+        self._sw_place_warned: set[str] = set()
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_spaceweather_poll")
+        self._schedule_spaceweather_poll()
+
         # Event-driven queue wakeup state
         self._next_wakeup_time: float | None = None
         self._schedule_queue_wakeup()  # rebuild from DB on startup
@@ -1277,6 +1286,8 @@ class LLM(callbacks.Plugin):
             schedule.removeEvent("llm_last_msgids_flush")
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_status_poll")
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_spaceweather_poll")
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_startup_check")
         with contextlib.suppress(KeyError):
@@ -1629,6 +1640,238 @@ class LLM(callbacks.Plugin):
             raise
         fut.add_done_callback(lambda _f: self._status_poll_inflight.clear())
         fut.add_done_callback(lambda _f: self._schedule_status_poll())
+
+    # --- storm announcer -----------------------------------------------------
+
+    def _sw_now(self) -> datetime:
+        """Indirection point so tests can move the announcer's clock (aware UTC)."""
+        return datetime.now(UTC)
+
+    def _schedule_spaceweather_poll(self) -> None:
+        """Arm the next storm-announcer pass as a one-shot (see _schedule_status_poll).
+
+        Arms even when no channel announces: the pass itself returns before
+        any fetch then, and enabling spaceWeatherAnnounce at runtime works
+        without a reload.
+        """
+        if self._llm_executor.closing:
+            return
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent("llm_spaceweather_poll")
+        schedule.addEvent(
+            self._enqueue_spaceweather_poll,
+            self._status_now() + self._SPACEWEATHER_POLL_INTERVAL,
+            name="llm_spaceweather_poll",
+        )
+
+    def _enqueue_spaceweather_poll(self) -> None:
+        """Submit one announcer pass, deduped by ``_sw_poll_inflight``.
+
+        Same contract as _enqueue_status_poll: an inflight pass re-arms from
+        its own done-callback, so this returns without re-arming.
+        """
+        if self._llm_executor.closing:
+            return
+        if self._sw_poll_inflight.is_set():
+            return
+        self._sw_poll_inflight.set()
+        try:
+            fut = self._llm_executor.submit("spaceweather_poll", self._run_spaceweather_poll)
+        except Exception:
+            self._sw_poll_inflight.clear()
+            self._schedule_spaceweather_poll()
+            raise
+        fut.add_done_callback(lambda _f: self._sw_poll_inflight.clear())
+        fut.add_done_callback(lambda _f: self._schedule_spaceweather_poll())
+
+    def _sw_min_watch_level(self) -> int:
+        try:
+            level = int(self.registryValue("spaceWeatherMinWatchLevel"))
+        except (TypeError, ValueError):
+            level = 3
+        return min(5, max(1, level))
+
+    def _sw_announce_channels(self) -> list[str]:
+        # Copy before iterating, as _announce_status does: channel state
+        # mutates under JOIN/PART on the IRC thread.
+        return [
+            channel
+            for channel in sorted(self._all_known_channels())
+            if self.registryValue("spaceWeatherAnnounce", channel)
+        ]
+
+    def _sw_channel_places(self, channel: str) -> tuple[list[tuple[str, spaceweather.Place]], bool]:
+        """(label, place) for each configured place that resolves, and whether
+        any lookup failed this pass. Labels are the configured names, never
+        the geocoder's."""
+        out: list[tuple[str, spaceweather.Place]] = []
+        failed = False
+        for raw in self.registryValue("spaceWeatherPlaces", channel) or []:
+            label = raw.replace("_", " ").strip()
+            if not label:
+                continue
+            try:
+                place = self._sw_place(label)
+            except spaceweather.FetchError as exc:
+                self.log.info("spaceweather: geocode failed for %r: %s", label, exc)
+                failed = True
+                continue
+            if place is None:
+                key = label.casefold()
+                if key not in self._sw_place_warned:
+                    self._sw_place_warned.add(key)
+                    self.log.warning(
+                        "spaceweather: spaceWeatherPlaces entry %r in %s matches no place",
+                        label,
+                        channel,
+                    )
+                continue
+            out.append((label, place))
+        return out, failed
+
+    def _sw_mean_cloud(
+        self, place: spaceweather.Place, start: datetime, end: datetime
+    ) -> int | None:
+        try:
+            rows = spaceweather.cloud_cover(place.lat, place.lon, start=start, end=end)
+        except spaceweather.FetchError as exc:
+            self.log.info("spaceweather: cloud cover failed for %s: %s", place.name, exc)
+            return None
+        return spaceweather.mean_cloud(rows)
+
+    def _sw_night_clouds(
+        self, places: list[tuple[str, spaceweather.Place]], night: date
+    ) -> dict[str, int | None]:
+        """Mean cloud over each place's dark window for ``night``."""
+        clouds: dict[str, int | None] = {}
+        for label, place in places:
+            try:
+                start, end = spaceweather.dark_window(place.lat, place.lon, night, place.tz)
+            except (ZoneInfoNotFoundError, ValueError):
+                start, end = None, None
+            if start is None:
+                clouds[label] = None  # never dark that night
+                continue
+            if end is None:  # polar night: dark past the scan, take 12 hours
+                end = start + timedelta(hours=12)
+            clouds[label] = self._sw_mean_cloud(place, start, end)
+        return clouds
+
+    def _sw_poll_watches(
+        self, channels: list[str], alerts: Any, *, now: datetime, deadline: float
+    ) -> None:
+        if not isinstance(alerts, list):
+            raise spaceweather.InvalidPayload("alerts is not a list")
+        state = self._sw_state
+        # NOAA watch days are UTC days.
+        levels = spaceweather.effective_levels(spaceweather.parse_watches(alerts), today=now.date())
+        if not state.watches_seeded:
+            state.announced_levels = {ch: dict(levels) for ch in channels}
+            state.watches_seeded = True
+            return
+        told_by_channel = state.announced_levels
+        for ch in list(told_by_channel):
+            if ch not in channels:
+                del told_by_channel[ch]
+        min_level = self._sw_min_watch_level()
+        for ch in channels:
+            if ch not in told_by_channel:
+                told_by_channel[ch] = dict(levels)  # new channel: seed silently
+                continue
+            told = told_by_channel[ch]
+            for d in [d for d in told if d < now.date()]:
+                del told[d]
+            news = spaceweather.watch_news(levels, told, min_level=min_level)
+            if not news:
+                continue
+            if self._status_monotonic() > deadline or self._llm_executor.closing:
+                return
+            places, _failed = self._sw_channel_places(ch)
+            clouds = self._sw_night_clouds(places, min(news))
+            line = spaceweather.render_watch_line(news, clouds)
+            if self._deliver_spaceweather_line(ch, line):
+                told.update(news)
+
+    def _sw_poll_episode(
+        self,
+        channels: list[str],
+        samples: list[spaceweather.Sample],
+        *,
+        now: datetime,
+        deadline: float,
+    ) -> None:
+        state = self._sw_state
+        threshold, hours = self._sw_params()
+        episode = spaceweather.advance_episode(
+            state.episode, samples, threshold_nt=threshold, hours=hours, now=now
+        )
+        state.episode = episode
+        seen, state.seen_channels = state.seen_channels, set(channels)
+        if not state.episode_seeded:
+            state.episode_acked = dict.fromkeys(channels, episode.start) if episode else {}
+            state.episode_seeded = True
+            return
+        if episode is None:
+            state.episode_acked.clear()
+            return
+        for ch in channels:
+            if state.episode_acked.get(ch) == episode.start:
+                continue
+            if ch not in seen:  # arrived mid-episode: ack silently
+                state.episode_acked[ch] = episode.start
+                continue
+            if self._status_monotonic() > deadline or self._llm_executor.closing:
+                return
+            places, failed = self._sw_channel_places(ch)
+            if failed and not places:
+                continue  # can't judge darkness this pass; retry next
+            if places and not any(spaceweather.is_dark(p.lat, p.lon, now) for _l, p in places):
+                continue  # held until dark
+            direction = "south" if places and all(p.lat < 0 for _l, p in places) else "north"
+            end = now + timedelta(hours=self._SW_STORM_CLOUD_HOURS)
+            clouds = {label: self._sw_mean_cloud(p, now, end) for label, p in places}
+            line = spaceweather.render_storm_line(
+                episode, now=now, clouds=clouds, direction=direction
+            )
+            if self._deliver_spaceweather_line(ch, line):
+                state.episode_acked[ch] = episode.start
+
+    def _run_spaceweather_poll(self) -> None:
+        """One announcer pass: storm watches, then storm conditions.
+
+        Each feed fails alone: an unreadable alerts feed skips only the watch
+        half, an unreadable solar wind only the episode half. The outer
+        except is log control, as in _run_status_poll.
+        """
+        try:
+            channels = self._sw_announce_channels()
+            if not channels:
+                return
+            now = self._sw_now()
+            deadline = self._status_monotonic() + self._SPACEWEATHER_PASS_BUDGET
+            errors = (spaceweather.FetchError, spaceweather.InvalidPayload)
+            try:
+                alerts = spaceweather.fetch_json(
+                    spaceweather.SWPC + spaceweather.ALERTS_PATH,
+                    max_bytes=spaceweather.MAX_BYTES,
+                )
+                self._sw_poll_watches(channels, alerts, now=now, deadline=deadline)
+            except errors as exc:
+                self.log.info("spaceweather: alerts unavailable, skipping watches: %s", exc)
+            try:
+                samples = self._sw_samples(now)
+            except errors as exc:
+                self.log.info("spaceweather: solar wind unavailable, skipping storms: %s", exc)
+            else:
+                self._sw_poll_episode(channels, samples, now=now, deadline=deadline)
+        except Exception as e:
+            self.log.error("Space weather poll failed: %s", e)
+
+    def _deliver_spaceweather_line(self, channel: str, line: str) -> bool:
+        irc_conn = self._irc_for_channel(channel)
+        if irc_conn is None:
+            return False
+        return self._safe_queue(irc_conn, self._safe_privmsg(channel, line))
 
     def _status_fetch_snapshot(
         self,
@@ -2418,6 +2661,12 @@ class LLM(callbacks.Plugin):
     # decision to skip rewrites — checking it only between sources bounds
     # nothing, since a fetch entered at t=44 still runs its full ceiling.
     _STATUS_PASS_BUDGET = 45
+
+    # Storm announcer: one pass every 5 minutes; a pass stops sending once it
+    # has run this many seconds (geocodes and cloud fetches are sequential).
+    _SPACEWEATHER_POLL_INTERVAL = 300
+    _SPACEWEATHER_PASS_BUDGET = 60
+    _SW_STORM_CLOUD_HOURS = 3
     # Below this much remaining, the pass stops spending completions and posts
     # templates. The template has always been the primary path and the rewrite
     # an upgrade, so nothing is lost but prose.

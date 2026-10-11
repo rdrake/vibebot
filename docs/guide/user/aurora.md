@@ -40,3 +40,22 @@ it asks.
 
 When a source can't be reached, the bot leaves that part out and says so.
 An aurora forecast more than an hour old is marked stale.
+
+## Announcements
+
+An operator can have the bot post to a channel on its own, with
+`spaceWeatherAnnounce`. It posts when NOAA issues a strong geomagnetic storm
+watch (G3 or higher unless the operator changes it), and again if a watch is
+raised. It also posts once when storm conditions set in, as soon as it is dark
+at one of the channel's places.
+
+```
+<VibeBot> 🌌 NOAA G3 storm watch for Oct 12–13. Clouds tonight: Ottawa 20%,
+          Toronto 85%.
+<VibeBot> 🌌 Aurora storm conditions: Bz -14 nT for 3h10m at 620 km/s (~40 min
+          to Earth). Look north. Clouds now: Ottawa 10%, Toronto 90%.
+```
+
+The places are the channel's, set by the operator (`spaceWeatherPlaces`),
+never ones the bot knows about you. A `?` means the cloud forecast couldn't be
+read.
