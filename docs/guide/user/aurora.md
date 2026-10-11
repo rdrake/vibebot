@@ -6,6 +6,31 @@ the next 24 hours, then adds when it gets dark there and how cloudy it will
 be while it is. It is on in every channel unless an operator turns
 `auroraEnabled` off; see [Aurora](../operator/configuration.md#aurora).
 
+## Quick how-to
+
+**Users.** Mention the bot and name a place:
+
+```
+<you> VibeBot, any aurora tonight in Toronto?
+```
+
+The reply covers the aurora odds overhead and toward the pole, the solar wind
+right now, Kp for the next 24 hours, when it gets dark there, and the cloud
+cover while it is.
+
+**Operators.** Turn on announcements in a channel, and optionally name places
+for cloud cover and to hold storm alerts until dark:
+
+```
+@config channel #yourchan plugins.LLM.auroraAnnounce True
+@config channel #yourchan plugins.LLM.auroraAnnouncePlaces Ottawa Toronto
+```
+
+Turn the tool off in a channel with
+`@config channel #yourchan plugins.LLM.auroraEnabled False`. A runtime
+`@config` change is lost when the bot restarts; to keep it, set it in
+`bot.conf` with the bot stopped.
+
 ## Asking
 
 Ask in plain language. There is no command.

@@ -8,7 +8,7 @@ You don't need commands to ask the bot questions. Mention it by name in a channe
           collide with gases in Earth's atmosphere...
 ```
 
-Plain language covers questions, web lookups, images, code, service status, and saving a memory ("remember that I use Debian"). Reminders and scheduled tasks join that list where an operator has enabled `pendingTasksEnabled`. Managing memories, instructions, usage and context is command-only — use the commands below.
+Plain language covers questions, web lookups, images, code, service status, [aurora](aurora.md) forecasts, and saving a memory ("remember that I use Debian"). Reminders and scheduled tasks join that list where an operator has enabled `pendingTasksEnabled`. Managing memories, instructions, usage and context is command-only — use the commands below.
 
 ## Icons on a reply
 

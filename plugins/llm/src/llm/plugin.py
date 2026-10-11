@@ -1843,20 +1843,24 @@ class LLM(callbacks.Plugin):
         previous = state.episode
         if previous is not None and episode is None:
             state.last_episode, state.last_end = previous, now
-        elif (
-            previous is None
-            and episode is not None
-            and state.last_episode is not None
-            and state.last_end is not None
-            and episode.start - state.last_end <= self._SW_STORM_RESUME_WINDOW
-        ):
-            # A brief northward turn, not a new storm: keep the original start
-            # (so its acks still hold and duration runs from it) and the deepest Bz.
-            episode = replace(
-                episode,
-                start=state.last_episode.start,
-                min_bz=min(episode.min_bz, state.last_episode.min_bz),
-            )
+        elif previous is None and episode is not None:
+            # Resume or new storm is decided here, when an episode starts, and
+            # never by elapsed time while none runs: a resumed storm is only
+            # detected hours after Bz turns south again.
+            last, last_end = state.last_episode, state.last_end
+            if (
+                last is not None
+                and last_end is not None
+                and episode.start - last_end <= self._SW_STORM_RESUME_WINDOW
+            ):
+                # A northward turn, not a new storm: keep the original start (so
+                # its acks still hold and duration runs from it) and the deepest Bz.
+                episode = replace(
+                    episode, start=last.start, min_bz=min(episode.min_bz, last.min_bz)
+                )
+            else:
+                state.episode_acked.clear()
+                state.last_episode = state.last_end = None
         state.episode = episode
         seen, state.seen_channels = state.seen_channels, set(channels)
         if not state.episode_seeded:
@@ -1864,11 +1868,7 @@ class LLM(callbacks.Plugin):
             state.episode_seeded = True
             return
         if episode is None:
-            # Acks survive the resume window so a resumed storm stays told.
-            if state.last_end is None or now - state.last_end > self._SW_STORM_RESUME_WINDOW:
-                state.episode_acked.clear()
-                state.last_episode = state.last_end = None
-            return
+            return  # acks kept: a resumed storm must stay told
         for ch in channels:
             if state.episode_acked.get(ch) == episode.start:
                 continue
