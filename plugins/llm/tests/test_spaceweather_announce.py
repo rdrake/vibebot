@@ -274,21 +274,27 @@ def test_southern_places_look_south(sw) -> None:
     assert "Look south. Clouds now: Hobart 40%." in sent[1]
 
 
-def test_unknown_place_warned_once_and_holds_storm(sw) -> None:
-    sw._registry["auroraAnnouncePlaces"] = ["Nowhere"]
-    sw._places = {"Nowhere": None}
-    _pass(sw, NIGHT)
-    assert _pass(sw, NIGHT + timedelta(minutes=5), wind=-14.0) == []  # darkness unknown
+def test_unmatched_places_treated_as_placeless(sw) -> None:
+    """A typo ("Otawa") must not block storm lines forever: no place raised,
+    none resolved, so the channel is placeless (always dark, no clouds)."""
+    sw._registry["auroraAnnouncePlaces"] = ["Otawa"]
+    sw._places = {"Otawa": None}
+    _pass(sw, NOW)
+    (sent,) = _pass(sw, NOW + timedelta(minutes=5), wind=-14.0)  # daytime in Ottawa
+    assert sent[1].endswith("Look north.")
+    assert not sw._clouds.called
     sw._sw_channel_places("#a")
-    assert sw.log.warning.call_count == 1
+    assert sw.log.warning.call_count == 1  # warned once, not per pass
 
 
 def test_geocode_outage_holds_storm_line(sw) -> None:
-    sw._places = {"Ottawa": spaceweather.FetchError("down")}
+    sw._registry["auroraAnnouncePlaces"] = ["Ottawa", "Otawa"]
+    sw._places = {"Ottawa": spaceweather.FetchError("down"), "Otawa": None}
     _pass(sw, NIGHT)
-    assert _pass(sw, NIGHT + timedelta(minutes=5), wind=-14.0) == []
-    sw._places = {"Ottawa": OTTAWA}
-    assert len(_pass(sw, NIGHT + timedelta(minutes=10), wind=-14.0)) == 1
+    assert _pass(sw, NIGHT + timedelta(minutes=5), wind=-14.0) == []  # transient: held
+    sw._places = {"Ottawa": OTTAWA, "Otawa": None}
+    (sent,) = _pass(sw, NIGHT + timedelta(minutes=10), wind=-14.0)
+    assert sent[1].endswith("Clouds now: Ottawa 40%.")
 
 
 def test_cloud_failure_renders_question_mark(sw, mocker) -> None:

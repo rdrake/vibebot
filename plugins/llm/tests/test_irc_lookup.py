@@ -274,6 +274,9 @@ class TestChatWiring:
 
     def test_ask_advertises_irc_lookup_when_enabled(self, lookup_env) -> None:
         plugin, irc, msg = lookup_env
+        plugin.registryValue.side_effect = make_registry_side_effect(
+            {"ircLookupEnabled": True, "auroraEnabled": False}
+        )
         plugin.llm_service.detect_images.return_value = []
         plugin.llm_service.assistant_request.side_effect = None
         plugin.llm_service.assistant_request.return_value = self._result()
@@ -282,12 +285,14 @@ class TestChatWiring:
 
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         names = [t["function"]["name"] for t in kwargs["extra_tools"]]
-        assert "irc_lookup" in names
+        assert names == ["irc_lookup"]
         assert "irc_lookup" in kwargs["extra_handlers"]
 
     def test_ask_omits_irc_lookup_when_disabled(self, plugin_env) -> None:
         plugin, irc, msg = plugin_env
-        plugin.registryValue.side_effect = make_registry_side_effect({"ircLookupEnabled": False})
+        plugin.registryValue.side_effect = make_registry_side_effect(
+            {"ircLookupEnabled": False, "auroraEnabled": False}
+        )
         plugin.llm_service.detect_images.return_value = []
         plugin.llm_service.assistant_request.side_effect = None
         plugin.llm_service.assistant_request.return_value = self._result()
@@ -295,8 +300,7 @@ class TestChatWiring:
         plugin.ask(irc, msg, ["hello"])
 
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
-        names = [t["function"]["name"] for t in kwargs["extra_tools"] or []]
-        assert "irc_lookup" not in names
+        assert kwargs["extra_tools"] is None
 
 
 def serve_whois(plugin, irc, nick: str, *, error: str | None = None) -> None:
