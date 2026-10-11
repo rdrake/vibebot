@@ -75,9 +75,7 @@ class Feeds:
 @pytest.fixture
 def env(plugin_env, mocker):
     plugin, _irc, _msg = plugin_env
-    plugin.registryValue.side_effect = make_registry_side_effect(
-        {"auroraEnabled": True, "spaceWeatherBzThreshold": -10.0, "spaceWeatherBzHours": 3.0}
-    )
+    plugin.registryValue.side_effect = make_registry_side_effect({"auroraEnabled": True})
     feeds = Feeds()
     mocker.patch("llm.spaceweather.fetch_json", side_effect=feeds)
     geo = mocker.patch("llm.spaceweather.geocode", return_value=TORONTO)
@@ -240,19 +238,6 @@ def test_handler_returns_tool_result(env, mocker) -> None:
     assert json.loads(handlers["aurora"]({"place": ""}).content)["error"]
 
 
-@pytest.mark.parametrize(
-    ("threshold", "hours", "want"),
-    [(-10.0, 3.0, (-10.0, 3.0)), (-1.0, 99.0, (-10.0, 12.0)), (-60.0, 0.1, (-10.0, 1.0))],
-)
-def test_params_clamped(env, threshold, hours, want) -> None:
-    plugin, _feeds, _geo, _clouds = env
-    plugin.registryValue.side_effect = make_registry_side_effect(
-        {"spaceWeatherBzThreshold": threshold, "spaceWeatherBzHours": hours}
-    )
-
-    assert plugin._sw_params() == want
-
-
 def _ask_tools(plugin_env, enabled: bool):
     from llm.service import AssistantResult
 
@@ -280,6 +265,15 @@ def test_tool_advertised_when_enabled(plugin_env) -> None:
 
     assert [t["function"]["name"] for t in kwargs["extra_tools"]] == ["aurora"]
     assert "aurora" in kwargs["extra_handlers"]
+
+
+def test_tool_on_by_default(plugin_env) -> None:
+    from llm import config  # noqa: F401  (registers the keys)
+    from supybot import conf
+
+    assert conf.supybot.plugins.LLM.auroraEnabled() is True
+    assert conf.supybot.plugins.LLM.auroraAnnounce() is False
+    assert conf.supybot.plugins.LLM.auroraAnnouncePlaces() == []
 
 
 def test_tool_hidden_when_disabled(plugin_env) -> None:

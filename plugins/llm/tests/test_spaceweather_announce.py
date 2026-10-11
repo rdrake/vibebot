@@ -43,13 +43,18 @@ def _watch(serial: int, issue: str, days: str) -> dict:
 G3_OCT12 = _watch(10, "2026 Oct 11 0600", "Oct 12:  G3 (Strong)   Oct 13:  G3 (Strong)   ")
 
 
+NIGHT = datetime(2026, 10, 12, 1, 0, tzinfo=UTC)  # 21:00 EDT, dark in Ottawa
+CLOUDS_TONIGHT = " Clouds tonight: Ottawa 40%."
+
+
 @pytest.fixture
 def sw(spaceweather_plugin, mocker):
-    """The announcer with #a announcing, no places, quiet wind, no watches."""
+    """The announcer with #a watching Ottawa, quiet wind, no watches."""
     p = spaceweather_plugin
     p._channels = {"#a"}
-    p._registry["spaceWeatherAnnounce"] = True
-    p._registry["spaceWeatherPlaces"] = []
+    p._registry["auroraAnnounce"] = True
+    p._registry["auroraAnnouncePlaces"] = ["Ottawa"]
+    p._places = {"Ottawa": OTTAWA}
     p._samples = _series(NOW, 2.0)
     p._alerts = []
 
@@ -90,11 +95,11 @@ def test_cold_start_seeds_watches_silently(sw) -> None:
 
 
 def test_cold_start_mid_episode_silent(sw) -> None:
-    assert _pass(sw, NOW, wind=-14.0) == []
+    assert _pass(sw, NIGHT, wind=-14.0) == []
     state = sw._sw_state
     assert state.episode is not None
     assert state.episode_acked == {"#a": state.episode.start}
-    assert _pass(sw, NOW + timedelta(minutes=5), wind=-14.0) == []
+    assert _pass(sw, NIGHT + timedelta(minutes=5), wind=-14.0) == []
 
 
 def test_feeds_seed_independently(sw) -> None:
@@ -119,7 +124,7 @@ def test_new_channel_seeded_silently_for_watches(sw) -> None:
 def test_watch_announced_once(sw) -> None:
     _pass(sw, NOW)
     sent = _pass(sw, NOW + timedelta(minutes=5), alerts=[G3_OCT12])
-    assert sent == [("#a", "🌌 NOAA G3 storm watch for Oct 12–13.")]
+    assert sent == [("#a", "🌌 NOAA G3 storm watch for Oct 12–13." + CLOUDS_TONIGHT)]
     assert _pass(sw, NOW + timedelta(minutes=10)) == []
 
 
@@ -135,7 +140,7 @@ def test_upgrade_g3_to_g4_reannounced(sw) -> None:
     _pass(sw, NOW + timedelta(minutes=5), alerts=[G3_OCT12])
     upgrade = _watch(11, "2026 Oct 11 1100", "Oct 12:  G4 (Severe)   Oct 13:  G3 (Strong)   ")
     sent = _pass(sw, NOW + timedelta(minutes=10), alerts=[G3_OCT12, upgrade])
-    assert sent == [("#a", "🌌 NOAA G4 storm watch for Oct 12.")]
+    assert sent == [("#a", "🌌 NOAA G4 storm watch for Oct 12." + CLOUDS_TONIGHT)]
     downgrade = _watch(12, "2026 Oct 11 1130", "Oct 12:  G3 (Strong)   ")
     assert _pass(sw, NOW + timedelta(minutes=15), alerts=[downgrade]) == []
 
@@ -144,17 +149,9 @@ def test_g2_watch_below_min_level_ignored(sw) -> None:
     real = json.loads((FIXTURES / "alerts.json").read_text())  # serial 285: Oct 11 G2
     _pass(sw, NOW)
     assert _pass(sw, NOW + timedelta(minutes=5), alerts=real) == []
-    sw._registry["spaceWeatherMinWatchLevel"] = 2  # the gate, not the parse
-    assert _pass(sw, NOW + timedelta(minutes=10)) == [("#a", "🌌 NOAA G2 storm watch for Oct 11.")]
-
-
-def test_min_watch_level_is_clamped(sw) -> None:
-    sw._registry["spaceWeatherMinWatchLevel"] = 0
-    assert sw._sw_min_watch_level() == 1
-    sw._registry["spaceWeatherMinWatchLevel"] = 9
-    assert sw._sw_min_watch_level() == 5
-    sw._registry["spaceWeatherMinWatchLevel"] = "junk"
-    assert sw._sw_min_watch_level() == 3
+    sw._SW_MIN_WATCH_LEVEL = 2  # the gate, not the parse
+    sent = _pass(sw, NOW + timedelta(minutes=10))
+    assert sent == [("#a", "🌌 NOAA G2 storm watch for Oct 11." + CLOUDS_TONIGHT)]
 
 
 def test_partial_delivery_retries_only_failed_channel(sw) -> None:
@@ -169,25 +166,45 @@ def test_partial_delivery_retries_only_failed_channel(sw) -> None:
 
 
 def test_watch_clouds_over_dark_window(sw) -> None:
-    sw._registry["spaceWeatherPlaces"] = ["Ottawa", "Sault_Ste._Marie"]
+    sw._registry["auroraAnnouncePlaces"] = ["Ottawa", "Sault_Ste._Marie"]
     sw._places = {"Ottawa": OTTAWA, "Sault Ste. Marie": spaceweather.FetchError("x")}
     _pass(sw, NOW)
     sent = _pass(sw, NOW + timedelta(minutes=5), alerts=[G3_OCT12])
-    assert sent == [("#a", "🌌 NOAA G3 storm watch for Oct 12–13. Clouds tonight: Ottawa 40%.")]
+    assert sent == [("#a", "🌌 NOAA G3 storm watch for Oct 12–13." + CLOUDS_TONIGHT)]
     kw = sw._clouds.call_args.kwargs
     # Oct 12 dark window in Ottawa, local evening to next morning, in UTC.
     assert kw["start"].date() == date(2026, 10, 12) and kw["start"].hour >= 23
     assert kw["end"].date() == date(2026, 10, 13)
 
 
+def test_watch_clouds_start_now_when_dark_already_began(sw) -> None:
+    now = datetime(2026, 10, 12, 23, 58, tzinfo=UTC)  # Ottawa dark since about 23:43
+    start, _end = sw._sw_dark_hours(OTTAWA, date(2026, 10, 12))
+    assert start < now
+    sw._sw_night_clouds([("Ottawa", OTTAWA)], date(2026, 10, 12), now=now)
+    kw = sw._clouds.call_args.kwargs
+    assert kw["start"] == now
+    assert kw["end"] > now
+
+
+def test_watch_clouds_use_next_night_when_window_is_over(sw) -> None:
+    now = datetime(2026, 10, 11, 20, 0, tzinfo=UTC)  # 07:00 in Hobart: the night is over
+    _start, end = sw._sw_dark_hours(HOBART, date(2026, 10, 11))
+    assert end <= now
+    sw._sw_night_clouds([("Hobart", HOBART)], date(2026, 10, 11), now=now)
+    kw = sw._clouds.call_args.kwargs
+    assert kw["start"] > now
+    assert kw["start"] == sw._sw_dark_hours(HOBART, date(2026, 10, 12))[0]
+
+
 def test_polar_places_cloud_windows(sw, mocker) -> None:
     tromso = Place("Tromsø, Troms", 69.65, 18.96, "Europe/Oslo")
-    june = sw._sw_night_clouds([("Tromsø", tromso)], date(2026, 6, 20))
+    june = sw._sw_night_clouds([("Tromsø", tromso)], date(2026, 6, 20), now=NOW)
     assert june == {"Tromsø": None}  # midnight sun: no dark window, no figure
     assert not sw._clouds.called
     dusk = datetime(2026, 12, 20, 12, 0, tzinfo=UTC)
     mocker.patch("llm.spaceweather.dark_window", return_value=(dusk, None))  # polar night
-    december = sw._sw_night_clouds([("Tromsø", tromso)], date(2026, 12, 20))
+    december = sw._sw_night_clouds([("Tromsø", tromso)], date(2026, 12, 20), now=NOW)
     assert december == {"Tromsø": 40}
     kw = sw._clouds.call_args.kwargs
     assert kw["end"] - kw["start"] == timedelta(hours=12)  # polar night: bounded
@@ -211,48 +228,45 @@ def test_unreadable_alerts_payload_skips_watches(sw) -> None:
 
 
 def test_storm_held_in_daylight_then_released_at_dark(sw) -> None:
-    sw._registry["spaceWeatherPlaces"] = ["Ottawa"]
-    sw._places = {"Ottawa": OTTAWA}
     day = datetime(2026, 10, 11, 16, 0, tzinfo=UTC)  # noon in Ottawa
     _pass(sw, day - timedelta(hours=1))
     assert _pass(sw, day, wind=-14.0) == []
     assert _pass(sw, day + timedelta(hours=2), wind=-14.0) == []
-    night = datetime(2026, 10, 12, 1, 0, tzinfo=UTC)  # 21:00 EDT
-    (sent,) = _pass(sw, night, wind=-14.0)
+    (sent,) = _pass(sw, NIGHT, wind=-14.0)
     assert sent[0] == "#a"
     assert "Look north. Clouds now: Ottawa 40%." in sent[1]
-    assert _pass(sw, night + timedelta(minutes=5), wind=-14.0) == []
+    assert _pass(sw, NIGHT + timedelta(minutes=5), wind=-14.0) == []
 
 
 def test_one_line_per_channel_per_episode(sw) -> None:
     sw._channels = {"#a", "#b"}
-    _pass(sw, NOW)
+    _pass(sw, NIGHT)
     sent = []
     for i in range(1, 4):
-        sent += _pass(sw, NOW + timedelta(minutes=5 * i), wind=-14.0)
+        sent += _pass(sw, NIGHT + timedelta(minutes=5 * i), wind=-14.0)
     assert sorted(ch for ch, _ in sent) == ["#a", "#b"]
     assert sent[0][1].startswith("🌌 Aurora storm conditions: Bz -14 nT for 2h56m at 620 km/s")
 
 
 def test_new_episode_after_end_announces_again(sw) -> None:
-    _pass(sw, NOW)
-    assert len(_pass(sw, NOW + timedelta(minutes=5), wind=-14.0)) == 1
-    assert _pass(sw, NOW + timedelta(hours=2), wind=2.0) == []
+    _pass(sw, NIGHT)
+    assert len(_pass(sw, NIGHT + timedelta(minutes=5), wind=-14.0)) == 1
+    assert _pass(sw, NIGHT + timedelta(hours=2), wind=2.0) == []
     assert sw._sw_state.episode is None
     assert sw._sw_state.episode_acked == {}
-    assert len(_pass(sw, NOW + timedelta(hours=6), wind=-14.0)) == 1
+    assert len(_pass(sw, NIGHT + timedelta(hours=6), wind=-14.0)) == 1
 
 
 def test_channel_new_mid_episode_acked_silently(sw) -> None:
-    _pass(sw, NOW)
-    assert len(_pass(sw, NOW + timedelta(minutes=5), wind=-14.0)) == 1
+    _pass(sw, NIGHT)
+    assert len(_pass(sw, NIGHT + timedelta(minutes=5), wind=-14.0)) == 1
     sw._channels = {"#a", "#b"}
-    assert _pass(sw, NOW + timedelta(minutes=10), wind=-14.0) == []
+    assert _pass(sw, NIGHT + timedelta(minutes=10), wind=-14.0) == []
     assert sw._sw_state.episode_acked["#b"] == sw._sw_state.episode.start
 
 
 def test_southern_places_look_south(sw) -> None:
-    sw._registry["spaceWeatherPlaces"] = ["Hobart"]
+    sw._registry["auroraAnnouncePlaces"] = ["Hobart"]
     sw._places = {"Hobart": HOBART}
     _pass(sw, NOW)
     night = datetime(2026, 10, 11, 13, 0, tzinfo=UTC)  # 00:00 AEDT
@@ -260,32 +274,27 @@ def test_southern_places_look_south(sw) -> None:
     assert "Look south. Clouds now: Hobart 40%." in sent[1]
 
 
-def test_unknown_place_warned_once_and_skipped(sw) -> None:
-    sw._registry["spaceWeatherPlaces"] = ["Nowhere"]
+def test_unknown_place_warned_once_and_holds_storm(sw) -> None:
+    sw._registry["auroraAnnouncePlaces"] = ["Nowhere"]
     sw._places = {"Nowhere": None}
-    _pass(sw, NOW)
-    (sent,) = _pass(sw, NOW + timedelta(minutes=5), wind=-14.0)
-    assert "Clouds" not in sent[1]  # no resolved place: announce, no cloud figures
+    _pass(sw, NIGHT)
+    assert _pass(sw, NIGHT + timedelta(minutes=5), wind=-14.0) == []  # darkness unknown
     sw._sw_channel_places("#a")
     assert sw.log.warning.call_count == 1
 
 
 def test_geocode_outage_holds_storm_line(sw) -> None:
-    sw._registry["spaceWeatherPlaces"] = ["Ottawa"]
     sw._places = {"Ottawa": spaceweather.FetchError("down")}
-    _pass(sw, NOW)
-    assert _pass(sw, NOW + timedelta(minutes=5), wind=-14.0) == []
+    _pass(sw, NIGHT)
+    assert _pass(sw, NIGHT + timedelta(minutes=5), wind=-14.0) == []
     sw._places = {"Ottawa": OTTAWA}
-    night = datetime(2026, 10, 12, 1, 0, tzinfo=UTC)
-    assert len(_pass(sw, night, wind=-14.0)) == 1
+    assert len(_pass(sw, NIGHT + timedelta(minutes=10), wind=-14.0)) == 1
 
 
 def test_cloud_failure_renders_question_mark(sw, mocker) -> None:
-    sw._registry["spaceWeatherPlaces"] = ["Ottawa"]
-    sw._places = {"Ottawa": OTTAWA}
     mocker.patch("llm.spaceweather.cloud_cover", side_effect=spaceweather.FetchError("x"))
     _pass(sw, NOW)
-    (sent,) = _pass(sw, datetime(2026, 10, 12, 1, 0, tzinfo=UTC), wind=-14.0)
+    (sent,) = _pass(sw, NIGHT, wind=-14.0)
     assert sent[1].endswith("Clouds now: Ottawa ?.")
 
 
@@ -296,16 +305,32 @@ def test_wind_outage_skips_only_storms(sw) -> None:
     assert not sw._sw_state.episode_seeded
 
 
-def test_no_announcing_channel_fetches_nothing(sw) -> None:
-    sw._registry["spaceWeatherAnnounce"] = False
-    _pass(sw, NOW)
+def test_announce_off_fetches_nothing(sw) -> None:
+    sw._registry["auroraAnnounce"] = False
+    _pass(sw, NIGHT, alerts=[G3_OCT12], wind=-14.0)
     assert not sw._fetch.called
     assert not sw._sw_state.watches_seeded
+    assert not sw._sw_state.episode_seeded
+
+
+def test_no_places_announces_at_once_without_clouds(sw) -> None:
+    sw._registry["auroraAnnouncePlaces"] = []
+    _pass(sw, NOW)
+    sent = _pass(sw, NOW + timedelta(minutes=5), alerts=[G3_OCT12], wind=-14.0)  # daytime
+    assert sent == [
+        ("#a", "🌌 NOAA G3 storm watch for Oct 12–13."),
+        (
+            "#a",
+            "🌌 Aurora storm conditions: Bz -14 nT for 2h56m at 620 km/s "
+            "(~40 min to Earth). Look north.",
+        ),
+    ]
+    assert not sw._clouds.called
 
 
 def test_pass_budget_stops_sending(sw) -> None:
     sw._channels = {"#a", "#b"}
-    _pass(sw, NOW)
+    _pass(sw, NIGHT)
     real_deliver = sw._deliver_spaceweather_line
 
     def slow_deliver(channel, line):
@@ -313,14 +338,14 @@ def test_pass_budget_stops_sending(sw) -> None:
         return real_deliver(channel, line)
 
     sw._deliver_spaceweather_line = slow_deliver
-    sent = _pass(sw, NOW + timedelta(minutes=5), alerts=[G3_OCT12], wind=-14.0)
+    sent = _pass(sw, NIGHT + timedelta(minutes=5), alerts=[G3_OCT12], wind=-14.0)
     assert [ch for ch, _ in sent] == ["#a"]  # out of budget before #b, and before storms
-    sent = _pass(sw, NOW + timedelta(minutes=10), wind=-14.0)
+    sent = _pass(sw, NIGHT + timedelta(minutes=10), wind=-14.0)
     assert [ch for ch, _ in sent] == ["#b"]
 
 
 def test_unexpected_error_is_logged_not_raised(sw) -> None:
-    sw._sw_params = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    sw._sw_announce_channels = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
     _pass(sw, NOW)
     assert sw.log.error.called
 

@@ -350,19 +350,16 @@ See [Tuning and monitoring](tuning-monitoring.md#status-pages) for the polling r
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
-| `auroraEnabled` | channel | `False` | Give the chat model the `aurora` tool: NOAA aurora probability, solar wind, Kp, darkness, and cloud cover for a named place |
-| `spaceWeatherBzThreshold` | global | `-10.0` | Bz in nT that the solar wind must stay below to count as storm conditions. Values outside -50 to -3 fall back to -10 with a warning |
-| `spaceWeatherBzHours` | global | `3.0` | Hours the threshold must hold. Clamped to 1-12 |
-| `spaceWeatherAnnounce` | channel | `False` | Announce storm watches and storm conditions in this channel. Works without `auroraEnabled` |
-| `spaceWeatherPlaces` | channel | empty | Space-separated places whose darkness and cloud cover go with this channel's announcements; `_` stands for a space, as in `Sault_Ste._Marie`. A place that matches nothing is logged once at warning and skipped |
-| `spaceWeatherMinWatchLevel` | global | `3` | Lowest NOAA watch level to announce, as a G number (3 = G3). Clamped to 1-5 |
+| `auroraEnabled` | channel | `True` | Give the chat model the `aurora` tool: NOAA aurora probability, solar wind, Kp, darkness, and cloud cover for a named place |
+| `auroraAnnounce` | channel | `False` | Announce G3+ storm watches and sustained storm conditions in this channel. Works without `auroraEnabled` |
+| `auroraAnnouncePlaces` | channel | empty | Optional space-separated places for this channel's announcements; `_` stands for a space, as in `Sault_Ste._Marie`. Adds cloud cover for them and holds a storm line until one is dark. A place that matches nothing is logged once at warning and skipped |
 
 The tool reads NOAA SWPC (`services.swpc.noaa.gov`) and Open-Meteo (`geocoding-api.open-meteo.com`, `api.open-meteo.com`). No API keys are needed. Aurora probability is cached for 10 minutes, solar wind for 60 seconds, and place lookups for 24 hours (misses for 1 hour). See [Aurora](../user/aurora.md).
 
-With `spaceWeatherAnnounce` on, the bot checks every 5 minutes and posts two kinds of line, both fixed templates with no model rewrite:
+Announcements go to every channel with `auroraAnnounce` on; set `auroraAnnouncePlaces` to add cloud cover and hold storm alerts until it is dark there. The bot checks every 5 minutes and posts two kinds of line, both fixed templates with no model rewrite:
 
-- **Storm watch**: when NOAA's newest geomagnetic storm watch puts a UTC day at or above `spaceWeatherMinWatchLevel`. A re-issued watch at the same level is not announced again; a rise (G3 to G4) is. Cloud figures are the mean over each place's dark hours on the first announced night.
-- **Storm conditions**: once per episode of sustained southward Bz (`spaceWeatherBzThreshold` for `spaceWeatherBzHours`). If the channel has places, the line waits until at least one of them is dark. Cloud figures are the mean over the next 3 hours.
+- **Storm watch**: when NOAA's newest geomagnetic storm watch puts a UTC day at G3 or higher. A re-issued watch at the same level is not announced again; a rise (G3 to G4) is. With places set, cloud figures are the mean over each place's remaining dark hours on the first announced night, or the next night if that one is already over.
+- **Storm conditions**: once per episode of Bz at or below -10 nT for most of 3 hours. With places set, the line waits until at least one of them is dark, and cloud figures are the mean over the next 3 hours; without places it goes out at once with no cloud figures. If places are set but none can be looked up, the line waits for the next check.
 
 The first check after a restart, and the first check after a channel turns announcements on, only records what is already in effect; nothing already running is announced. A channel whose send fails is retried on the next check. If no channel announces, nothing is fetched.
 

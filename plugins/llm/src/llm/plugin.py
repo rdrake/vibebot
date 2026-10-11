@@ -1651,7 +1651,7 @@ class LLM(callbacks.Plugin):
         """Arm the next storm-announcer pass as a one-shot (see _schedule_status_poll).
 
         Arms even when no channel announces: the pass itself returns before
-        any fetch then, and enabling spaceWeatherAnnounce at runtime works
+        any fetch then, and turning auroraAnnounce on at runtime works
         without a reload.
         """
         if self._llm_executor.closing:
@@ -1684,29 +1684,23 @@ class LLM(callbacks.Plugin):
         fut.add_done_callback(lambda _f: self._sw_poll_inflight.clear())
         fut.add_done_callback(lambda _f: self._schedule_spaceweather_poll())
 
-    def _sw_min_watch_level(self) -> int:
-        try:
-            level = int(self.registryValue("spaceWeatherMinWatchLevel"))
-        except (TypeError, ValueError):
-            level = 3
-        return min(5, max(1, level))
-
     def _sw_announce_channels(self) -> list[str]:
         # Copy before iterating, as _announce_status does: channel state
         # mutates under JOIN/PART on the IRC thread.
         return [
             channel
             for channel in sorted(self._all_known_channels())
-            if self.registryValue("spaceWeatherAnnounce", channel)
+            if self.registryValue("auroraAnnounce", channel)
         ]
 
-    def _sw_channel_places(self, channel: str) -> tuple[list[tuple[str, spaceweather.Place]], bool]:
-        """(label, place) for each configured place that resolves, and whether
-        any lookup failed this pass. Labels are the configured names, never
-        the geocoder's."""
+    def _sw_channel_places(self, channel: str) -> list[tuple[str, spaceweather.Place]]:
+        """(label, place) for each configured place that resolves this pass.
+
+        Labels are the configured names, never the geocoder's. A lookup
+        failure skips the place for this pass only.
+        """
         out: list[tuple[str, spaceweather.Place]] = []
-        failed = False
-        for raw in self.registryValue("spaceWeatherPlaces", channel) or []:
+        for raw in self.registryValue("auroraAnnouncePlaces", channel) or []:
             label = raw.replace("_", " ").strip()
             if not label:
                 continue
@@ -1714,20 +1708,19 @@ class LLM(callbacks.Plugin):
                 place = self._sw_place(label)
             except spaceweather.FetchError as exc:
                 self.log.info("spaceweather: geocode failed for %r: %s", label, exc)
-                failed = True
                 continue
             if place is None:
                 key = label.casefold()
                 if key not in self._sw_place_warned:
                     self._sw_place_warned.add(key)
                     self.log.warning(
-                        "spaceweather: spaceWeatherPlaces entry %r in %s matches no place",
+                        "spaceweather: auroraAnnouncePlaces entry %r in %s matches no place",
                         label,
                         channel,
                     )
                 continue
             out.append((label, place))
-        return out, failed
+        return out
 
     def _sw_mean_cloud(
         self, place: spaceweather.Place, start: datetime, end: datetime
@@ -1739,22 +1732,36 @@ class LLM(callbacks.Plugin):
             return None
         return spaceweather.mean_cloud(rows)
 
+    @staticmethod
+    def _sw_dark_hours(place: spaceweather.Place, night: date) -> tuple[datetime, datetime] | None:
+        """``night``'s dark window; None when it never gets dark (or bad tz)."""
+        try:
+            start, end = spaceweather.dark_window(place.lat, place.lon, night, place.tz)
+        except (ZoneInfoNotFoundError, ValueError):
+            return None
+        if start is None:
+            return None
+        # Polar night: still dark at the end of the scan, so take 12 hours.
+        return start, end if end is not None else start + timedelta(hours=12)
+
     def _sw_night_clouds(
-        self, places: list[tuple[str, spaceweather.Place]], night: date
+        self, places: list[tuple[str, spaceweather.Place]], night: date, *, now: datetime
     ) -> dict[str, int | None]:
-        """Mean cloud over each place's dark window for ``night``."""
+        """Mean cloud over each place's remaining dark hours for ``night``.
+
+        Only hours from ``now`` on count; a window already over gives way to
+        the next night's.
+        """
         clouds: dict[str, int | None] = {}
         for label, place in places:
-            try:
-                start, end = spaceweather.dark_window(place.lat, place.lon, night, place.tz)
-            except (ZoneInfoNotFoundError, ValueError):
-                start, end = None, None
-            if start is None:
+            window = self._sw_dark_hours(place, night)
+            if window is not None and window[1] <= now:
+                window = self._sw_dark_hours(place, night + timedelta(days=1))
+            if window is None:
                 clouds[label] = None  # never dark that night
                 continue
-            if end is None:  # polar night: dark past the scan, take 12 hours
-                end = start + timedelta(hours=12)
-            clouds[label] = self._sw_mean_cloud(place, start, end)
+            start, end = window
+            clouds[label] = self._sw_mean_cloud(place, max(start, now), end)
         return clouds
 
     def _sw_poll_watches(
@@ -1773,7 +1780,7 @@ class LLM(callbacks.Plugin):
         for ch in list(told_by_channel):
             if ch not in channels:
                 del told_by_channel[ch]
-        min_level = self._sw_min_watch_level()
+        min_level = self._SW_MIN_WATCH_LEVEL
         for ch in channels:
             if ch not in told_by_channel:
                 told_by_channel[ch] = dict(levels)  # new channel: seed silently
@@ -1786,8 +1793,8 @@ class LLM(callbacks.Plugin):
                 continue
             if self._status_monotonic() > deadline or self._llm_executor.closing:
                 return
-            places, _failed = self._sw_channel_places(ch)
-            clouds = self._sw_night_clouds(places, min(news))
+            places = self._sw_channel_places(ch)
+            clouds = self._sw_night_clouds(places, min(news), now=now)
             line = spaceweather.render_watch_line(news, clouds)
             if self._deliver_spaceweather_line(ch, line):
                 told.update(news)
@@ -1801,9 +1808,12 @@ class LLM(callbacks.Plugin):
         deadline: float,
     ) -> None:
         state = self._sw_state
-        threshold, hours = self._sw_params()
         episode = spaceweather.advance_episode(
-            state.episode, samples, threshold_nt=threshold, hours=hours, now=now
+            state.episode,
+            samples,
+            threshold_nt=self._SW_BZ_THRESHOLD_NT,
+            hours=self._SW_BZ_HOURS,
+            now=now,
         )
         state.episode = episode
         seen, state.seen_channels = state.seen_channels, set(channels)
@@ -1822,11 +1832,13 @@ class LLM(callbacks.Plugin):
                 continue
             if self._status_monotonic() > deadline or self._llm_executor.closing:
                 return
-            places, failed = self._sw_channel_places(ch)
-            if failed and not places:
-                continue  # can't judge darkness this pass; retry next
-            if places and not any(spaceweather.is_dark(p.lat, p.lon, now) for _l, p in places):
-                continue  # held until dark
+            places = self._sw_channel_places(ch)
+            if places:
+                if not any(spaceweather.is_dark(p.lat, p.lon, now) for _l, p in places):
+                    continue  # held until dark
+            elif self.registryValue("auroraAnnouncePlaces", ch):
+                continue  # places configured but none resolved: darkness unknown, retry
+            # No places configured: always dark, no cloud clause.
             direction = "south" if places and all(p.lat < 0 for _l, p in places) else "north"
             end = now + timedelta(hours=self._SW_STORM_CLOUD_HOURS)
             clouds = {label: self._sw_mean_cloud(p, now, end) for label, p in places}
@@ -8878,25 +8890,15 @@ class LLM(callbacks.Plugin):
     _SW_OVATION_STALE = timedelta(minutes=60)
     _SW_PLACE_HIT_TTL = 24 * 3600.0
     _SW_PLACE_MISS_TTL = 3600.0
+    # Storm-conditions rule and the lowest watch level announced. Fixed by the
+    # developer, not the operator.
+    _SW_BZ_THRESHOLD_NT = -10.0
+    _SW_BZ_HOURS = 3.0
+    _SW_MIN_WATCH_LEVEL = 3
     _SW_OVATION_NOTE = (
         "poleward_max is the strongest aurora within 10° toward the pole; "
         "a stand-in for what is visible low on the horizon"
     )
-
-    def _sw_params(self) -> tuple[float, float]:
-        """(Bz threshold nT, window hours), validated; bad values fall back."""
-        try:
-            threshold = float(self.registryValue("spaceWeatherBzThreshold"))
-        except (TypeError, ValueError):
-            threshold = -10.0
-        if not -50.0 <= threshold <= -3.0:
-            self.log.warning("spaceWeatherBzThreshold %r is outside -50..-3; using -10", threshold)
-            threshold = -10.0
-        try:
-            hours = float(self.registryValue("spaceWeatherBzHours"))
-        except (TypeError, ValueError):
-            hours = 3.0
-        return threshold, min(12.0, max(1.0, hours))
 
     def _sw_place(self, query: str) -> spaceweather.Place | None:
         """Geocode with a cache: hits 24 h, misses 1 h, FetchError never."""
@@ -8959,9 +8961,12 @@ class LLM(callbacks.Plugin):
 
         try:
             samples = self._sw_samples(now)
-            threshold, hours = self._sw_params()
             episode = spaceweather.advance_episode(
-                None, samples, threshold_nt=threshold, hours=hours, now=now
+                None,
+                samples,
+                threshold_nt=self._SW_BZ_THRESHOLD_NT,
+                hours=self._SW_BZ_HOURS,
+                now=now,
             )
             bz = next((s.bz for s in reversed(samples) if s.bz is not None), None)
             speed = next((s.speed for s in reversed(samples) if s.speed is not None), None)
