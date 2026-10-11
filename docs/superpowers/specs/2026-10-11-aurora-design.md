@@ -118,8 +118,9 @@ A poller thread modelled on the status announcer, every 5 min.
    episode qualifies in daylight, it announces once darkness arrives,
    provided the episode is still running. Clouds: next 3 h per place.
 
-Dedupe state (announced watch serials, announced episode start times per
-channel) persists across restarts the way the status announcer's does.
+Dedupe state is in memory. Like the status announcer, a cold start seeds
+current watches and any running episode as already announced, so a
+restart never repeats a line.
 
 Example lines (deterministic; the model does not write these):
 
@@ -130,6 +131,7 @@ Example lines (deterministic; the model does not write these):
 
 ### Config (no backwards compatibility)
 
+- `auroraEnabled` (channel, bool, default off) — exposes the tool
 - `spaceWeatherAnnounce` (channel, bool, default off)
 - `spaceWeatherPlaces` (channel, space-separated list of places, geocoded
   once and cached)
