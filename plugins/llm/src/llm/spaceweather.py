@@ -11,6 +11,7 @@ Kept free of Limnoria and ``llm.service`` imports for the same reason as
 
 from __future__ import annotations
 
+import http.client
 import json
 import math
 import re
@@ -495,8 +496,8 @@ def fetch_json(
         if len(body) > max_bytes:
             raise FetchError(f"response exceeds {max_bytes} bytes")
         return json.loads(body)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        # HTTPError is a URLError subclass.
+    except (OSError, http.client.HTTPException, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        # OSError covers URLError/HTTPError/TimeoutError/ConnectionResetError.
         raise FetchError(f"{type(exc).__name__}: {exc}") from exc
 
 

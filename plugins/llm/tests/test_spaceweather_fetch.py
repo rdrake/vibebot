@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import urllib.error
@@ -199,3 +200,39 @@ def test_parse_kp_includes_block_in_progress_and_skips_junk():
     blocks = sw.parse_kp(rows, now=datetime(2026, 10, 11, 10, 30, tzinfo=UTC))
     assert [b["kp"] for b in blocks] == [3.0]
     assert blocks[0]["scale"] is None
+
+
+class _BrokenRead:
+    def __init__(self, exc: Exception):
+        self.exc = exc
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def read(self, _n=-1):
+        raise self.exc
+
+
+class _BrokenOpener:
+    def __init__(self, exc: Exception):
+        self.exc = exc
+
+    def open(self, req, timeout=None):  # noqa: ARG002
+        return _BrokenRead(self.exc)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ConnectionResetError("reset"),
+        http.client.IncompleteRead(b""),
+        http.client.RemoteDisconnected("closed"),
+        http.client.BadStatusLine("x"),
+    ],
+)
+def test_mid_read_transport_errors_are_fetch_error(exc):
+    with pytest.raises(sw.FetchError):
+        sw.fetch_json(sw.SWPC + sw.KP_PATH, max_bytes=1000, opener=_BrokenOpener(exc))
