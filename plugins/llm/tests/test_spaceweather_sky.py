@@ -75,6 +75,15 @@ def test_cancel_is_empty_levels():
     assert w.levels == {}
 
 
+def test_cancel_in_comment_text_is_not_a_cancellation():
+    alert = _watch_alert(12, "2026 Oct 10 0800", "Oct 12:  G3 (Strong)   ")
+    alert["message"] = alert["message"].replace(
+        "Comment: ", "Comment: Replaces the watch issued earlier, CANCELLED in error."
+    )
+    (w,) = spaceweather.parse_watches([alert])
+    assert w.levels == {date(2026, 10, 12): 3}
+
+
 def test_year_rollover():
     alert = _watch_alert(
         1,
