@@ -1117,6 +1117,98 @@ def status_plugin():
 
 
 @pytest.fixture
+def spaceweather_plugin():
+    """A bare stand-in for the storm announcer, like ``status_plugin``.
+
+    Every real method under test is bound explicitly: on a bare MagicMock an
+    unbound attribute returns a fresh Mock instead of running the real code,
+    so a forgotten binding passes vacuously. Collaborators that would touch
+    the network or IRC are plain callables the tests swap:
+
+    - ``obj._places``: label -> Place, None (no match) or an exception to raise
+    - ``obj._samples``: list of Samples, or an exception to raise
+    - ``obj._queue_ok``: channel -> bool, what ``_safe_queue`` returns
+    - ``obj.sent``: (channel, line) for every queued line
+    """
+    from datetime import UTC, datetime
+
+    from llm import spaceweather
+
+    obj = MagicMock()
+    obj._registry = {
+        "spaceWeatherBzThreshold": -10.0,
+        "spaceWeatherBzHours": 3.0,
+        "spaceWeatherMinWatchLevel": 3,
+    }
+    obj._chan_registry = {}
+    obj.registryValue = lambda key, channel=None, *a, **k: obj._chan_registry.get(
+        (key, channel), obj._registry.get(key)
+    )
+    obj._channels = set()
+    obj._all_known_channels = lambda: set(obj._channels)
+    obj._now = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
+    obj._sw_now = lambda: obj._now
+    obj._mono = 0.0
+    obj._status_monotonic = lambda: obj._mono
+    obj._status_now = lambda: 1000.0
+
+    obj._places = {}
+
+    def fake_place(query):
+        value = obj._places.get(query)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    obj._sw_place = fake_place
+    obj._samples = []
+
+    def fake_samples(_now):
+        if isinstance(obj._samples, BaseException):
+            raise obj._samples
+        return obj._samples
+
+    obj._sw_samples = fake_samples
+
+    obj.sent = []
+    obj._queue_ok = {}
+    obj._irc_for_channel = lambda channel: f"irc:{channel}"
+    obj._safe_privmsg = lambda channel, line: (channel, line)
+
+    def fake_queue(_irc, msg):
+        ok = obj._queue_ok.get(msg[0], True)
+        if ok:
+            obj.sent.append(msg)
+        return ok
+
+    obj._safe_queue = fake_queue
+
+    obj._sw_state = spaceweather.SwState()
+    obj._sw_place_warned = set()
+    obj._sw_poll_inflight = threading.Event()
+    obj._llm_executor.closing = False
+    obj._SPACEWEATHER_POLL_INTERVAL = LLM._SPACEWEATHER_POLL_INTERVAL
+    obj._SPACEWEATHER_PASS_BUDGET = LLM._SPACEWEATHER_PASS_BUDGET
+    obj._SW_STORM_CLOUD_HOURS = LLM._SW_STORM_CLOUD_HOURS
+    for name in (
+        "_sw_params",
+        "_sw_min_watch_level",
+        "_sw_announce_channels",
+        "_sw_channel_places",
+        "_sw_mean_cloud",
+        "_sw_night_clouds",
+        "_sw_poll_watches",
+        "_sw_poll_episode",
+        "_run_spaceweather_poll",
+        "_deliver_spaceweather_line",
+        "_schedule_spaceweather_poll",
+        "_enqueue_spaceweather_poll",
+    ):
+        setattr(obj, name, getattr(LLM, name).__get__(obj))
+    return obj
+
+
+@pytest.fixture
 def announcing_plugin(status_plugin):
     """status_plugin plus the announcer's collaborators."""
     from unittest.mock import MagicMock

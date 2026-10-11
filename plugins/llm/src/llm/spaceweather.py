@@ -19,7 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -596,3 +596,91 @@ def parse_kp(rows: list[dict], *, now: datetime, hours: int = 24) -> list[dict]:
             )
     out.sort(key=lambda b: b["start"])
     return out
+
+
+# --- Announcements -----------------------------------------------------------
+
+
+@dataclass
+class SwState:
+    """What the storm announcer has already told each channel.
+
+    ``seen_channels`` is the set of announcing channels on the last pass that
+    read the solar wind. A channel outside it is new, so an episode already
+    running when it arrives is acked silently instead of announced late.
+    """
+
+    watches_seeded: bool = False
+    episode_seeded: bool = False
+    episode: Episode | None = None
+    announced_levels: dict[str, dict[date, int]] = field(default_factory=dict)
+    episode_acked: dict[str, datetime] = field(default_factory=dict)
+    seen_channels: set[str] = field(default_factory=set)
+
+
+def watch_news(
+    levels: dict[date, int], told: dict[date, int], *, min_level: int
+) -> dict[date, int]:
+    """Dates at or above ``min_level`` whose level rose past what was told."""
+    return {d: lvl for d, lvl in levels.items() if lvl >= min_level and lvl > told.get(d, 0)}
+
+
+def mean_cloud(rows: Sequence[tuple[datetime, int]]) -> int | None:
+    """Rounded mean cloud percent, or None with no rows."""
+    return round(sum(pct for _ts, pct in rows) / len(rows)) if rows else None
+
+
+def _day(d: date) -> str:
+    return f"{d:%b} {d.day}"
+
+
+def _date_span(dates: Sequence[date]) -> str:
+    """``Oct 12–13``; runs of consecutive dates joined with commas."""
+    runs: list[list[date]] = []
+    for d in sorted(dates):
+        if runs and d - runs[-1][-1] == timedelta(days=1):
+            runs[-1].append(d)
+        else:
+            runs.append([d])
+    out = []
+    for run in runs:
+        first, last = run[0], run[-1]
+        if first == last:
+            out.append(_day(first))
+        elif first.month == last.month:
+            out.append(f"{_day(first)}\u2013{last.day}")
+        else:
+            out.append(f"{_day(first)}\u2013{_day(last)}")
+    return ", ".join(out)
+
+
+def _clouds(label: str, clouds: dict[str, int | None]) -> str:
+    if not clouds:
+        return ""
+    parts = ", ".join(
+        f"{name} {pct}%" if pct is not None else f"{name} ?" for name, pct in clouds.items()
+    )
+    return f" {label}: {parts}."
+
+
+def render_watch_line(levels: dict[date, int], clouds: dict[str, int | None]) -> str:
+    return (
+        f"\U0001f30c NOAA G{max(levels.values())} storm watch for {_date_span(list(levels))}."
+        + _clouds("Clouds tonight", clouds)
+    )
+
+
+def render_storm_line(
+    episode: Episode, *, now: datetime, clouds: dict[str, int | None], direction: str
+) -> str:
+    """Deterministic storm-conditions line. A missing speed drops the speed clause."""
+    minutes = max(0, int((now - episode.start).total_seconds() // 60))
+    line = (
+        f"\U0001f30c Aurora storm conditions: Bz {episode.min_bz:.0f} nT "
+        f"for {minutes // 60}h{minutes % 60:02d}m"
+    )
+    if episode.latest_speed is not None:
+        line += f" at {episode.latest_speed:.0f} km/s"
+        if episode.lead_minutes is not None:
+            line += f" (~{episode.lead_minutes} min to Earth)"
+    return line + f". Look {direction}." + _clouds("Clouds now", clouds)
