@@ -1,10 +1,11 @@
-"""Meme templates: request parsing, caption encoding, and template resolution.
+"""Meme templates: request parsing, the bundled catalog, and name resolution.
 
-The bot never chooses a template. The user names one — "drake", "distracted
-boyfriend" — the catalog resolves that name deterministically, and
-memegen.link renders the captions onto it. Rendering our own would mean
-per-template text-box coordinates and a licensed Impact; memegen already has
-both for two hundred templates, so this module only builds URLs.
+The user names a template — "drake", "distracted boyfriend" — and the
+catalog resolves that name deterministically; :mod:`meme_render` draws the
+captions. The catalog is ``memes/templates.json`` beside this file, one
+entry per template with its caption boxes, built by
+``scripts/build_meme_catalog.py`` from memegen's hand-made layouts and
+imgflip's blanks with vision-drafted boxes.
 
 Two callers share it: the ``@meme`` command (no LLM at all) and the
 ``make_meme`` chat tool, where the model's job is to transcribe the name the
@@ -16,61 +17,28 @@ from __future__ import annotations
 
 import json
 import re
-import time
-import urllib.error
-import urllib.request
+import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
-# memegen caps a whole URL well above this, but a caption past this length
-# renders as unreadable four-point text anyway.
+from .meme_render import FONT_FILES, TOP_BOTTOM, Box
+
+# A caption past this length renders as unreadable four-point text anyway.
 MAX_CAPTION_CHARS = 200
 MAX_LINES = 8
 
-# memegen's escape table (README, "Special Characters"). Order matters: the
-# characters memegen uses AS escapes (_ - ~) are doubled/escaped first so a
-# later substitution cannot produce one by accident.
-_ESCAPES: tuple[tuple[str, str], ...] = (
-    ("_", "__"),
-    ("-", "--"),
-    ("\n", "~n"),
-    ("?", "~q"),
-    ("&", "~a"),
-    ("%", "~p"),
-    ("#", "~h"),
-    ("/", "~s"),
-    ("\\", "~b"),
-    ("<", "~l"),
-    (">", "~g"),
-    ('"', "''"),
-    (" ", "_"),
-)
-
-# memegen normalises these to ASCII and answers with a 301 to the normalised
-# URL — which the downloader refuses on purpose (a redirect could point at a
-# private host). Phone keyboards produce all of them. Applied before the
-# escape table so the ASCII forms get memegen's own escapes.
-_PUNCTUATION_NORMALISE = str.maketrans(
-    {
-        "\u2018": "'",
-        "\u2019": "'",
-        "\u201c": '"',
-        "\u201d": '"',
-        "\u2013": "-",
-    }
-)
+CATALOG_PATH = Path(__file__).parent / "memes" / "templates.json"
 
 _NOISE_WORDS = frozenset({"the", "a", "an", "meme", "template", "of", "and"})
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
-# memegen's bring-your-own-image template: two boxes, top and bottom, drawn
-# over whatever ``?background=`` points at. Used for pasted image URLs and
-# for URL-valued aliases.
+# The bring-your-own-image template: a top and a bottom band over a pasted
+# image URL or a URL-valued alias.
 CUSTOM_TEMPLATE_ID = "custom"
-CUSTOM_LINES = 2
+CUSTOM_LINES = len(TOP_BOTTOM)
 
 
 @dataclass(frozen=True)
@@ -80,43 +48,23 @@ class MemeTemplate:
     lines: int
     keywords: tuple[str, ...] = ()
     example: tuple[str, ...] = ()
-    # Set only on custom templates: the image memegen draws the captions on.
+    # Set only on custom templates: the image URL the captions go on.
     background: str | None = None
-    # memegen's alternate images for this template ("bark", "yes", ...).
-    # "animated" is the GIF variant and is exposed as ``animated`` instead.
-    styles: tuple[str, ...] = ()
-
-    # Stored apart from ``styles`` so that tuple lists only the choices a
-    # user would pass to --style; the GIF variant has its own flag, --gif.
-    _animated: bool = False
-
-    @property
-    def animated(self) -> bool:
-        return self._animated
+    # One per caption, in caption order. Custom templates use TOP_BOTTOM.
+    boxes: tuple[Box, ...] = ()
+    # The blank, for bundled templates.
+    image: Path | None = None
+    # Popularity order (imgflip's); lower is more popular.
+    rank: int = 10_000
 
 
-ANIMATED_STYLE = "animated"
-
-# memegen's /fonts/ list. Validated here so a typo is a one-line answer
-# instead of a memegen error page fetched and rejected as a non-image.
-FONTS = (
-    "titilliumweb",
-    "titilliumweb-thin",
-    "impact",
-    "notosans",
-    "notosanshebrew",
-    "kalam",
-    "segoe",
-    "hgminchob",
-)
+FONTS = tuple(FONT_FILES)
 
 
 @dataclass(frozen=True)
 class MemeOptions:
-    """The rest of memegen's query string, as the user asked for it."""
+    """How the user asked for the meme beyond template and captions."""
 
-    animated: bool = False
-    style: str | None = None
     font: str | None = None
     layout_top: bool = False
     # An instruction for the image-edit model, applied to the captioned
@@ -126,7 +74,9 @@ class MemeOptions:
 
 
 def custom_template(background: str, name: str = "custom image") -> MemeTemplate:
-    return MemeTemplate(CUSTOM_TEMPLATE_ID, name, CUSTOM_LINES, background=background)
+    return MemeTemplate(
+        CUSTOM_TEMPLATE_ID, name, CUSTOM_LINES, background=background, boxes=TOP_BOTTOM
+    )
 
 
 def is_http_url(text: str) -> bool:
@@ -141,9 +91,12 @@ def _safe_background(url: str) -> bool:
 
 @dataclass(frozen=True)
 class MemePlan:
-    """What :func:`plan_meme` decided: a URL to fetch, or why there is none."""
+    """What :func:`plan_meme` decided: the captions to draw, or why not.
 
-    url: str | None
+    ``lines`` is padded with blanks to the template's box count.
+    """
+
+    lines: list[str] | None
     template: MemeTemplate | None
     error: str | None
 
@@ -161,73 +114,59 @@ def parse_meme_request(text: str) -> tuple[str, list[str]] | None:
     return parts[0], parts[1:]
 
 
-def encode_caption(text: str) -> str:
-    """Turn one caption into a memegen path segment. Blank is ``_``."""
-    text = text.strip().translate(_PUNCTUATION_NORMALISE)
-    if not text:
-        return "_"
-    for char, escape in _ESCAPES:
-        text = text.replace(char, escape)
-    return quote(text, safe="~'")
-
-
-def build_meme_url(
-    base: str,
-    template_id: str,
-    lines: list[str],
-    *,
-    background: str | None = None,
-    options: MemeOptions | None = None,
-) -> str:
-    options = options or MemeOptions()
-    segments = "/".join(encode_caption(line) for line in lines)
-    extension = "gif" if options.animated else "png"
-    url = f"{base.rstrip('/')}/images/{template_id}/{segments}.{extension}"
-    params: list[str] = []
-    if options.animated:
-        params.append(f"style={ANIMATED_STYLE}")
-    elif options.style:
-        params.append("style=" + quote(options.style, safe=""))
-    if options.font:
-        params.append("font=" + quote(options.font, safe=""))
-    if options.layout_top:
-        params.append("layout=top")
-    if background:
-        params.append("background=" + quote(background, safe=""))
-    return url + ("?" + "&".join(params) if params else "")
-
-
-def parse_templates(entries: Any) -> list[MemeTemplate]:
-    """Read memegen's ``/templates/`` JSON. Malformed entries are dropped."""
+def parse_catalog(entries: Any, image_dir: Path) -> list[MemeTemplate]:
+    """Read ``templates.json``. Malformed entries are dropped, not raised."""
     templates: list[MemeTemplate] = []
     for entry in entries if isinstance(entries, list) else []:
         if not isinstance(entry, dict):
             continue
         template_id = entry.get("id")
         name = entry.get("name")
-        lines = entry.get("lines")
-        if not (isinstance(template_id, str) and isinstance(name, str) and isinstance(lines, int)):
+        if not (isinstance(template_id, str) and template_id and isinstance(name, str)):
             continue
-        if not template_id or lines < 1:
+        boxes: list[Box] = []
+        for raw in entry.get("boxes") or []:
+            try:
+                boxes.append(Box(**raw))
+            except TypeError:
+                continue
+        if not boxes:
             continue
         keywords = tuple(k for k in entry.get("keywords") or [] if isinstance(k, str))
-        example_obj = entry.get("example") or {}
-        example_text = example_obj.get("text") if isinstance(example_obj, dict) else None
-        example = tuple(t for t in example_text or [] if isinstance(t, str))
-        raw_styles = [st for st in entry.get("styles") or [] if isinstance(st, str)]
-        styles = tuple(st for st in raw_styles if st not in ("default", ANIMATED_STYLE))
+        example = tuple(t for t in entry.get("example") or [] if isinstance(t, str))
+        rank = entry.get("rank")
         templates.append(
             MemeTemplate(
                 template_id,
                 name,
-                lines,
+                len(boxes),
                 keywords,
                 example,
-                styles=styles,
-                _animated=ANIMATED_STYLE in raw_styles,
+                boxes=tuple(boxes),
+                image=image_dir / f"{template_id}.jpg",
+                rank=rank if isinstance(rank, int) else 10_000,
             )
         )
     return templates
+
+
+_catalog_lock = threading.Lock()
+_catalog_cache: tuple[Path, float, MemeCatalog] | None = None
+
+
+def bundled_catalog(path: Path = CATALOG_PATH) -> MemeCatalog | None:
+    """The catalog in ``path``, re-read when the file changes. None if missing."""
+    global _catalog_cache
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    with _catalog_lock:
+        if _catalog_cache is None or _catalog_cache[:2] != (path, mtime):
+            entries = json.loads(path.read_text(encoding="utf-8"))
+            catalog = MemeCatalog(parse_catalog(entries, path.parent / "images"))
+            _catalog_cache = (path, mtime, catalog)
+        return _catalog_cache[2]
 
 
 def _normalise(text: str) -> str:
@@ -274,7 +213,7 @@ class MemeCatalog:
         """A copy with more keywords on the named templates.
 
         Ids the catalog does not have are ignored: the topic table in
-        :mod:`meme_topics` outlives any one memegen template list.
+        :mod:`meme_topics` outlives any one catalog build.
         """
         merged = [
             replace(t, keywords=(*t.keywords, *extra[t.id.lower()])) if t.id.lower() in extra else t
@@ -302,6 +241,8 @@ class MemeCatalog:
                             name,
                             CUSTOM_LINES,
                             background=target,
+                            boxes=TOP_BOTTOM,
+                            rank=0,
                         )
                     )
             elif target.lower() in self._by_id:
@@ -356,7 +297,7 @@ class MemeCatalog:
             return by_keyword[0]
         if by_keyword:
             return None
-        # memegen names templates by the quote; people name them by the
+        # Templates are often named by the quote; people name them by the
         # character. "willy wonka" has to reach Condescending Wonka on the
         # one word they share, but one word of five is a coincidence.
         tokens = nq.split()
@@ -392,23 +333,37 @@ class MemeCatalog:
 
 
 # One catalog line per template for the picker prompt. Eight tags is enough
-# to say what a template is for (memegen's own keywords come first, then the
-# topic tags, so the "blank picture area" tag survives the cut); the whole
-# brief stays near 30 KB.
+# to say what a template is for (the template's own keywords come first,
+# then the topic tags, so the "blank picture area" tag survives the cut).
 _BRIEF_TAGS = 8
+# The whole catalog is over a thousand rows; the picker sees the most
+# popular templates plus the ones that share a word with the request, which
+# keeps the brief near the ~30 KB it was with memegen's two hundred.
+BRIEF_POPULAR = 180
+BRIEF_MATCHES = 60
 
 
-def catalog_brief(catalog: MemeCatalog) -> str:
-    """The catalog as the picker sees it: ``id | name | N | example | tags``.
-
-    memegen's keywords and the topic tags are one column here; the picker
-    does not care which is which. Custom (URL-alias) templates are listed
-    too — an operator added them because people ask for them.
-    """
-    rows: list[str] = []
+def brief_templates(catalog: MemeCatalog, request: str = "") -> list[MemeTemplate]:
+    """The shortlist :func:`catalog_brief` shows: request matches, custom
+    (URL-alias) templates, then the most popular."""
+    chosen: dict[str, MemeTemplate] = {}
+    if request.strip():
+        for t in catalog.suggest(request, limit=BRIEF_MATCHES):
+            chosen.setdefault(t.id, t)
     for t in catalog.templates:
+        if t.background:
+            chosen.setdefault(t.id, t)
+    for t in sorted(catalog.templates, key=lambda t: t.rank)[:BRIEF_POPULAR]:
+        chosen.setdefault(t.id, t)
+    return list(chosen.values())
+
+
+def catalog_brief(catalog: MemeCatalog, request: str = "") -> str:
+    """The shortlist as the picker sees it: ``id | name | N | example | tags``."""
+    rows: list[str] = []
+    for t in brief_templates(catalog, request):
         example = " / ".join(x or "_" for x in t.example) if t.example else ""
-        tags = ", ".join([*t.keywords[:_BRIEF_TAGS], *(["gif"] if t.animated else [])])
+        tags = ", ".join(t.keywords[:_BRIEF_TAGS])
         rows.append(f"{t.id} | {t.name} | {t.lines} | {example} | {tags}")
     return "\n".join(rows)
 
@@ -418,7 +373,6 @@ class MemeChoice:
     template: MemeTemplate
     lines: list[str]
     draw: str | None = None
-    animated: bool = False
 
 
 def parse_pick(content: str | None, catalog: MemeCatalog) -> MemeChoice | str:
@@ -427,7 +381,7 @@ def parse_pick(content: str | None, catalog: MemeCatalog) -> MemeChoice | str:
     The model's JSON is ``{"template": id, "lines": [...]}`` or
     ``{"template": null, "reason": ...}``. Anything but an id from the
     catalog is a miss — the whole point of the picker running inside the
-    tool is that an invented name never reaches memegen. Too many lines are
+    tool is that an invented name never reaches the renderer. Too many lines are
     cut, not refused: the model miscounting boxes is not the user's problem.
     """
     from .service import _extract_json_object
@@ -452,8 +406,7 @@ def parse_pick(content: str | None, catalog: MemeCatalog) -> MemeChoice | str:
         return f"The picker chose {template.id} but wrote no captions."
     draw = parsed.get("draw")
     draw = draw.strip()[:MAX_CAPTION_CHARS] if isinstance(draw, str) and draw.strip() else None
-    animated = parsed.get("animated") is True and template.animated
-    return MemeChoice(template, lines, draw, animated)
+    return MemeChoice(template, lines, draw)
 
 
 def parse_aliases(entries: list[str]) -> dict[str, str]:
@@ -468,13 +421,8 @@ def parse_aliases(entries: list[str]) -> dict[str, str]:
 
 
 def describe_short(template: MemeTemplate) -> str:
-    """``id (Name, lines[, gif][, styles: a/b])`` — the @meme list line."""
-    bits = [template.name, str(template.lines)]
-    if template.animated:
-        bits.append("gif")
-    if template.styles:
-        bits.append("styles: " + "/".join(template.styles))
-    return f"{template.id} ({', '.join(bits)})"
+    """``id (Name, lines)`` — the @meme list line."""
+    return f"{template.id} ({template.name}, {template.lines})"
 
 
 def _describe(template: MemeTemplate) -> str:
@@ -486,17 +434,15 @@ def _describe(template: MemeTemplate) -> str:
 
 def plan_meme(
     catalog: MemeCatalog,
-    base: str,
     template_query: str,
     lines: list[str],
     options: MemeOptions | None = None,
 ) -> MemePlan:
-    """Resolve the name, check the captions and options, build the URL.
+    """Resolve the name and check the captions and options.
 
     Fewer captions than boxes is fine (the rest render blank — most people
-    only want two on a three-box template); more is not, since memegen would
-    drop them silently. Every option is checked against what the template
-    offers so the answer is a list of choices, not a memegen error page.
+    only want two on a three-box template); more is not, since there is no
+    box to put them in.
     """
     options = options or MemeOptions()
     if is_http_url(template_query.strip()):
@@ -533,142 +479,10 @@ def plan_meme(
                 template,
                 f"That caption is too long ({len(line)} chars; max {MAX_CAPTION_CHARS}).",
             )
-    option_error = _check_options(catalog, template, options)
-    if option_error:
-        return MemePlan(None, template, option_error)
-    padded = lines + [""] * (template.lines - len(lines))
-    # A URL alias keeps its own id so it resolves by name, but memegen only
-    # draws on a background under /images/custom/.
-    template_id = CUSTOM_TEMPLATE_ID if template.background else template.id
-    url = build_meme_url(base, template_id, padded, background=template.background, options=options)
-    return MemePlan(url, template, None)
-
-
-def _check_options(
-    catalog: MemeCatalog, template: MemeTemplate, options: MemeOptions
-) -> str | None:
-    if options.animated and not template.animated:
-        animated = ", ".join(t.id for t in catalog.templates if t.animated) or "none"
-        return f"{template.id} has no animated version. Animated templates: {animated}."
-    if options.style and options.style not in template.styles:
-        if not template.styles:
-            return f"{template.id} has no styles."
-        return f"{template.id} styles: {'/'.join(template.styles)}."
     if options.font and options.font not in FONTS:
-        return f"Fonts: {', '.join(FONTS)}."
-    return None
-
-
-def fetch_templates(
-    base: str,
-    *,
-    timeout: float,
-    opener: urllib.request.OpenerDirector | None = None,
-) -> list[MemeTemplate]:
-    """GET ``/templates/`` from the memegen base. Raises on any failure."""
-    from .service import validate_external_url
-
-    base = base.rstrip("/")
-    if not validate_external_url(base):
-        raise ValueError(f"memeApiBase is not a safe http(s) URL: {base!r}")
-    request = urllib.request.Request(
-        f"{base}/templates/", headers={"User-Agent": "vibebot-meme/1.0"}
-    )
-    opener = opener or urllib.request.build_opener()
-    with opener.open(request, timeout=timeout) as response:
-        body = response.read()
-    return parse_templates(json.loads(body))
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *_args: object, **_kwargs: object) -> None:
-        return None
-
-
-_MAX_CANONICAL_HOPS = 3
-
-
-def canonical_url(
-    url: str,
-    *,
-    timeout: float,
-    opener: urllib.request.OpenerDirector | None = None,
-) -> str:
-    """Ask memegen for its canonical spelling of ``url``.
-
-    memegen answers a caption it would spell differently (a curly quote, a
-    lone dash, "y\u2019all" from a phone keyboard) with a 301 to the canonical
-    URL — and the downloader refuses every redirect, since a Location can
-    point anywhere. So probe with HEAD first, redirects off, and follow only
-    a hop that stays on the same origin under /images/. Anything else —
-    no redirect, a redirect elsewhere, a HEAD the server rejects (422 on
-    gifs), a network error — leaves the URL as built.
-    """
-    from urllib.parse import urljoin, urlparse
-
-    opener = opener or urllib.request.build_opener(_NoRedirect())
-    origin = urlparse(url)
-    current = url
-    for _ in range(_MAX_CANONICAL_HOPS):
-        request = urllib.request.Request(
-            current, method="HEAD", headers={"User-Agent": "vibebot-meme/1.0"}
-        )
-        try:
-            with opener.open(request, timeout=timeout):
-                return current
-        except urllib.error.HTTPError as err:
-            if err.code not in (301, 302, 307, 308):
-                return current
-            location = err.headers.get("Location") if err.headers else None
-        except Exception:  # noqa: BLE001 — a probe must not sink the meme
-            return current
-        if not location:
-            return current
-        target = urlparse(urljoin(current, location))
-        if (target.scheme, target.netloc) != (origin.scheme, origin.netloc):
-            return current
-        if not target.path.startswith("/images/"):
-            return current
-        # memegen drops the query on its redirect; the options were ours.
-        current = target._replace(query=origin.query).geturl()
-    return current
-
-
-class CachedCatalog:
-    """A catalog that refreshes itself from memegen at most once per ``ttl``.
-
-    A failed refresh keeps the last good list and waits ``retry_after``
-    before trying again — a dead memegen must not cost a GET per @meme. Only
-    a first-ever failure leaves the catalog empty, which callers report as
-    "templates unavailable".
-    """
-
-    def __init__(
-        self, base: str, *, timeout: float, ttl: float = 86400.0, retry_after: float = 300.0
-    ) -> None:
-        self.base = base
-        self.timeout = timeout
-        self.ttl = ttl
-        self.retry_after = retry_after
-        self._catalog: MemeCatalog | None = None
-        self._next_attempt = 0.0
-        self._last_error: str | None = None
-
-    def get(self, now: float | None = None) -> MemeCatalog | None:
-        now = time.time() if now is None else now
-        if now >= self._next_attempt:
-            try:
-                self._catalog = MemeCatalog(fetch_templates(self.base, timeout=self.timeout))
-                self._last_error = None
-                self._next_attempt = now + self.ttl
-            except Exception as exc:  # noqa: BLE001 — keep the last good list
-                self._last_error = str(exc)
-                self._next_attempt = now + self.retry_after
-        return self._catalog
-
-    @property
-    def last_error(self) -> str | None:
-        return self._last_error
+        return MemePlan(None, template, f"Fonts: {', '.join(FONTS)}.")
+    padded = lines + [""] * (template.lines - len(lines))
+    return MemePlan(padded, template, None)
 
 
 def matches(template: MemeTemplate, word: str) -> bool:

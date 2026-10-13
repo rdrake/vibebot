@@ -39,6 +39,7 @@ from . import (
     ircquery,
     limnoria_bridge,
     meme,
+    meme_render,
     meme_topics,
     spaceweather,
     statuspage,
@@ -442,16 +443,15 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
     ),
     CommandInfo(
         name="meme",
-        args="[--gif] [--style <name>] [--font <name>] [--top] <template or image URL> | <caption> [| <caption> ...]",
+        args="[--font <name>] [--top] <template or image URL> | <caption> [| <caption> ...]",
         description=(
-            "Caption a meme template from memegen.link, or any image by URL. Name "
-            "the template, then the captions, separated by |. --gif renders the "
-            "animated version where one exists. 'list <word>' finds templates."
+            "Caption one of about a thousand meme templates, or any image by URL. "
+            "Name the template, then the captions, separated by |. "
+            "'list <word>' finds templates."
         ),
         examples=(
             "@meme drake | left on unread | left on read",
             "@meme distracted boyfriend | me | a new side project | my actual job",
-            "@meme --gif fine | | this is fine",
             "@meme list cat",
         ),
         category="generation",
@@ -1049,8 +1049,6 @@ class LLM(callbacks.Plugin):
         # Pending LIST / NAMES queries: fed by do322/do353 et al. on the
         # driver thread, awaited by @channels/@names and the irc_lookup tool.
         self._irc_queries = ircquery.IrcQueryRegistry()
-        # Built on first use from memeApiBase; see _meme_catalog.
-        self._meme_templates: meme.CachedCatalog | None = None
 
         # Channels already warned about an empty verseModel (warn once per channel).
         self._verse_model_warned: set[str] = set()
@@ -8732,15 +8730,11 @@ class LLM(callbacks.Plugin):
     draw = wrap(draw, [("checkCapability", "llm.draw"), "text"])
 
     def _meme_catalog(self) -> meme.MemeCatalog | None:
-        """The memegen template list, fetched at most daily. None when it
-        has never loaded (memegen unreachable since startup)."""
-        base = (self.registryValue("memeApiBase") or "").strip()
-        if self._meme_templates is None or self._meme_templates.base != base:
-            timeout = self.registryValue("drawTimeout") or self.registryValue("timeout")
-            self._meme_templates = meme.CachedCatalog(base, timeout=timeout)
-        catalog = self._meme_templates.get()
+        """The bundled template catalog plus topic tags and aliases. None
+        only when ``memes/templates.json`` is missing from the install."""
+        catalog = meme.bundled_catalog()
         if catalog is None:
-            self.log.warning("meme: templates unavailable: %s", self._meme_templates.last_error)
+            self.log.warning("meme: templates unavailable: %s missing", meme.CATALOG_PATH)
             return None
         catalog = catalog.with_keywords(meme_topics.TOPICS)
         aliases = meme.parse_aliases(self.registryValue("memeAliases") or [])
@@ -8770,37 +8764,31 @@ class LLM(callbacks.Plugin):
         lines: list[str],
         options: meme.MemeOptions | None = None,
     ) -> tuple[str | None, str]:
-        """Resolve, fetch from memegen, rehost. ``(url, error)``; one is set.
+        """Resolve, render, host. ``(url, error)``; one is set.
 
         Shared by @meme and the make_meme tool so an unknown name or a wrong
         caption count reads the same in both places.
 
-        Writes one $0 usage row per memegen fetch, under model ``memegen``:
+        Writes one $0 usage row per render, under model ``meme-render``:
         free, but media generation is attributable, and @usage should count a
-        meme the way it counts a draw. A resolver miss never reaches memegen
-        and gets no row, same as a draw prompt that fails validation.
+        meme the way it counts a draw. A resolver miss never renders and gets
+        no row, same as a draw prompt that fails validation.
         """
         options = options or meme.MemeOptions()
         catalog = self._meme_catalog()
         if catalog is None:
             return None, _("Meme templates are unavailable right now.")
-        base = (self.registryValue("memeApiBase") or "").strip()
-        plan = meme.plan_meme(catalog, base, template_query, lines, options)
-        if plan.error or plan.url is None:
+        plan = meme.plan_meme(catalog, template_query, lines, options)
+        if plan.error or plan.lines is None or plan.template is None:
             return None, plan.error or _("Could not build that meme.")
-        # One grep answers "did memegen get asked?" — the fetch helper logs
-        # only failures.
-        self.log.info("meme: template=%s lines=%s url=%s", plan.template.id, len(lines), plan.url)
-        timeout = self.registryValue("drawTimeout") or self.registryValue("timeout")
-        url = meme.canonical_url(plan.url, timeout=timeout)
-        hosted = self.llm_service._download_and_save_image(url)
-        error = "" if hosted else _("Could not fetch that meme from memegen.")
+        self.log.info("meme: template=%s lines=%s", plan.template.id, len(lines))
+        hosted, error = self._render_meme(plan.template, plan.lines, options)
         try:
             self.db.log_usage(
                 ircutils.nickFromHostmask(msg.prefix),
                 self._get_channel(msg),
                 "meme",
-                "memegen",
+                "meme-render",
                 0,
                 0,
                 0.0,
@@ -8816,13 +8804,43 @@ class LLM(callbacks.Plugin):
             return self._edit_meme(msg, hosted, options.draw), ""
         return hosted, ""
 
+    def _render_meme(
+        self, template: meme.MemeTemplate, lines: list[str], options: meme.MemeOptions
+    ) -> tuple[str | None, str]:
+        """Draw the captions and host the PNG. ``(url, error)``; one is set.
+
+        A custom template's image is fetched through the same guarded
+        downloader as any untrusted URL.
+        """
+        source: Path | bytes | None = template.image
+        if template.background:
+            fetched = self.llm_service._download_image_bytes(template.background)
+            if fetched is None:
+                return None, _("Could not fetch that image.")
+            source = fetched[0]
+        if source is None:
+            return None, _("That template has no image.")
+        try:
+            png = meme_render.render(
+                meme_render.load_image(source),
+                template.boxes,
+                lines,
+                font=options.font,
+                layout_top=options.layout_top,
+            )
+        except Exception:
+            self.log.exception("meme: render failed for %s", template.id)
+            return None, _("Could not draw that meme.")
+        hosted = self.llm_service._save_image_bytes(png, "png")
+        return (hosted, "") if hosted else (None, _("Could not save that meme."))
+
     def _edit_meme(self, msg: IrcMsg, hosted: str, draw: str) -> str:
         """Send the captioned meme through the edit model; the line to post.
 
         The captions are already pixels, so a refusal costs the picture and
         not the meme: the reply is the captioned URL with a note. The edit's
         own row goes into the usage table under the edit model, beside the
-        $0 memegen row, at what xAI reported (or the list price).
+        $0 render row, at what xAI reported (or the list price).
         """
         channel = self._get_channel(msg)
         result = self.llm_service.image_edit(hosted, draw, channel=channel)
@@ -8888,9 +8906,9 @@ class LLM(callbacks.Plugin):
         """Let the meme model pick the template and captions, then render.
 
         Runs only when the user named no template the catalog knows. The
-        pick is validated by :func:`meme.parse_pick` before memegen sees it;
+        pick is validated by :func:`meme.parse_pick` before anything renders;
         the picker's own completion is booked as a ``meme`` usage row under
-        its model, beside the $0 memegen row the render writes. Success is
+        its model, beside the $0 row the render writes. Success is
         ``url — id | line | line`` so the channel sees what was chosen and
         can redo it by hand.
         """
@@ -8899,7 +8917,10 @@ class LLM(callbacks.Plugin):
             return None, _("Meme templates are unavailable right now.")
         channel = self._get_channel(msg)
         pick = self.llm_service.meme_pick(
-            request, catalog_brief=meme.catalog_brief(catalog), channel=channel, context=context
+            request,
+            catalog_brief=meme.catalog_brief(catalog, request),
+            channel=channel,
+            context=context,
         )
         try:
             self.db.log_usage(
@@ -8925,8 +8946,6 @@ class LLM(callbacks.Plugin):
         options = options or meme.MemeOptions()
         if choice.draw and not options.draw:
             options = replace(options, draw=choice.draw)
-        if choice.animated and not options.animated:
-            options = replace(options, animated=True)
         hosted, error = self._make_meme(msg, choice.template.id, choice.lines, options)
         if hosted is None:
             return None, error
@@ -9242,7 +9261,7 @@ class LLM(callbacks.Plugin):
             "function": {
                 "name": "make_meme",
                 "description": (
-                    "Make a meme (memegen.link) and return the image URL. Two "
+                    "Make a meme and return the image URL. Two "
                     "modes: the user names a template and gives captions "
                     "(template + lines), or the user asks for a meme about "
                     "something (brief) and the tool picks the template and "
@@ -9287,21 +9306,6 @@ class LLM(callbacks.Plugin):
                                 "draw; omit otherwise."
                             ),
                         },
-                        "animated": {
-                            "type": "boolean",
-                            "description": (
-                                "True only if the user asked for a gif or animated "
-                                "version. Some templates have one; the error says "
-                                "which if not."
-                            ),
-                        },
-                        "style": {
-                            "type": "string",
-                            "description": (
-                                "An alternate image of the template, only if the "
-                                "user named one (e.g. doge 'bark', drake 'yes')."
-                            ),
-                        },
                     },
                     "required": [],
                 },
@@ -9321,11 +9325,8 @@ class LLM(callbacks.Plugin):
                     )
                 )
             lines = [str(line) for line in lines][: meme.MAX_LINES]
-            style = arguments.get("style")
             draw = arguments.get("draw")
             options = meme.MemeOptions(
-                animated=bool(arguments.get("animated")),
-                style=style.strip() if isinstance(style, str) and style.strip() else None,
                 draw=draw.strip() if isinstance(draw, str) and draw.strip() else None,
             )
             self.log.info(
@@ -9350,13 +9351,12 @@ class LLM(callbacks.Plugin):
         optlist: list,
         text: str,
     ) -> None:
-        """[--gif] [--style <name>] [--font <name>] [--top] <template or image URL> | <caption> [| <caption> ...]  or  list [<word>]
+        """[--font <name>] [--top] <template or image URL> | <caption> [| <caption> ...]  or  list [<word>]
 
-        Captions a meme template from memegen.link. Name the template (or
-        paste an image URL), then the captions, separated by |. A blank
-        caption leaves that box empty. --gif renders the animated version
-        where one exists, --style picks an alternate image (@meme list shows
-        them), --font changes the typeface, --top puts the text at the top.
+        Captions one of about a thousand meme templates. Name the template
+        (or paste an image URL), then the captions, separated by |. A blank
+        caption leaves that box empty. --font changes the typeface (thick,
+        thin, comic), --top puts the text in a white band above the picture.
         Or just say what you want: name no template (or no captions) and
         the bot picks one, writes the captions, and — when you describe who
         or what should be in the picture, or the template has a blank photo
@@ -9365,8 +9365,6 @@ class LLM(callbacks.Plugin):
         Examples:
           @meme drake | left on unread | left on read
           @meme distracted boyfriend | me | a new side project | my actual job
-          @meme --gif fine | | this is fine
-          @meme --style bark doge | such caption | very wow
           @meme waiting for claude to finish
           @meme spirit halloween costume of my dad
           @meme distracted boyfriend where the boyfriend is a sysadmin and the girl in red is kubernetes
@@ -9379,8 +9377,6 @@ class LLM(callbacks.Plugin):
             return
 
         options = meme.MemeOptions(
-            animated=any(opt == "gif" for opt, _v in optlist),
-            style=next((v for opt, v in optlist if opt == "style"), None),
             font=next((v for opt, v in optlist if opt == "font"), None),
             layout_top=any(opt == "top" for opt, _v in optlist),
         )
@@ -9418,7 +9414,7 @@ class LLM(callbacks.Plugin):
             return
 
         # Typing goes up only for the picker path: a named template with
-        # captions is a memegen fetch and nothing else. The grounding runs
+        # captions is a local render and nothing else. The grounding runs
         # there too — the same canon block and subject dossier @draw and
         # @animate feed their planners, so "@meme spirit costume of <real
         # person>" carries what they look like into the edit.
@@ -9461,8 +9457,6 @@ class LLM(callbacks.Plugin):
             ("checkCapability", "llm.draw"),
             getopts(
                 {
-                    "gif": "",
-                    "style": "something",
                     "font": "something",
                     "top": "",
                 }

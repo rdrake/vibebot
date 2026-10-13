@@ -736,14 +736,13 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "animateTrustedRateLimitWindow": 300,
         "animateUnregRateLimitCount": 1,
         "animateUnregRateLimitWindow": 7200,
-        # meme (mirrors config.py: free, the cap is politeness to memegen)
+        # meme (mirrors config.py)
         "memeRateLimitCount": 6,
         "memeRateLimitWindow": 60,
         "memeTrustedRateLimitCount": 12,
         "memeTrustedRateLimitWindow": 60,
         "memeUnregRateLimitCount": 2,
         "memeUnregRateLimitWindow": 600,
-        "memeApiBase": "https://api.memegen.link",
         "memeAliases": [],
         # Opt-in per test: True here would add make_meme to every extra_tools
         # assertion in the irc_lookup wiring tests.
