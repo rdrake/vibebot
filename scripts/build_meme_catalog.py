@@ -239,6 +239,7 @@ def main() -> None:
                 "example": [str(x) for x in (cfg.get("example") or [])][: len(boxes)],
                 "rank": mg_rank.get(mid, 5000),
                 "source": "memegen",
+                "layout": "memegen",
                 "boxes": boxes,
             }
         )
@@ -294,6 +295,9 @@ def main() -> None:
                 "example": example,
                 "rank": c["rank"],
                 "source": f"imgflip:{c['id']}",
+                # imgflip: the editor's preset boxes; drafted: a vision model's
+                # guess, unreviewed unless "validated" says otherwise.
+                "layout": "imgflip" if stolen else "drafted",
                 "boxes": boxes,
             }
         )
