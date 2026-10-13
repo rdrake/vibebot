@@ -1,0 +1,32 @@
+{
+  "_note": "Templates whose caption layout was checked by eye on a rendered sample. build_meme_catalog.py copies these into templates.json as \"validated\": true or \"issue\": \"...\". Add ids here (or pass review-page approvals) instead of re-rendering them.",
+  "ok": [
+    "what-a-week-huh",
+    "family-guy-louis-pills",
+    "memes-poop-jurassic-park",
+    "amateurs",
+    "anime-girl-hiding-from",
+    "two-paths",
+    "here-lies-spongebob",
+    "don-t-make-me-tap-the",
+    "1984-calendar",
+    "me-explaining-to-my-mom",
+    "spiderman-pointing-at",
+    "annoyed-bird",
+    "they-hated-jesus-because",
+    "boardroom-meeting",
+    "disappointed-black-guy",
+    "dead-baby-voldemort-what",
+    "mr-bean-copying",
+    "blank-nut-button",
+    "victoria-david-beckham",
+    "goose-chase",
+    "i-bet-he-s-thinking",
+    "monkey-puppet",
+    "flex-tape"
+  ],
+  "issues": {
+    "friendship-ended": "imgflip boxes sit over the baked-in names; text over text",
+    "marked-safe-from": "extra tiny rotated box on the flag is unreadable"
+  }
+}

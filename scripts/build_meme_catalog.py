@@ -173,6 +173,9 @@ def main() -> None:
     ap.add_argument("--work", type=Path, required=True)
     ap.add_argument("--drafts", default="drafts/sonnet")
     ap.add_argument("--rejects", type=Path)
+    ap.add_argument(
+        "--validated", type=Path, default=Path(__file__).with_name("meme_validated.json")
+    )
     ap.add_argument("--out", type=Path, default=Path("plugins/llm/src/llm/memes"))
     args = ap.parse_args()
 
@@ -296,6 +299,17 @@ def main() -> None:
         )
         taken_ids.add(tid)
         taken_names.update(norm(x) for x in names if x)
+
+    # Layouts already checked by eye: marked so nobody re-renders them.
+    checked = json.loads(args.validated.read_text()) if args.validated.exists() else {}
+    ok, issues = set(checked.get("ok", [])), checked.get("issues", {})
+    for e in entries:
+        if e["id"] in ok:
+            e["validated"] = True
+        elif e["id"] in issues:
+            e["issue"] = issues[e["id"]]
+    stats["validated"] = sum(1 for e in entries if e.get("validated"))
+    stats["issues"] = sum(1 for e in entries if e.get("issue"))
 
     entries.sort(key=lambda e: (e["rank"], e["id"]))
     (args.out / "templates.json").write_text(
