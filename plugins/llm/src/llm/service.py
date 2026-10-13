@@ -8324,6 +8324,18 @@ Examples (echo → action_prompt: ""):
         Returns:
             Local public URL to saved image or None on error
         """
+        fetched = self._download_image_bytes(url)
+        if fetched is None:
+            return None
+        return self._save_image_bytes(*fetched)
+
+    def _download_image_bytes(self, url: str) -> tuple[bytes, str] | None:
+        """Fetch an image from an untrusted URL: ``(bytes, extension)``.
+
+        None on any refusal or failure — unsafe URL, private host, redirect,
+        over 20 MB, network error. The extension comes from Content-Type,
+        then the URL path, then ``png``.
+        """
         import urllib.request
 
         # SSRF guard: provider-returned URLs are untrusted input. Apply the
@@ -8399,7 +8411,7 @@ Examples (echo → action_prompt: ""):
             if not extension:
                 extension = "png"
 
-            return self._save_image_bytes(data, extension)
+            return data, extension
 
         except Exception as e:
             self.log.warning("Failed to download image from %s: %s", url[:200], e)

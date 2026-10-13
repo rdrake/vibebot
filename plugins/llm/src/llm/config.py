@@ -1167,8 +1167,8 @@ _register_rate_limit_block(
     windows=(300, 60, 3600),
 )
 
-# --- meme (free: memegen renders, the bot only rehosts) ---
-# The ceiling is politeness to a third-party host and the channel, not spend.
+# --- meme (free: rendered locally) ---
+# The ceiling is politeness to the channel, not spend.
 _register_rate_limit_block(
     "meme",
     counts=(6, 12, 2),
@@ -1281,23 +1281,12 @@ conf.registerGlobalValue(
 
 conf.registerGlobalValue(
     LLM,
-    "memeApiBase",
-    registry.String(
-        "https://api.memegen.link",
-        _("""Base URL of a memegen-compatible API (https://memegen.link). The
-        bot reads /templates/ from it once a day and fetches /images/<id>/...png
-        for each meme, then rehosts the PNG like a generated image."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
     "memeAliases",
     registry.SpaceSeparatedListOfStrings(
         ["tyrone=yallgot", "biggums=yallgot", "chappelle=yallgot"],
         _("""Extra names for meme templates, as name=target pairs. A target
-        that is a memegen template id makes the name a keyword on it
-        (memegen files Tyrone Biggums under the quote, yallgot). A target
+        that is a template id makes the name a keyword on it (Tyrone Biggums
+        is filed under the quote, yallgot). A target
         that is an image URL adds a two-caption template drawn on that image.
         Use hyphens for spaces in the name."""),
     ),
@@ -1310,7 +1299,7 @@ conf.registerChannelValue(
         "anthropic/claude-haiku-5-5",
         _("""Model that picks a template and writes captions when @meme (or
         make_meme's brief) does not name a template the catalog knows. One
-        JSON completion over the ~30 KB catalog per pick (about $0.01, 3 s).
+        JSON completion over a ~30 KB catalog shortlist per pick (about $0.01, 3 s).
         Empty falls back to assistantModel — but grok-4-1-fast copies the
         template's example captions instead of writing its own (measured
         2026-09-18: non-reasoning 4/4, reasoning 2/4; gemini-flash 0/4)."""),

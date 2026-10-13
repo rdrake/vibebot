@@ -196,11 +196,11 @@ NOTIFY_GUIDANCE = (
 # Appended to the chat framework ONLY when the make_meme tool is injected
 # (memeEnabled channels). The model's job here is transcription, not taste:
 # the user names the template and the captions, the tool resolves the name
-# against memegen's list and reports a miss with suggestions. Left to its own
+# against the template catalog and reports a miss with suggestions. Left to its own
 # judgement grok picks the wrong template or draws a "meme" with
 # generate_image, which misspells the captions and refuses the characters.
 MEME_GUIDANCE = (
-    "- make_meme captions a meme template (memegen.link). HARD RULE: "
+    "- make_meme captions a meme template. HARD RULE: "
     "when the user names a meme ('drake meme', 'distracted boyfriend', "
     "'this is fine') or pastes an image URL to caption, and gives caption "
     "text, you MUST call make_meme with template set to the name (or URL) "
@@ -224,8 +224,8 @@ MEME_PICK_PROMPT = """\
 You choose a meme template for a request and write its captions.
 
 Answer with one JSON object and nothing else:
-  {"template": "<id>", "lines": ["<caption>", ...], "draw": "<picture>", "animated": true}
-("draw" and "animated" are optional) or, when no template in the catalog fits:
+  {"template": "<id>", "lines": ["<caption>", ...], "draw": "<picture>"}
+("draw" is optional) or, when no template in the catalog fits:
   {"template": null, "reason": "<one short sentence>"}
 
 Rules:
@@ -250,8 +250,6 @@ Rules:
   who or what should be in the picture ("the boyfriend is a sysadmin and the
   girl in red is a Kubernetes logo", "with a photo of ..."). A request that
   only supplies captions gets no draw.
-- "animated": true only when the user asks for a gif or animated version and
-  the template's tags include "gif".
 - Blocks under the request ("Established facts about the real subjects...",
   canon) are facts about who and what it names. Use them for the captions,
   and copy the appearance facts into "draw" beside the name — the image

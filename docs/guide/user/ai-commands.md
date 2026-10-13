@@ -127,26 +127,23 @@ Caption a meme template. Name the template and write the captions, or just say w
 
 When the first part names no template the bot knows, a model reads the whole request against the catalog (names, example captions, topics), picks a template and writes the captions — any captions you gave after a `|` are kept verbatim. Real people and places named in the request get the same look-up `@draw` does (their appearance goes into the picture edit), and on a verse channel the canon block too. The reply is the image followed by `template | caption | caption`, so you can see what it chose and redo it by hand. If nothing in the catalog fits it says so, with the closest names. This costs about a cent per pick; naming a template costs nothing.
 
-Separate the captions with `|`, in the order the template reads (top to bottom, left to right). An empty caption leaves that box blank; fewer captions than boxes is fine, more is an error that tells you how many the template takes. `@meme <template>` alone shows the template's caption count and an example, and `@meme list <word>` finds templates by name, keyword, topic, or example caption — there are about 200, rendered by [memegen.link](https://memegen.link), with names like `drake`, `db` (Distracted Boyfriend), `fry`, `doge`, `buzz`, and `fine`.
+Separate the captions with `|`, in the order the template reads (top to bottom, left to right). An empty caption leaves that box blank; fewer captions than boxes is fine, more is an error that tells you how many the template takes. `@meme <template>` alone shows the template's caption count and an example, and `@meme list <word>` finds templates by name, keyword, topic, or example caption — there are over a thousand, drawn by the bot itself, with names like `drake`, `db` (Distracted Boyfriend), `fry`, `doge`, `buzz`, `fine`, `trade-offer`, and `absolute-cinema`.
 
-memegen names most templates by the quote, so the bot also matches on the words you share with a name: `willy wonka` finds Condescending Wonka, `elmo fire` finds Elmo. When two templates tie it lists both rather than guessing. Every template also carries topic tags — the characters people name it by and the situations it fits — so `monday` reaches the Will Smith slap and `harry potter` reaches Hagrid; a topic shared by several templates (`cat`, `star wars`) lists them instead. A topic memegen has nothing for (`gym`, `exercise`) says so — paste an image URL instead. Your operator can add names memegen lacks — Tyrone Biggums is filed under the quote, `yallgot`, and `tyrone` is aliased to it out of the box.
+Many templates are named by the quote, so the bot also matches on the words you share with a name: `willy wonka` finds Condescending Wonka, `elmo fire` finds Elmo. When two templates tie it lists both rather than guessing. Every template also carries topic tags — the characters people name it by and the situations it fits — so `monday` reaches the Will Smith slap and `harry potter` reaches Hagrid; a topic shared by several templates (`cat`, `star wars`) lists them instead. A topic nothing matches says so — paste an image URL instead. Your operator can add names the catalog lacks — Tyrone Biggums is filed under the quote, `yallgot`, and `tyrone` is aliased to it out of the box.
 
 Any image works as a template: paste its URL in place of the name and give a top and a bottom caption.
 
-Flags go before the template. `--gif` renders the animated version (17 templates have one — `fine`, `fry`, `money`, `rollsafe`, `bongo`, `both`, `buzz`, `patrick` among them; `@meme list` marks them `gif`). `--style <name>` picks an alternate image where the template has them (`doge` has `bark`, `bite`, `growl`, `pet`; `drake` has `yes`, `no`, `beat`; the list shows `styles:`). `--font <name>` changes the typeface (`impact` is the classic; the error lists the eight). `--top` puts a single caption at the top instead of the bottom.
+Flags go before the template. `--font <name>` changes the typeface (`thick`, the default; `thin`; `comic`). `--top` ignores the template's boxes and puts the captions in a white band above the picture, one row each.
 
 ```
-@meme --gif fine | | this is fine
-@meme --style bark doge | such deploy | very friday
-@meme --font impact --top rollsafe | can't fail tests if you don't run them
+@meme --font comic --top rollsafe | can't fail tests if you don't run them
 ```
 
-Say who or what should be in the picture and the picker edits the picture too: after the captions are on it (so the text always survives), the meme goes through an image-edit model — filling a template's blank photo (`spirit`, the Spirit Halloween costume; `same`, Pam's two pictures) or changing who is in the picture on any template. Asking for a gif in words works the same way for templates that have one. About $0.02 per edit, booked in `@usage` beside the meme; a refused edit posts the captioned meme with a note instead of failing. No flags to type: the `|` form with a template you name is the only path that never calls a model.
+Say who or what should be in the picture and the picker edits the picture too: after the captions are on it (so the text always survives), the meme goes through an image-edit model — filling a template's blank photo (`spirit`, the Spirit Halloween costume; `same`, Pam's two pictures) or changing who is in the picture on any template. About $0.02 per edit, booked in `@usage` beside the meme; a refused edit posts the captioned meme with a note instead of failing. No flags to type: the `|` form with a template you name is the only path that never calls a model.
 
 ```
 @meme spirit halloween costume of my dad
 @meme distracted boyfriend where the boyfriend is a sysadmin and the girl in red is a glowing kubernetes logo
-@meme animated this is fine but about the build
 ```
 
 ```

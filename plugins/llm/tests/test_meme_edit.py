@@ -18,6 +18,7 @@ from llm import meme
 from llm.service import ImageResult, LLMService
 
 from .conftest import make_registry_side_effect
+from .test_meme_command import write_catalog
 
 if TYPE_CHECKING:
     pass
@@ -101,32 +102,34 @@ class TestImageEdit:
         opened.assert_not_called()
 
 
-_TEMPLATES = meme.parse_templates(
-    [
-        {"id": "spirit", "name": "Fake Spirit Halloween Costume", "lines": 5, "keywords": []},
-        {"id": "drake", "name": "Drakeposting", "lines": 2, "keywords": []},
+def _boxes(count: int) -> list[dict[str, float]]:
+    return [
+        {"anchor_x": 0.0, "anchor_y": i / count, "scale_x": 1.0, "scale_y": 1.0 / count}
+        for i in range(count)
     ]
-)
+
+
+_ENTRIES = [
+    {"id": "spirit", "name": "Fake Spirit Halloween Costume", "boxes": _boxes(5)},
+    {"id": "drake", "name": "Drakeposting", "boxes": _boxes(2)},
+]
 
 
 @pytest.fixture
-def meme_plugin(plugin_env, mocker):
+def meme_plugin(plugin_env, mocker, tmp_path):
     from llm.service import MemePick
 
     plugin, mock_irc, mock_msg = plugin_env
     mock_irc.state.nickToAccount.return_value = "test_account"
     plugin.registryValue.side_effect = make_registry_side_effect({"memeEnabled": True})
-    mocker.patch.object(
-        meme.CachedCatalog, "get", return_value=meme.MemeCatalog(_TEMPLATES), autospec=True
-    )
-    plugin.llm_service._download_and_save_image.return_value = CAPTIONED
+    mocker.patch.object(meme, "bundled_catalog", return_value=write_catalog(_ENTRIES, tmp_path))
+    plugin.llm_service._save_image_bytes.return_value = CAPTIONED
     plugin.llm_service.image_edit.return_value = ImageResult(
         content=EDITED, cost=0.022, model="xai/grok-imagine-image", url=EDITED
     )
     plugin.llm_service.meme_pick.return_value = MemePick(
         '{"template": null, "reason": "Nothing fits."}', "test-model"
     )
-    mocker.patch.object(meme, "canonical_url", side_effect=lambda url, **_kw: url)
     return plugin, mock_irc, mock_msg
 
 
@@ -153,7 +156,12 @@ class TestPictureFromThePicker:
         )
         assert mock_irc.reply.call_args.args[0].startswith(EDITED)
         rows = [(c.args[3], c.args[6]) for c in plugin.db.log_usage.call_args_list]
-        assert rows == [("test-model", 0.0), ("memegen", 0.0), ("xai/grok-imagine-image", 0.022)]
+        assert rows == [
+            ("test-model", 0.0),
+            ("meme-render", 0.0),
+            ("xai/grok-imagine-image", 0.022),
+        ]
+        assert plugin.llm_service._save_image_bytes.call_args.args[0].startswith(b"\x89PNG")
 
     def test_refused_edit_keeps_the_captioned_meme(self, meme_plugin) -> None:
         from llm.service import MemePick
@@ -194,23 +202,6 @@ class TestPictureFromThePicker:
 
         plugin.llm_service.meme_pick.assert_not_called()
         plugin.llm_service.image_edit.assert_not_called()
-
-    def test_picker_animated_renders_the_gif(self, meme_plugin) -> None:
-        from llm.service import MemePick
-
-        plugin, mock_irc, mock_msg = meme_plugin
-        animated = meme.parse_templates(
-            [{"id": "fine", "name": "This is Fine", "lines": 2, "styles": ["animated"]}]
-        )
-        meme.CachedCatalog.get.return_value = meme.MemeCatalog(animated)
-        plugin.llm_service.meme_pick.return_value = MemePick(
-            '{"template": "fine", "lines": ["", "this is fine"], "animated": true}', "test-model"
-        )
-
-        plugin.meme(mock_irc, mock_msg, ["animated this is fine but about ci"])
-
-        fetched = plugin.llm_service._download_and_save_image.call_args.args[0]
-        assert fetched == "https://api.memegen.link/images/fine/_/this_is_fine.gif?style=animated"
 
     def test_tool_draw_parameter(self, meme_plugin) -> None:
         plugin, _, mock_msg = meme_plugin
