@@ -573,3 +573,37 @@ def test_storybook_job_pm_delivers_to_nick(plugin_env, mocker):
     target, text = privmsg.call_args.args
     assert target == "alice"
     assert "story_x.html" in text
+
+
+def test_generate_storybook_books_a_refused_draw_that_billed(make_service, mocker, tmp_path):
+    """GIVEN one draw raises a refusal the provider still charged WHEN the
+    page is built THEN that refusal's cost is in the page total, not lost."""
+    service, _plugin = make_service(httpRoot=str(tmp_path), httpUrlBase="http://h/llm")
+    mocker.patch.object(
+        service,
+        "_generate_story_struct",
+        return_value={
+            "title": "T",
+            "story_markdown": "a [[illustration:1]] b [[illustration:2]] c",
+            "illustrations": [
+                {"id": 1, "caption": "c1", "image_prompt": "fine"},
+                {"id": 2, "caption": "c2", "image_prompt": "refused"},
+            ],
+        },
+    )
+    from llm.service import ImageResult
+
+    def draw(prompt, *_args, **_kwargs):
+        if prompt.endswith("refused"):
+            raise RuntimeError("moderation: billed")
+        return ImageResult(content="ok", url="http://h/llm/img.jpg", cost=0.07)
+
+    mocker.patch.object(service, "_attempt_image_generation", side_effect=draw)
+    billed = mocker.patch.object(service, "_billed_failure_cost", return_value=0.05)
+
+    result = service.generate_storybook("b", channel="#c", persona="v")
+
+    assert result is not None
+    assert result.image_count == 1
+    assert abs(result.cost - 0.12) < 1e-9
+    assert isinstance(billed.call_args.args[0], RuntimeError)
