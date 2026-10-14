@@ -5476,7 +5476,7 @@ class LLM(callbacks.Plugin):
             if msg.command != "730":
                 continue
             try:
-                watchers = self.db.pop_nick_watches(net, nick)
+                watchers = self.db.pop_nick_watches(net, nick, max_age=_WATCH_MAX_AGE)
             except Exception:
                 self.log.exception("notify_when_online: watch lookup failed for %s", nick)
                 continue
