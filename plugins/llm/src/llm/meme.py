@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .meme_render import FONT_FILES, TOP_BOTTOM, Box
+from .meme_topics import PICTURE_SLOT
 
 # A caption past this length renders as unreadable four-point text anyway.
 MAX_CAPTION_CHARS = 200
@@ -363,7 +364,12 @@ def catalog_brief(catalog: MemeCatalog, request: str = "") -> str:
     rows: list[str] = []
     for t in brief_templates(catalog, request):
         example = " / ".join(x or "_" for x in t.example) if t.example else ""
-        tags = ", ".join(t.keywords[:_BRIEF_TAGS])
+        # The picture-slot tag decides whether the picker adds a draw; a
+        # template with many alt names must not push it past the cut.
+        keywords = [k for k in t.keywords if k != PICTURE_SLOT]
+        if PICTURE_SLOT in t.keywords:
+            keywords.insert(0, PICTURE_SLOT)
+        tags = ", ".join(keywords[:_BRIEF_TAGS])
         rows.append(f"{t.id} | {t.name} | {t.lines} | {example} | {tags}")
     return "\n".join(rows)
 

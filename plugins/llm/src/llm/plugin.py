@@ -8736,7 +8736,9 @@ class LLM(callbacks.Plugin):
         if catalog is None:
             self.log.warning("meme: templates unavailable: %s missing", meme.CATALOG_PATH)
             return None
-        catalog = catalog.with_keywords(meme_topics.TOPICS)
+        catalog = catalog.with_keywords(meme_topics.TOPICS).with_keywords(
+            dict.fromkeys(meme_topics.PICTURE_SLOTS, (meme_topics.PICTURE_SLOT,))
+        )
         aliases = meme.parse_aliases(self.registryValue("memeAliases") or [])
         return catalog.with_aliases(aliases) if aliases else catalog
 
