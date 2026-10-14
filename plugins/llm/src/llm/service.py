@@ -9313,11 +9313,11 @@ Examples (echo → action_prompt: ""):
         if not response or (row.watch_mode and response == "[silent]"):
             return
         safe_response = self.sanitize_output(response)
-        # Collapse to a single IRC-safe line (matches the reminder/async paths)
-        # and route through _safe_privmsg so CR/LF/NUL in model output cannot
-        # smuggle a second IRC command past the raw-queue path.
-        safe_response = self.plugin._collapse_for_irc(safe_response) or safe_response
-        self.plugin._safe_queue(irc, self.plugin._safe_privmsg(target, safe_response))
+        # One IRC-safe line, pastebinned when long (matches the reminder/async
+        # paths), sent through _safe_privmsg so CR/LF/NUL in model output
+        # cannot smuggle a second IRC command past the raw-queue path.
+        line = self.plugin._format_pending_completed_reply(row.creator_nick, safe_response, target)
+        self.plugin._safe_queue(irc, self.plugin._safe_privmsg(target, line))
 
     def _maybe_reschedule_or_clean(
         self,

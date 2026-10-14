@@ -1828,6 +1828,38 @@ class TestReminderActionDelivery:
         assert sent.args[1] == "alice: Reminder (check build): all green"
         assert "+draft/reply" not in (sent.server_tags or {})
 
+    def test_long_action_reply_is_pastebinned_not_truncated(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a ~900-char action result WHEN the reminder fires THEN it goes
+        out as a teaser + URL instead of one PRIVMSG the server cuts off."""
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        active_irc.state.capabilities_ack = set()
+        mock_world.ircs = [active_irc]
+        mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
+        long_reply = " ".join(f"word{i}" for i in range(150))  # ~900 chars
+        assert len(long_reply) > 850
+        plugin.llm_service.assistant_request.return_value = AssistantResult(content=long_reply)
+        plugin.llm_service.save_markdown_to_http.return_value = "http://h/remind.html"
+
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "check build",
+            "llm_remind_long_1",
+            action_prompt="check build",
+            account="acct",
+        )
+        deliver()
+
+        sent = active_irc.queueMsg.call_args[0][0]
+        assert sent.args[1].startswith("alice: ")
+        assert "http://h/remind.html" in sent.args[1]
+        assert "word149" not in sent.args[1]
+        assert long_reply in plugin.llm_service.save_markdown_to_http.call_args.args[0]
+
     def test_action_delivery_falls_back_on_pre_request_exception(
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
