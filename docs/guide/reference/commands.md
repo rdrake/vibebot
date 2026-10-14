@@ -170,8 +170,8 @@ in conversation, "who is eck?" reaches the same `WHOIS` through the
 `@verseopt`, `@verse`, `@look` and `@who` must be typed in a
 verse-enabled channel and need the `llm.verse` capability. `@rp` needs
 `llm.verse` too, but answers as ordinary chat when the channel has no
-verse or you have no avatar. `@avatar` needs neither and works
-anywhere, including PM.
+verse or you have no avatar. `@avatar` needs neither capability and works
+anywhere, including PM, but needs an authenticated account.
 
 | Command | Arguments | Description |
 |---------|-----------|-------------|
