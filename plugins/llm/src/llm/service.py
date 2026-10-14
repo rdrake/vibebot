@@ -6056,6 +6056,36 @@ Examples (echo → action_prompt: ""):
         messages.append({"role": "user", "content": guard.nudge})
         return True
 
+    def _serve_refusal_fallback(
+        self,
+        turn_args: dict[str, Any],
+        primary: str,
+        fallback: str,
+        trigger: str,
+        primary_spent: dict[str, Any],
+    ) -> AssistantResult:
+        """Re-run a refused assistant turn on ``fallback``; book both models' spend.
+
+        The whole turn runs again from the original call, so the fallback never
+        sees the refusal or its nudge: non-reasoning grok copies a refusal it
+        finds in context. Tools that ran before the refusal run again.
+        """
+        rerun: dict[str, Any] = {**turn_args, "model_override": fallback, "manage_typing": False}
+        result = self.assistant_completion(**rerun)
+        self.log.warning(
+            "refusal_fallback_served primary=%s fallback=%s trigger=%s",
+            primary,
+            fallback,
+            trigger,
+        )
+        # One usage row per turn, under the model that answered; the primary's
+        # refused calls are folded into it, as leaf-tool spend already is.
+        return result._replace(
+            prompt_tokens=result.prompt_tokens + primary_spent["prompt_tokens"],
+            completion_tokens=result.completion_tokens + primary_spent["completion_tokens"],
+            cost=result.cost + primary_spent["cost"],
+        )
+
     def assistant_completion(
         self,
         prompt: str,
@@ -6122,6 +6152,9 @@ Examples (echo → action_prompt: ""):
         Returns:
             AssistantResult with the final text, is_meta flag, and usage stats
         """
+        # The call as made, before anything below rebinds a parameter: a
+        # refusal fallback re-runs the whole turn from exactly these.
+        turn_args = {k: v for k, v in locals().items() if k != "self"}
         from .assistant import (
             AssistantToolExecutor,
             ToolResult,
@@ -6132,6 +6165,7 @@ Examples (echo → action_prompt: ""):
         total_completion_tokens = 0
         total_cost = 0.0
         model = ""
+        fallback_model = ""
         executor: AssistantToolExecutor | None = None
 
         def spent() -> dict[str, Any]:
@@ -6168,6 +6202,14 @@ Examples (echo → action_prompt: ""):
                     content=error_content,
                     error=error_content,
                 )
+            # Empty when there is nowhere to fall back to. The re-run carries
+            # the fallback as its model, which is what stops it falling back
+            # again.
+            fallback_model = self.plugin.registryValue("refusalFallbackModel", target) or ""
+            if fallback_model == model or (
+                fallback_model and self._missing_key_error(fallback_model)
+            ):
+                fallback_model = ""
 
             max_steps = self.plugin.registryValue("metaMaxSteps")
             timeout = self.plugin.registryValue("timeout")
@@ -6725,6 +6767,13 @@ Examples (echo → action_prompt: ""):
                     ):
                         continue
 
+                    # Still refusing with the nudge spent (the driver checks
+                    # budget first, so a live refusal here means it is gone).
+                    if fallback_model and _is_safety_refusal(content):
+                        return self._serve_refusal_fallback(
+                            turn_args, model, fallback_model, "text", spent()
+                        )
+
                     # Fold in any costs accumulated by leaf tool calls
                     total_prompt_tokens += executor.accumulated_prompt_tokens
                     total_completion_tokens += executor.accumulated_completion_tokens
@@ -7113,6 +7162,10 @@ Examples (echo → action_prompt: ""):
             # 113 of them in the prod log, including refusals the user could
             # have simply reworded.
             self.log.exception("assistant_completion failed: %s", self._sanitize(str(e)))
+            if fallback_model and self._is_provider_refusal(e):
+                return self._serve_refusal_fallback(
+                    turn_args, model, fallback_model, "provider_error", spent()
+                )
             return AssistantResult(
                 content=self._handle_llm_error(e, "chat"),
                 error=self._sanitize(str(e)),

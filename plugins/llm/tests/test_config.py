@@ -101,6 +101,18 @@ class TestValidatedModelName:
         v.setValue("gemini/gemini-1.5-flash")
         assert v() == "gemini/gemini-1.5-flash"
 
+    def test_refusal_fallback_model_validates_without_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """GIVEN the priced refusal fallback WHEN setValue THEN no unknown-model warning."""
+        model = "xai/grok-4-1-fast-non-reasoning"
+        ValidatedModelName._warned.discard(model)
+        v = self._make()
+        with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
+            v.setValue(model)
+        assert v() == model
+        assert "not in litellm" not in caplog.text.lower()
+
     def test_default_image_model_passes(self) -> None:
         """GIVEN default imageModel value WHEN validated THEN passes (warn OK)."""
         v = self._make()
@@ -219,6 +231,7 @@ class TestConfigValues:
         assert conf.supybot.plugins.LLM.assistantModel() == "anthropic/claude-haiku-5-5"
         assert conf.supybot.plugins.LLM.assistantSystemPrompt() != ""
         assert conf.supybot.plugins.LLM.imageModel() == "gemini/imagen-4.0-fast-generate-001"
+        assert conf.supybot.plugins.LLM.refusalFallbackModel() == "xai/grok-4-1-fast-non-reasoning"
 
     def test_bridge_allow_mutating_registered_with_safe_default(self) -> None:
         """B1: bridgeAllowMutating defaults to False (gate closed).

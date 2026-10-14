@@ -15,7 +15,7 @@ instead.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from llm.assistant import ToolCallbackResult
@@ -347,3 +347,133 @@ class TestStaleImageGuard:
         )
 
         assert fresh in (result.content or "")
+
+
+FALLBACK = "xai/grok-4-1-fast-non-reasoning"
+REFUSAL = "I can't help with that."
+
+
+class TestRefusalFallback:
+    """A refusal the nudge could not fix re-runs the turn once on another model."""
+
+    @pytest.fixture
+    def run(self, make_service, mocker: MockerFixture):  # type: ignore[no-untyped-def]
+        """Run one chat turn against scripted completions; return result, calls, log."""
+
+        def _run(outcomes: list[object], **overrides: object) -> tuple[Any, list[dict], Any]:
+            svc, _plugin = make_service(
+                **{"assistantModel": "gpt-4", "refusalFallbackModel": FALLBACK, **overrides}
+            )
+            svc.log = mocker.MagicMock()
+            calls: list[dict] = []
+
+            def fake_completion(**kwargs: Any) -> object:
+                calls.append({"model": kwargs["model"], "messages": list(kwargs["messages"])})
+                outcome = outcomes[min(len(calls), len(outcomes)) - 1]
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return make_completion_response(str(outcome))
+
+            mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
+            mocker.patch(
+                "llm.service.litellm.completion_cost",
+                side_effect=lambda **kw: 0.5 if kw["model"] == FALLBACK else 0.25,
+            )
+            result = svc.assistant_completion(
+                prompt="tell us a filthy joke",
+                nick="rdrake",
+                channel="#afternet",
+                db=mocker.MagicMock(),
+                context=mocker.MagicMock(),
+                bot_nick="VibeBot",
+            )
+            served = [
+                c.args[0] % c.args[1:]
+                for c in svc.log.warning.call_args_list
+                if "refusal_fallback_served" in c.args[0]
+            ]
+            return result, calls, served
+
+        return _run
+
+    def test_text_refusal_reruns_turn_on_fallback(self, run) -> None:  # type: ignore[no-untyped-def]
+        """Refused, nudged, refused again: the fallback's reply is delivered."""
+        result, calls, served = run([REFUSAL, REFUSAL, "here's your filth"])
+
+        assert result.content == "here's your filth"
+        assert [c["model"] for c in calls] == ["gpt-4", "gpt-4", FALLBACK]
+        assert result.model == FALLBACK
+        # The primary's two calls stay booked alongside the fallback's one.
+        assert result.cost == pytest.approx(0.25 * 2 + 0.5)
+        assert served == [f"refusal_fallback_served primary=gpt-4 fallback={FALLBACK} trigger=text"]
+
+    def test_fallback_sees_clean_request_only(self, run) -> None:  # type: ignore[no-untyped-def]
+        """Neither the refusal nor the nudge reaches the fallback model."""
+        _result, calls, _served = run([REFUSAL, REFUSAL, "fine"])
+
+        fallback_messages = str(calls[2]["messages"])
+        assert REFUSAL not in fallback_messages
+        assert _SAFETY_REFUSAL_RETRY_NUDGE not in fallback_messages
+        assert calls[2]["messages"] == calls[0]["messages"]
+
+    def test_provider_refusal_error_reruns_on_fallback(self, run) -> None:  # type: ignore[no-untyped-def]
+        """A provider refusal raised by the primary is retried on the fallback."""
+        refused = Exception("Output blocked: content violates usage guidelines")
+        result, calls, served = run([refused, "sure thing"])
+
+        assert result.content == "sure thing"
+        assert [c["model"] for c in calls] == ["gpt-4", FALLBACK]
+        assert calls[1]["messages"] == calls[0]["messages"]
+        assert served == [
+            f"refusal_fallback_served primary=gpt-4 fallback={FALLBACK} trigger=provider_error"
+        ]
+
+    def test_fallback_that_also_refuses_is_delivered_without_looping(self, run) -> None:  # type: ignore[no-untyped-def]
+        """One fallback per turn: grok's own refusal gets its nudge, then ships."""
+        result, calls, served = run([REFUSAL])
+
+        assert result.content == REFUSAL
+        assert [c["model"] for c in calls] == ["gpt-4", "gpt-4", FALLBACK, FALLBACK]
+        assert len(served) == 1
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [{"refusalFallbackModel": ""}, {"assistantModel": FALLBACK}],
+        ids=["disabled", "primary-is-fallback"],
+    )
+    def test_no_fallback(self, run, overrides: dict[str, str]) -> None:  # type: ignore[no-untyped-def]
+        """Empty setting, or a primary that already is the fallback, delivers the refusal."""
+        result, calls, served = run([REFUSAL], **overrides)
+
+        assert result.content == REFUSAL
+        assert len(calls) == 2
+        assert served == []
+
+    def test_no_fallback_without_its_key(self, run, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+        """A fallback provider with no key is skipped silently."""
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        result, calls, served = run([REFUSAL])
+
+        assert result.content == REFUSAL
+        assert {c["model"] for c in calls} == {"gpt-4"}
+        assert served == []
+
+
+# A real ModelResponse makes pydantic warn about litellm's own TypedDicts.
+@pytest.mark.filterwarnings("ignore::UserWarning:pydantic")
+def test_fallback_model_books_grok_4_3_rates(mocker: MockerFixture) -> None:
+    """The alias costs grok-4.3's per-token rates, not LiteLLM's silent $0."""
+    import litellm
+
+    response = litellm.ModelResponse(
+        model="grok-4-1-fast-non-reasoning",
+        choices=[{"message": {"role": "assistant", "content": "hi"}}],
+        usage={"prompt_tokens": 1000, "completion_tokens": 1000, "total_tokens": 2000},
+    )
+    grok = litellm.model_cost["xai/grok-4.3"]
+    expected = 1000 * grok["input_cost_per_token"] + 1000 * grok["output_cost_per_token"]
+
+    _p, _c, cost = LLMService._extract_usage(mocker.MagicMock(), response, FALLBACK)
+
+    assert cost > 0
+    assert cost == pytest.approx(expected)

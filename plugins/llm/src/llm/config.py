@@ -15,6 +15,26 @@ _ = PluginInternationalization("LLM")
 
 _log = logging.getLogger("supybot.plugins.LLM.config")
 
+# refusalFallbackModel's default. LiteLLM's price table has no entry for it, so
+# completion_cost would fail and its spend would book at $0. The alias is
+# served by grok-4.3 non-reasoning (owner, 2026-10-14), so it is priced at
+# grok-4.3's per-token rates. Registered here rather than in service.py because
+# the registry validates defaults at import, and config loads first.
+REFUSAL_FALLBACK_MODEL = "xai/grok-4-1-fast-non-reasoning"
+litellm.register_model(
+    {
+        REFUSAL_FALLBACK_MODEL: {
+            key: litellm.model_cost["xai/grok-4.3"][key]
+            for key in (
+                "input_cost_per_token",
+                "output_cost_per_token",
+                "cache_read_input_token_cost",
+            )
+        }
+        | {"litellm_provider": "xai", "mode": "chat"}
+    }
+)
+
 
 class ValidatedModelName(registry.String):
     """A model name validated against litellm's known models.
@@ -55,8 +75,9 @@ class ValidatedModelName(registry.String):
                 msg += f" ({type(exc).__name__})"
             raise registry.InvalidRegistryValue(msg) from exc
 
-        # Provider recognized — warn once if model is not in the known list
-        if model not in litellm.model_list:
+        # Provider recognized — warn once if model is not in the known list.
+        # model_cost also counts: litellm.register_model fills only that.
+        if model not in litellm.model_list and model not in litellm.model_cost:
             with ValidatedModelName._warned_lock:
                 if model not in ValidatedModelName._warned:
                     ValidatedModelName._warned.add(model)
@@ -165,6 +186,19 @@ conf.registerChannelValue(
         _("""Model used for all assistant text+tool work (chat, planner loop,
         memory, reminder parsing, scheduled tasks). Must support
         vision if image URLs in chat should work."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
+    "refusalFallbackModel",
+    ValidatedModelName(
+        REFUSAL_FALLBACK_MODEL,
+        _("""Model that re-runs an assistant turn once when the turn's model
+        refuses: a policy refusal that survived its one retry, or a provider
+        refusal error. The fallback sees the original request only, never the
+        refusal. Empty disables. Skipped when the turn already runs on this
+        model or its provider has no key."""),
     ),
 )
 
