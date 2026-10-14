@@ -406,6 +406,34 @@ class TestPluginHelperMethods:
 
         assert result is False
 
+    @pytest.mark.parametrize(
+        ("command", "args"),
+        [
+            ("remind", ["clear"]),
+            ("memories", ["clear"]),
+            ("instruct", ["clear"]),
+            ("tz", ["clear"]),
+            ("avatar", ["clear"]),
+            ("forget", []),
+            ("verseopt", ["out"]),
+            ("versedit", ["delete 1"]),
+        ],
+    )
+    def test_replayed_mutating_command_is_ignored(self, plugin_env, command, args) -> None:
+        """GIVEN a ZNC-replayed line from before startup WHEN a mutating command
+        runs THEN it returns before touching state — a replayed '@remind clear'
+        after a restart must not wipe reminders."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_msg.time = plugin.startup_time - 100
+        plugin.db.reset_mock()
+
+        getattr(plugin, command)(mock_irc, mock_msg, args)
+
+        assert plugin.db.method_calls == []
+        mock_irc.reply.assert_not_called()
+        mock_irc.replies.assert_not_called()
+        mock_irc.error.assert_not_called()
+
     def test_get_plugin_help_uses_help_url_config(self, mocker: MockerFixture) -> None:
         """GIVEN helpUrl configured WHEN getPluginHelp called THEN uses config URL."""
         from llm.plugin import LLM
@@ -520,6 +548,28 @@ class TestBuildBridgeTool:
 
         called_allowed = enum_mock.call_args.args[2]
         assert called_allowed == frozenset({"Misc"})
+
+    def test_handler_passes_the_allowlist_to_dispatch(self, plugin_env, mocker):
+        """The run handler hands dispatch the same allowlist enumerate got, so a
+        loaded plugin outside it is refused at call time too."""
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True if k == "bridgeEnabled" else ["Time"] if k == "bridgeAllowedPlugins" else False
+        )
+        mocker.patch(
+            "llm.limnoria_bridge.enumerate_commands",
+            return_value=[
+                mocker.MagicMock(plugin="Time", command="time", arg_syntax="", description="")
+            ],
+        )
+        dispatch = mocker.patch(
+            "llm.limnoria_bridge.dispatch", return_value={"error": "denied: Alias.add"}
+        )
+
+        _schema, handlers = plugin._build_bridge_tool(irc, msg, "#test")
+        handlers["run_limnoria_command"]({"plugin": "Alias", "command": "add", "args": "x"})
+
+        assert dispatch.call_args.kwargs["allowed"] == frozenset({"Time"})
 
     def test_returns_schema_and_handler_when_commands_present(self, plugin_env, mocker):
         plugin, irc, msg = plugin_env

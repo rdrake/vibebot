@@ -1208,6 +1208,7 @@ class LLM(callbacks.Plugin):
 
         # Event-driven queue wakeup state
         self._next_wakeup_time: float | None = None
+        self._queue_wakeup_lock = threading.Lock()
         self._schedule_queue_wakeup()  # rebuild from DB on startup
 
         # Register callback for live log level changes
@@ -1346,6 +1347,12 @@ class LLM(callbacks.Plugin):
             at_time: Optional explicit wakeup timestamp.  When provided the
                 database is not queried.
         """
+        # Called from the safety-poll worker and from request threads; the
+        # check -> removeEvent -> addEvent sequence must not interleave.
+        with self._queue_wakeup_lock:
+            self._schedule_queue_wakeup_locked(at_time)
+
+    def _schedule_queue_wakeup_locked(self, at_time: float | None) -> None:
         if at_time is None:
             at_time = self.db.get_next_due_time()
         if not isinstance(at_time, (int, float)):
@@ -1388,8 +1395,11 @@ class LLM(callbacks.Plugin):
 
             # Build set of channels the bot is currently in
             deliverable_channels: set[str] = set()
-            for irc_conn in world.ircs:
-                deliverable_channels.update(irc_conn.state.channels.keys())
+            for irc_conn in list(world.ircs):
+                # IrcDict.keys() is a Python-level loop a JOIN/PART on the
+                # driver thread can break; list() of items() is one C call.
+                # Not list(channels): that yields the lowercased keys.
+                deliverable_channels.update(k for k, _v in list(irc_conn.state.channels.items()))
 
             results = self.llm_service.check_pending_tasks(deliverable_channels)
 
@@ -5471,7 +5481,7 @@ class LLM(callbacks.Plugin):
             if msg.command != "730":
                 continue
             try:
-                watchers = self.db.pop_nick_watches(net, nick)
+                watchers = self.db.pop_nick_watches(net, nick, max_age=_WATCH_MAX_AGE)
             except Exception:
                 self.log.exception("notify_when_online: watch lookup failed for %s", nick)
                 continue
@@ -5639,6 +5649,7 @@ class LLM(callbacks.Plugin):
                 plugin=plugin_name,
                 command=command_name,
                 arg_string=arg_string,
+                allowed=allowed,
                 allow_mutating=allow_mutating,
             )
             if trace is not None:
@@ -9523,8 +9534,11 @@ class LLM(callbacks.Plugin):
         # person>" carries what they look like into the edit.
         picks = not self._meme_names(template_query, has_lines=any(x.strip() for x in lines))
         stop_typing = self.llm_service._begin_typing(irc, msg) if picks else None
+        # One permit for the whole picker path: dossier, meme_pick, the slot
+        # pictures and the edit. Nothing inside may take another (no nesting).
+        permit = self._llm_executor.permit() if picks else contextlib.nullcontext()
         try:
-            with self._allow_concurrent():
+            with self._allow_concurrent(), permit:
                 context = self._meme_grounding(pf, text) if picks else None
                 hosted, error = self._meme_or_infer(
                     msg, template_query, lines, options, context=context
@@ -9543,13 +9557,14 @@ class LLM(callbacks.Plugin):
         The same two pre-stages @draw runs, in the same order (canon first;
         the dossier block says canon wins on overlap), minus the planner
         overlay wrapping: the picker takes the blocks as they are.
+
+        Caller holds the executor permit (``meme`` takes it).
         """
         parts: list[str] = []
         verse_ctx = self._verse_context_for(pf, text)
         if verse_ctx:
             parts.append(verse_ctx)
-        with self._llm_executor.permit():
-            dossier_block = self._subject_dossier_for(pf.nick, pf.channel, text)
+        dossier_block = self._subject_dossier_for(pf.nick, pf.channel, text)
         if dossier_block:
             parts.append(dossier_block)
         return "\n\n".join(parts) or None
@@ -10086,6 +10101,8 @@ class LLM(callbacks.Plugin):
         bot answers stop feeding follow-ups. Volatile memory expires automatically
         after a timeout.
         """
+        if self._is_old_message(msg):
+            return
         caller = self._resolve_identity(irc, msg)
         origin = self._get_channel(msg)
         # Default to current channel if not specified
@@ -10120,6 +10137,8 @@ class LLM(callbacks.Plugin):
         'cleanup' to trigger a cleanup pass. Bot owners can use 'memories <nick>'
         or 'memories cleanup <nick>' for other users.
         """
+        if self._is_old_message(msg):
+            return
         caller = self._resolve_identity(irc, msg)
 
         if not text:
@@ -10178,7 +10197,12 @@ class LLM(callbacks.Plugin):
             else:
                 target = caller.key
             channel = (msg.channel or msg.args[0]) if msg.args else "#unknown"
-            summary = self._run_memory_cleanup(target, channel)
+            if self._run_preflight(irc, msg, text, "ask", require_account=False).blocked:
+                return
+            # The permit lives here, not in _run_memory_cleanup: that also runs
+            # as an assistant tool inside a turn that already holds one.
+            with self._allow_concurrent(), self._llm_executor.permit():
+                summary = self._run_memory_cleanup(target, channel)
             irc.reply(summary.message, prefixNick=False)
 
         elif len(parts) == 1:
@@ -10223,6 +10247,8 @@ class LLM(callbacks.Plugin):
           @instruct clear
           @instruct          (show current instruction)
         """
+        if self._is_old_message(msg):
+            return
         caller = self._resolve_identity(irc, msg)
 
         if not text:
@@ -10264,6 +10290,8 @@ class LLM(callbacks.Plugin):
           @tz clear
           @tz          (show current zone)
         """
+        if self._is_old_message(msg):
+            return
         caller = self._resolve_identity(irc, msg)
 
         if not text:
@@ -10319,6 +10347,8 @@ class LLM(callbacks.Plugin):
           @avatar clear
           @avatar          (show current persona)
         """
+        if self._is_old_message(msg):
+            return
         caller = self._resolve_identity(irc, msg)
 
         if not text:
@@ -11471,6 +11501,8 @@ class LLM(callbacks.Plugin):
           @remind admin del <nick> <id>  (owner only)
           @remind admin clear <nick>     (owner only)
         """
+        if self._is_old_message(msg):
+            return
         caller = self._resolve_identity(irc, msg)
 
         if not text:
@@ -11847,6 +11879,8 @@ class LLM(callbacks.Plugin):
 
         Requires the llm.verse capability and a verse-enabled channel.
         """
+        if self._is_old_message(msg):
+            return
         channel = msg.args[0] if msg.args else None
         if not channel or not ircutils.isChannel(channel):
             irc.error(_("This command must be used in a channel."), prefixNick=False)
@@ -12239,6 +12273,8 @@ class LLM(callbacks.Plugin):
         that channel (useful in a PM, to avoid flooding the channel itself);
         otherwise the channel the command was run in is used.
         """
+        if self._is_old_message(msg):
+            return
         # A leading "#channel" token lets an operator target a channel from a
         # private message — where msg carries no channel of its own (msg.channel
         # is None and msg.args[0] is the bot's nick) — so a batch of edits can be

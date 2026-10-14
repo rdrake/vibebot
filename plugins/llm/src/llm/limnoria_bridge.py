@@ -347,13 +347,16 @@ def dispatch(
     plugin: str,
     command: str,
     arg_string: str,
+    allowed: frozenset[str] = frozenset(),
     allow_mutating: bool = False,
 ) -> dict[str, Any]:
     """Run ``plugin.command arg_string`` through Limnoria's command path.
 
     Layered checks before dispatch:
     1. Plugin must resolve via ``irc.getCallback(plugin)``.
-    2. Plugin must not be in ``DENY_PLUGINS``.
+    2. Plugin must not be in ``DENY_PLUGINS``, and its ``cb.name()`` must be
+       in ``allowed`` (empty = ``DEFAULT_ALLOWED_PLUGINS``, as the handler
+       resolves it for ``enumerate_commands``).
     3. (canonical_plugin, command) must not be in ``DENY_COMMANDS``.
     4. ``cb.isCommandMethod(command)`` must be True.
     5. When ``allow_mutating`` is False (the default), (canonical_plugin,
@@ -386,7 +389,7 @@ def dispatch(
     if cb is None:
         _log.info("bridge result: %s.%s -> error: unknown plugin", plugin, command)
         return {"error": f"unknown plugin: {plugin}"}
-    if cb.name() in DENY_PLUGINS:
+    if cb.name() in DENY_PLUGINS or cb.name() not in (allowed or DEFAULT_ALLOWED_PLUGINS):
         _log.info("bridge result: %s.%s -> error: denied (plugin)", plugin, command)
         return {"error": f"denied: {plugin}.{command}"}
     if (cb.canonicalName(), command) in DENY_COMMANDS:

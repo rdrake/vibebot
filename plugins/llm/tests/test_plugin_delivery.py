@@ -480,6 +480,7 @@ class TestDeliveryRetry:
         plugin.db = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
         plugin._next_wakeup_time = None
+        plugin._queue_wakeup_lock = threading.Lock()
         plugin._llm_executor = mocker.MagicMock()
         plugin._llm_executor.closing = False
         plugin._irc_send_lock = threading.Lock()
@@ -507,6 +508,30 @@ class TestDeliveryRetry:
         }
         defaults.update(overrides)
         return PendingTaskResult(**defaults)
+
+    def test_poll_snapshots_channels_without_keys(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN the bot's live IrcDict of channels WHEN the worker-thread poll
+        reads it THEN it takes an atomic snapshot (not IrcDict.keys(), a
+        Python-level loop a concurrent JOIN/PART can break mid-iteration) and
+        keeps the channel's original case for the reply_target match."""
+        import supybot.world as world_mod
+        from supybot.ircutils import IrcDict
+
+        class _NoKeys(IrcDict):
+            __slots__ = ()
+
+            def keys(self):
+                raise RuntimeError("dictionary changed size during iteration")
+
+        conn = mocker.MagicMock()
+        conn.state.channels = _NoKeys({"#Linux": object()})
+        mocker.patch.object(world_mod, "ircs", [conn])
+        plugin.llm_service.check_pending_tasks.return_value = []
+        mocker.patch.object(plugin, "_schedule_queue_wakeup")
+
+        plugin._check_pending_tasks()
+
+        plugin.llm_service.check_pending_tasks.assert_called_once_with({"#Linux"})
 
     def test_successful_delivery_deletes_task(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN delivery succeeds WHEN queueMsg works THEN task deleted from DB."""
@@ -696,7 +721,28 @@ class TestScheduleQueueWakeup:
         plugin.db = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
         plugin._next_wakeup_time = None
+        plugin._queue_wakeup_lock = threading.Lock()
         return plugin
+
+    def test_check_remove_add_is_serialised(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN another thread mid-reschedule WHEN a second caller arrives THEN
+        it waits — check, removeEvent and addEvent run as one unit, so neither
+        an earlier wakeup is lost nor addEvent trips Limnoria's duplicate-name
+        assert."""
+        mock_schedule = mocker.patch("llm.plugin.schedule")
+        mocker.patch("llm.plugin.time.time", return_value=1000.0)
+        plugin.db.get_next_due_time.return_value = 1060.0
+
+        with plugin._queue_wakeup_lock:
+            worker = threading.Thread(target=plugin._schedule_queue_wakeup, daemon=True)
+            worker.start()
+            worker.join(timeout=0.2)
+            assert worker.is_alive()
+            mock_schedule.addEvent.assert_not_called()
+        worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        mock_schedule.addEvent.assert_called_once()
 
     def test_no_tasks_does_nothing(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN empty queue WHEN _schedule_queue_wakeup called THEN no event scheduled."""
@@ -830,6 +876,7 @@ class TestWakeupTriggers:
         plugin.db = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
         plugin._next_wakeup_time = None
+        plugin._queue_wakeup_lock = threading.Lock()
         plugin._llm_executor = mocker.MagicMock()
         plugin._llm_executor.closing = False
         plugin._irc_send_lock = threading.Lock()

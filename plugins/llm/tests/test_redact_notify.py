@@ -136,6 +136,19 @@ class TestNotifyWhenOnline:
         # The immediate 730 answered the lookup; nobody gets "is online now".
         assert sent(irc, "PRIVMSG") == []
 
+    def test_lapsed_watch_does_not_fire(self, env) -> None:
+        """GIVEN a watch older than the 7-day lapse WHEN the nick signs on
+        THEN nobody is told, and the stale row is still removed."""
+        plugin, irc, _ = env
+        plugin.db.add_nick_watch("afternet", "larry", "rdrake", "#test")
+        with plugin.db._write_txn() as conn:
+            conn.execute("UPDATE nick_watches SET created_at = created_at - 8 * 86400")
+
+        plugin.do730(irc, numeric("730", "Larry!l@host"))
+
+        assert sent(irc, "PRIVMSG") == []
+        assert plugin.db.list_nick_watches("afternet") == []
+
     def test_cancel_and_list(self, env) -> None:
         plugin, irc, msg = env
         self._serve_monitor(plugin, irc, "731")

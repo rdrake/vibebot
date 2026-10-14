@@ -2391,12 +2391,17 @@ class LLMDatabase:
                 (network, nick.lower(), requester.lower(), target, time.time()),
             )
 
-    def pop_nick_watches(self, network: str, nick: str) -> list[tuple[str, str]]:
-        """Remove and return every ``(requester, target)`` watching ``nick``."""
+    def pop_nick_watches(
+        self, network: str, nick: str, *, max_age: float | None = None
+    ) -> list[tuple[str, str]]:
+        """Remove every watch on ``nick``; return the ``(requester, target)``
+        pairs younger than ``max_age`` seconds (all of them when None)."""
+        cutoff = time.time() - max_age if max_age is not None else float("-inf")
         with self._write_txn() as conn:
             rows = conn.execute(
-                "SELECT requester, target FROM nick_watches WHERE network = ? AND nick = ?",
-                (network, nick.lower()),
+                "SELECT requester, target FROM nick_watches "
+                "WHERE network = ? AND nick = ? AND created_at >= ?",
+                (network, nick.lower(), cutoff),
             ).fetchall()
             conn.execute(
                 "DELETE FROM nick_watches WHERE network = ? AND nick = ?",
