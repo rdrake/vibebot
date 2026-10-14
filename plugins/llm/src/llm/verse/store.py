@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from supybot import ircutils
+
 _log = logging.getLogger(__name__)
 
 _SAFE_RE = re.compile(r"[^a-z0-9_-]")
@@ -109,10 +111,14 @@ _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 
 def db_path_for_channel(base_dir: Path, channel: str) -> Path:
-    """Return the per-channel SQLite path under ``base_dir``."""
-    lowered = channel.lower()
+    """Return the per-channel SQLite path under ``base_dir``.
+
+    IRC channel names are case-insensitive, so the name is folded with the
+    rfc1459 case mapping before both the filename and the hash.
+    """
+    lowered = ircutils.toLower(channel)
     safe = _SAFE_RE.sub("_", lowered)
-    digest = hashlib.sha256(channel.encode("utf-8")).hexdigest()[:8]
+    digest = hashlib.sha256(lowered.encode("utf-8")).hexdigest()[:8]
     return base_dir / f"{safe}_{digest}.db"
 
 
