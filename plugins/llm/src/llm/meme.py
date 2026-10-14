@@ -429,8 +429,9 @@ def _brief_row(t: MemeTemplate) -> str:
     return f"{t.id} | {t.name} | {t.lines} | {example} | {tags}"
 
 
-# The aspect ratios xAI's image generation takes.
-ASPECT_RATIOS = ("1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16")
+# Aspect ratios for slot pictures: the ones @draw has sent xAI and got
+# pictures back for (1:1, 2:3, 3:2, 9:16), plus 9:16's landscape twin.
+ASPECT_RATIOS = ("1:1", "3:2", "2:3", "16:9", "9:16")
 
 
 def nearest_aspect_ratio(width: int, height: int) -> str:

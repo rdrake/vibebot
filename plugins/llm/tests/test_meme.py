@@ -575,7 +575,7 @@ class TestSlots:
 
     @pytest.mark.parametrize(
         ("size", "ratio"),
-        [((500, 500), "1:1"), ((1000, 560), "16:9"), ((300, 410), "3:4"), ((100, 400), "9:16")],
+        [((500, 500), "1:1"), ((1000, 560), "16:9"), ((300, 410), "2:3"), ((100, 400), "9:16")],
     )
     def test_nearest_aspect_ratio(self, size, ratio):
         assert meme.nearest_aspect_ratio(*size) == ratio

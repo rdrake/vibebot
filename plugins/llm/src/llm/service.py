@@ -4628,12 +4628,16 @@ class LLMService:
                 payload = json.loads(response.read())
         except urllib.error.HTTPError as exc:
             detail = exc.read()[:400].decode("utf-8", "replace")
+            # The body is the only thing that tells a moderation refusal from
+            # a rejected parameter (an aspect ratio xAI does not take); a
+            # WARNING reaches docker logs, INFO does not.
             self.log.warning(
-                "completion_timing op=%s model=%s elapsed_ms=%.0f result=error http=%s",
+                "completion_timing op=%s model=%s elapsed_ms=%.0f result=error http=%s body=%s",
                 op,
                 model,
                 (time.monotonic() - t0) * 1000.0,
                 exc.code,
+                self._sanitize(detail)[:200],
             )
             cost = self._billed_failure_cost(Exception(detail), model)
             refused = exc.code in (400, 403, 422)
