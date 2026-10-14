@@ -6302,7 +6302,8 @@ class LLM(callbacks.Plugin):
         # (where the mention still injects canon facts).
         if not force_roleplay:
             return None
-        persona = self.db.get_avatar_persona(nick) or ""
+        # Account-or-nick key: unauthenticated, it could be someone else's persona.
+        persona = (self.db.get_avatar_persona(nick) or "") if account else ""
         system_prompt = build_verse_system_prompt(
             store,
             avatar_id,
@@ -11158,7 +11159,12 @@ class LLM(callbacks.Plugin):
         ``irc`` enables the CTCP TIME probe. Leave it out on paths that must
         not block or talk to the user (a recurring reminder rescheduling
         itself); they still get the stored answer, however old.
+
+        An accountless caller gets UTC: both stores key on account-or-nick,
+        so their nick could be someone else's account.
         """
+        if not caller.account:
+            return UTC_DEFAULT
         zone = parse_zone(self.db.get_user_timezone(caller.key) or "")
         if zone is not None:
             return UserTz(tz=zone, source=SOURCE_SET)
@@ -11922,7 +11928,8 @@ class LLM(callbacks.Plugin):
         account = caller.account
 
         if mode == "in":
-            persona_text = self.db.get_avatar_persona(caller.key) or ""
+            # Account-or-nick key: unauthenticated, it could be someone else's persona.
+            persona_text = (self.db.get_avatar_persona(caller.key) or "") if account else ""
             store = self._get_or_create_verse_store(channel)
             result = store.opt_in_avatar(nick, account, persona_text)
             reply = result.scene_text
