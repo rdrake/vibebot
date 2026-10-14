@@ -341,7 +341,15 @@ class TestDeliverPendingResult:
         mock_irc.state.channels = {"#test": mocker.MagicMock()}
         mocker.patch.object(world_mod, "ircs", [mock_irc])
 
-        r = self._make_result(status="failed_terminal", content="", reason="API key not configured")
+        # A key failure never reached the provider, so nothing billed.
+        r = self._make_result(
+            status="failed_terminal",
+            content="",
+            reason="API key not configured",
+            cost=0.0,
+            prompt_tokens=0,
+            completion_tokens=0,
+        )
         plugin._deliver_pending_result(r)
 
         mock_irc.queueMsg.assert_called_once()
@@ -382,6 +390,29 @@ class TestDeliverPendingResult:
         assert call_args[5] == 50  # completion_tokens
         assert call_args[6] == 0.01  # cost
 
+    def test_logs_usage_for_billed_terminal_failure(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN a retry that billed tokens but answered nothing WHEN its failure
+        is delivered THEN the spend is still booked."""
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mock_irc.state.nickToAccount.return_value = "alice_account"
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+
+        r = self._make_result(
+            status="failed_terminal",
+            content="",
+            reason="the model returned an empty answer",
+            cost=0.02,
+            prompt_tokens=100,
+            completion_tokens=4096,
+        )
+        plugin._deliver_pending_result(r)
+
+        plugin.db.log_usage.assert_called_once()
+        assert plugin.db.log_usage.call_args[0][6] == 0.02
+
     def test_logs_structured_expired_outcome(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN expired deferred result WHEN delivered THEN logs structured operator entry."""
         import supybot.world as world_mod
@@ -419,6 +450,9 @@ class TestDeliverPendingResult:
             task_type="draw",
             content="",
             reason="API key not configured",
+            cost=0.0,
+            prompt_tokens=0,
+            completion_tokens=0,
         )
         plugin._deliver_pending_result(r)
 

@@ -3690,9 +3690,11 @@ class LLMService:
 
         content = response.choices[0].message.content or ""
         prompt_tokens, completion_tokens, cost = self._extract_usage(response, task.model)
+        # Empty text (thinking can eat the whole budget) would post a bare "nick: ".
+        empty = not content.strip()
 
         return PendingTaskResult(
-            status="completed",
+            status="failed_terminal" if empty else "completed",
             task_type=task.task_type,
             nick=task.nick,
             reply_target=task.reply_target,
@@ -3700,6 +3702,7 @@ class LLMService:
             prompt_preview=task.prompt_preview,
             model=task.model,
             content=content,
+            reason="the model returned an empty answer" if empty else "",
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             cost=cost,
