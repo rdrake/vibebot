@@ -36,7 +36,7 @@ from pygments.formatters import HtmlFormatter
 from supybot.i18n import PluginInternationalization
 from supybot.utils.file import AtomicFile
 
-from . import apikeys, github
+from . import apikeys, github, meme_render
 from .context import Role
 from .persistence import ScheduledLlmTaskRow, lease_until
 from .profile import (
@@ -7500,7 +7500,7 @@ Examples (echo → action_prompt: ""):
 
             from PIL import Image
 
-            with Image.open(BytesIO(data)) as img:
+            with meme_render.open_image(data) as img:
                 img.load()
                 frame = img.convert("RGB")
             if max(frame.size) > self._REFERENCE_MAX_EDGE:
