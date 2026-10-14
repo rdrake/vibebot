@@ -471,6 +471,22 @@ class TestReminderPersistence:
         assert len(reminders) == 1
         assert reminders[0].event_name == "new"
 
+    @pytest.mark.parametrize(
+        "recurrence",
+        [{"recurrence_seconds": 3600}, {"recurrence_rrule": "FREQ=DAILY;BYHOUR=9"}],
+    )
+    def test_recurring_chain_survives_a_long_outage(
+        self, test_db: LLMDatabase, recurrence: dict
+    ) -> None:
+        """GIVEN a recurring row 25h overdue WHEN cleaning and loading THEN it
+        is neither deleted nor skipped, so reload can reschedule the chain."""
+        test_db.save_reminder(
+            "chain", "alice", "#chan", "stretch", time.time() - (25 * 3600), **recurrence
+        )
+
+        assert test_db.delete_expired_reminders() == 0
+        assert [r.event_name for r in test_db.load_pending_reminders()] == ["chain"]
+
     def test_unique_event_name_constraint(self, test_db: LLMDatabase) -> None:
         """GIVEN a saved reminder WHEN saving with same event_name THEN IntegrityError."""
         test_db.save_reminder("dup_event", "alice", "#chan", "first", time.time() + 60)
