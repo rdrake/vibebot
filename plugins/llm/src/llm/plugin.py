@@ -6804,7 +6804,6 @@ class LLM(callbacks.Plugin):
         msg: IrcMsg,
         channel: str,
         account: str | None,
-        nick: str,
         persona: str,
     ) -> Callable[[dict], _VerseToolResult]:
         """Build the ``verse_storybook`` tool handler for one completion.
@@ -6859,8 +6858,9 @@ class LLM(callbacks.Plugin):
                 raw = args.get("brief")
                 if isinstance(raw, str):
                     brief = raw
+            # Deliver to the IRC nick, not the account (same rule as @story).
             self._submit_storybook_job(
-                channel=channel, nick=nick, persona=persona, brief=brief, account=account
+                channel=channel, nick=msg.nick, persona=persona, brief=brief, account=account
             )
             return _VerseToolResult(
                 content=json.dumps(
@@ -8461,7 +8461,7 @@ class LLM(callbacks.Plugin):
                         account=pf.account,
                     )
                     # Storybook tool (gated): overlay a live handler that can
-                    # capture irc/msg/channel/account/nick/persona. Only wired
+                    # capture irc/msg/channel/account/persona. Only wired
                     # when the per-channel flag is on; otherwise the spec isn't
                     # advertised and this key is never reached. The persona is
                     # the clean character voice (NOT the system_prompt overlay).
@@ -8472,7 +8472,6 @@ class LLM(callbacks.Plugin):
                             msg=msg,
                             channel=channel,
                             account=pf.account,
-                            nick=nick,
                             persona=persona,
                         )
                 elif verse_list:
