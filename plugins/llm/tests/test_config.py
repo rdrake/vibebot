@@ -116,10 +116,10 @@ class TestValidatedModelName:
     def test_default_image_model_passes(self) -> None:
         """GIVEN default imageModel value WHEN validated THEN passes (warn OK)."""
         v = self._make()
-        # gemini/imagen-4.0-fast-generate-001 may not be in model_list but
+        # xai/grok-imagine-image may not be in model_list but
         # provider is valid, so it should be accepted (with warning)
-        v.setValue("gemini/imagen-4.0-fast-generate-001")
-        assert v() == "gemini/imagen-4.0-fast-generate-001"
+        v.setValue("xai/grok-imagine-image")
+        assert v() == "xai/grok-imagine-image"
 
     def test_suggest_models_returns_close_matches(self) -> None:
         """GIVEN a near-miss model name WHEN _suggest_models THEN returns suggestions."""
@@ -230,7 +230,7 @@ class TestConfigValues:
 
         assert conf.supybot.plugins.LLM.assistantModel() == "anthropic/claude-haiku-5-5"
         assert conf.supybot.plugins.LLM.assistantSystemPrompt() != ""
-        assert conf.supybot.plugins.LLM.imageModel() == "gemini/imagen-4.0-fast-generate-001"
+        assert conf.supybot.plugins.LLM.imageModel() == "xai/grok-imagine-image"
         assert conf.supybot.plugins.LLM.refusalFallbackModel() == "xai/grok-4-1-fast-non-reasoning"
 
     def test_bridge_allow_mutating_registered_with_safe_default(self) -> None:
