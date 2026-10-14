@@ -3,6 +3,8 @@ a scene-named member + relation + event appear; a retired entity does not."""
 
 from llm.verse.avatar import VERSE_SCENE_MARKER, build_verse_system_prompt
 
+from .conftest import add_alias
+
 
 def test_full_retrieval(store_with_avatar):
     store, avatar_id = store_with_avatar
@@ -10,7 +12,7 @@ def test_full_retrieval(store_with_avatar):
     toby = store.add_entity("npc", "Toby", "year 9")
     ghost = store.add_entity("npc", "Ghost")
     store.set_author_locked(harry, True)  # locked roster (not named in message)
-    store.add_alias(toby, "Tobes")
+    add_alias(store, toby, "Tobes")
     store.add_relation(harry, toby, "rival_of")
     store.add_event("Toby nicked the register", [toby], source="avatar")
     store.add_event("Ghost vanished", [ghost], source="avatar")

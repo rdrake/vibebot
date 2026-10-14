@@ -10,6 +10,7 @@ import pytest
 from llm.service import AssistantResult
 
 from .conftest import make_registry_side_effect
+from .verse.conftest import link_avatar
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -741,8 +742,8 @@ class TestWhoCommand:
         place_id = store.add_entity("place", "The Clearing", "A sunlit glade.")
         alice_id = store.add_entity("avatar", "alice")
         bob_id = store.add_entity("avatar", "bob")
-        store.link_avatar(alice_id, "alice")
-        store.link_avatar(bob_id, "bob")
+        link_avatar(store, alice_id, "alice")
+        link_avatar(store, bob_id, "bob")
         store.set_attribute(alice_id, "location", str(place_id))
         store.set_attribute(bob_id, "location", str(place_id))
 
@@ -776,10 +777,10 @@ class TestWhoCommand:
         plugin, irc, msg, store = verse_env
 
         active_id = store.add_entity("avatar", "alice")
-        store.link_avatar(active_id, "alice")
+        link_avatar(store, active_id, "alice")
 
         retired_id = store.add_entity("avatar", "bob")
-        store.link_avatar(retired_id, "bob")
+        link_avatar(store, retired_id, "bob")
         store.set_status(retired_id, "retired")
 
         plugin.who(irc, msg, [])

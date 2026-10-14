@@ -101,9 +101,6 @@ class RelationView(NamedTuple):
     note: str
 
 
-_VALID_PROPOSAL_STATUSES = ("pending", "approved", "rejected")
-
-
 SCHEMA_VERSION = 3
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
@@ -114,17 +111,6 @@ def db_path_for_channel(base_dir: Path, channel: str) -> Path:
     safe = _SAFE_RE.sub("_", lowered)
     digest = hashlib.sha256(channel.encode("utf-8")).hexdigest()[:8]
     return base_dir / f"{safe}_{digest}.db"
-
-
-def list_active_verses(base_dir: Path) -> list[Path]:
-    """Return paths of all verse DB files in *base_dir*, sorted.
-
-    The caller maps these back to channel names via the same
-    db_path_for_channel sanitizer used at construction time.
-    """
-    if not base_dir.exists():
-        return []
-    return sorted(base_dir.glob("*.db"))
 
 
 class VerseStore:
@@ -373,27 +359,6 @@ class VerseStore:
             (name,),
         ).fetchone()
         return Entity(*row) if row else None
-
-    def add_alias(
-        self, entity_id: int, alias: str, *, conn: sqlite3.Connection | None = None
-    ) -> None:
-        if conn is None:
-            with self.write_transaction() as wconn:
-                self.add_alias(entity_id, alias, conn=wconn)
-            return
-        conn.execute(
-            "INSERT OR IGNORE INTO entity_alias (entity_id, alias) VALUES (?, ?)",
-            (entity_id, alias),
-        )
-
-    def list_aliases(self, entity_id: int) -> list[str]:
-        with self.read_connection() as conn:
-            return [
-                r[0]
-                for r in conn.execute(
-                    "SELECT alias FROM entity_alias WHERE entity_id=?", (entity_id,)
-                )
-            ]
 
     def find_entity_by_name_or_alias(
         self, name: str, *, conn: sqlite3.Connection | None = None
@@ -755,16 +720,6 @@ class VerseStore:
     # Avatar link CRUD
     # ------------------------------------------------------------------
 
-    def link_avatar(self, entity_id: int, nick: str, account: str | None = None) -> None:
-        """Upsert an avatar_link row for entity_id."""
-        with self.write_transaction() as conn:
-            conn.execute(
-                "INSERT INTO avatar_link (entity_id, nick, account) VALUES (?, ?, ?)"
-                " ON CONFLICT(entity_id) DO UPDATE SET nick = excluded.nick,"
-                " account = excluded.account",
-                (entity_id, nick, account),
-            )
-
     def find_avatar_by_nick(self, nick: str) -> int | None:
         """Case-insensitive nick lookup. Returns entity_id or None.
 
@@ -955,29 +910,6 @@ class VerseStore:
             for r in rows
         ]
 
-    def _replace_events_with_source(
-        self,
-        *,
-        delete_ids: Sequence[int],
-        summary: str,
-        entity_ids: Sequence[int],
-        ts: float,
-        source: str,
-    ) -> int:
-        """Atomic delete-then-insert. Returns the new event's id.
-
-        The digest heartbeat (bump ``last_seen_ts`` on referenced non-avatar
-        entities that exist) rides on ``add_event`` itself — no manual bump
-        here."""
-        with self.write_transaction() as conn:
-            if delete_ids:
-                placeholders = ",".join("?" for _ in delete_ids)
-                conn.execute(
-                    f"DELETE FROM events WHERE id IN ({placeholders})",
-                    tuple(delete_ids),
-                )
-            return self.add_event(summary, entity_ids, source, ts=ts, conn=conn)
-
     def replace_events_with_lore_digest(
         self,
         *,
@@ -989,15 +921,18 @@ class VerseStore:
         """Replace ``delete_ids`` with a single ``source='llm'`` digest event.
 
         All work happens inside one ``write_transaction``; on error the whole
-        operation rolls back and the originals survive.
+        operation rolls back and the originals survive. The digest heartbeat
+        (bump ``last_seen_ts`` on referenced non-avatar entities that exist)
+        rides on ``add_event`` itself.
         """
-        return self._replace_events_with_source(
-            delete_ids=delete_ids,
-            summary=summary,
-            entity_ids=entity_ids,
-            ts=ts,
-            source="llm",
-        )
+        with self.write_transaction() as conn:
+            if delete_ids:
+                placeholders = ",".join("?" for _ in delete_ids)
+                conn.execute(
+                    f"DELETE FROM events WHERE id IN ({placeholders})",
+                    tuple(delete_ids),
+                )
+            return self.add_event(summary, entity_ids, "llm", ts=ts, conn=conn)
 
     def events_older_than(self, *, cutoff_ts: float, limit: int | None = None) -> list[Event]:
         """Events with ``ts < cutoff_ts``, oldest-first.
@@ -1483,42 +1418,6 @@ class VerseStore:
                 (pid, now, "direct", op, json.dumps(payload), 1.0, provenance, source, now),
             )
         return result
-
-    def update_proposal_status(self, proposal_id: str, *, status: str, reviewer: str) -> None:
-        """Flip *proposal_id*'s status (audit fields written together)."""
-        if status not in _VALID_PROPOSAL_STATUSES:
-            raise ValueError(f"invalid status: {status!r}")
-        with self.write_transaction() as conn:
-            cur = conn.execute(
-                "UPDATE proposals SET status=?, reviewer=?, reviewed_at=? WHERE id=?",
-                (status, reviewer, time.time(), proposal_id),
-            )
-            if cur.rowcount == 0:
-                raise LookupError(f"no proposal: {proposal_id!r}")
-
-    def get_proposal(self, proposal_id: str) -> Proposal | None:
-        """Return the Proposal with *proposal_id*, or None."""
-        with self.read_connection() as conn:
-            row = conn.execute(
-                "SELECT id, created_at, cycle_id, op, payload, confidence, "
-                "provenance, status, reviewer, reviewed_at "
-                "FROM proposals WHERE id = ?",
-                (proposal_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        return Proposal(
-            id=row[0],
-            created_at=row[1],
-            cycle_id=row[2],
-            op=row[3],
-            payload=json.loads(row[4]),
-            confidence=row[5],
-            provenance=row[6],
-            status=row[7],
-            reviewer=row[8],
-            reviewed_at=row[9],
-        )
 
     def list_proposals(
         self,

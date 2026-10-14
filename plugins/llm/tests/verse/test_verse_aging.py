@@ -144,7 +144,7 @@ class TestAgeAutoCreatedEntities:
         assert row[0] == "active"
 
     def test_digest_insert_bumps_last_seen(self, store: VerseStore) -> None:
-        """When _replace_events_with_source inserts a digest, every non-avatar
+        """When replace_events_with_lore_digest inserts a digest, every non-avatar
         entity in entity_ids has last_seen_ts bumped to ts (the heartbeat now
         rides on add_event itself). The bump is on the same conn as the
         INSERT — atomic with the digest write."""
