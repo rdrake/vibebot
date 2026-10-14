@@ -6108,6 +6108,20 @@ Examples (echo → action_prompt: ""):
         total_prompt_tokens = 0
         total_completion_tokens = 0
         total_cost = 0.0
+        model = ""
+        executor: AssistantToolExecutor | None = None
+
+        def spent() -> dict[str, Any]:
+            """What the turn billed so far: earlier steps plus leaf tools."""
+            return {
+                "prompt_tokens": total_prompt_tokens
+                + (executor.accumulated_prompt_tokens if executor else 0),
+                "completion_tokens": total_completion_tokens
+                + (executor.accumulated_completion_tokens if executor else 0),
+                "cost": total_cost + (executor.accumulated_cost if executor else 0.0),
+                "model": model,
+            }
+
         stop_typing = self._begin_typing(irc, msg) if manage_typing else lambda: None
 
         # Tag verse turns once (route_profile is a never-reassigned parameter) so
@@ -7062,10 +7076,11 @@ Examples (echo → action_prompt: ""):
                 error_content = _(
                     "Timed out, but I'll keep trying and deliver the answer when ready."
                 )
-                return AssistantResult(content=error_content)
+                return AssistantResult(content=error_content, **spent())
             return AssistantResult(
                 content=self._handle_llm_error(e, "chat"),
                 error=self._sanitize(str(e)),
+                **spent(),
             )
 
         except Exception as e:
@@ -7078,6 +7093,7 @@ Examples (echo → action_prompt: ""):
             return AssistantResult(
                 content=self._handle_llm_error(e, "chat"),
                 error=self._sanitize(str(e)),
+                **spent(),
             )
         finally:
             stop_typing()
