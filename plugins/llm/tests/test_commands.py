@@ -4615,6 +4615,23 @@ class TestStoryCommand:
         assert job.call_args.kwargs["brief"] == "illustrated tale of lads"
         assert job.call_args.kwargs["channel"] == "#test"
 
+    def test_story_from_pm_delivers_to_irc_nick_not_account(self, plugin_env, mocker):
+        """GIVEN testnick authenticated as acct PMs @story THEN the job is told
+        to deliver to testnick; the account still rides as identity. A PM to
+        the account name reaches someone else, or no one."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "acct"
+        mock_msg.args = ("testbot", "@story a tale")
+        mock_msg.channel = None
+        plugin.db.get_avatar_persona.return_value = ""
+        job = mocker.patch.object(plugin, "_submit_storybook_job")
+
+        plugin.story(mock_irc, mock_msg, ["a", "tale"])
+
+        assert job.call_args.kwargs["nick"] == "testnick"
+        assert job.call_args.kwargs["account"] == "acct"
+        plugin.db.get_avatar_persona.assert_called_once_with("acct")
+
     def test_story_requires_account(self, plugin_env, mocker):
         plugin, mock_irc, mock_msg = plugin_env
         # nickToAccount returns None (default) -> not authenticated.

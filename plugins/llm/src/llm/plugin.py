@@ -10068,8 +10068,10 @@ class LLM(callbacks.Plugin):
         # user gets the link when it's ready with no interim chatter (mirrors
         # the verse_storybook UX). Persona is the caller's avatar voice if set.
         persona = self.db.get_avatar_persona(nick) or ""
+        # The job PMs ``nick`` when there is no channel: that must be the IRC
+        # nick, not the account (same rule as ``_submit_video``).
         self._submit_storybook_job(
-            channel=channel, nick=nick, persona=persona, brief=brief, account=pf.account
+            channel=channel, nick=msg.nick, persona=persona, brief=brief, account=pf.account
         )
 
     story = wrap(story, [("checkCapability", "llm.draw"), "text"])
