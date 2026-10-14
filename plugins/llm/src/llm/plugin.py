@@ -1208,6 +1208,7 @@ class LLM(callbacks.Plugin):
 
         # Event-driven queue wakeup state
         self._next_wakeup_time: float | None = None
+        self._queue_wakeup_lock = threading.Lock()
         self._schedule_queue_wakeup()  # rebuild from DB on startup
 
         # Register callback for live log level changes
@@ -1346,6 +1347,12 @@ class LLM(callbacks.Plugin):
             at_time: Optional explicit wakeup timestamp.  When provided the
                 database is not queried.
         """
+        # Called from the safety-poll worker and from request threads; the
+        # check -> removeEvent -> addEvent sequence must not interleave.
+        with self._queue_wakeup_lock:
+            self._schedule_queue_wakeup_locked(at_time)
+
+    def _schedule_queue_wakeup_locked(self, at_time: float | None) -> None:
         if at_time is None:
             at_time = self.db.get_next_due_time()
         if not isinstance(at_time, (int, float)):
@@ -1388,8 +1395,11 @@ class LLM(callbacks.Plugin):
 
             # Build set of channels the bot is currently in
             deliverable_channels: set[str] = set()
-            for irc_conn in world.ircs:
-                deliverable_channels.update(irc_conn.state.channels.keys())
+            for irc_conn in list(world.ircs):
+                # IrcDict.keys() is a Python-level loop a JOIN/PART on the
+                # driver thread can break; list() of items() is one C call.
+                # Not list(channels): that yields the lowercased keys.
+                deliverable_channels.update(k for k, _v in list(irc_conn.state.channels.items()))
 
             results = self.llm_service.check_pending_tasks(deliverable_channels)
 
