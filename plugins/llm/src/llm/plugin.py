@@ -2908,8 +2908,13 @@ class LLM(callbacks.Plugin):
                 if state != "delivery_failed":
                     self._schedule_queue_wakeup(at_time=retry_at)
 
-        # Log usage for completed tasks (a durable-state write — skip while closing).
-        if r.status == "completed" and delivered and not self._llm_executor.closing:
+        # Log usage for completed tasks, and failures that still billed (an empty
+        # retry answer) — a durable-state write, so skip while closing.
+        if (
+            r.status in ("completed", "failed_terminal")
+            and delivered
+            and not self._llm_executor.closing
+        ):
             self._log_pending_delivery_usage(r, nick, target)
 
     def _remember_own_msgid(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
