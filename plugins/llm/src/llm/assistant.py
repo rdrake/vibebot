@@ -698,8 +698,8 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
     # so creating a schedule must require an authenticated account. The fire
     # gets no bridge tools: plugin._run_unattended_assistant passes no
     # extra_tools. list/cancel inherit capability=llm.ask and
-    # require_account=False, but _BOOKKEEPING_TOOLS strips chat and verse,
-    # leaving visible_in={"remind_action"}.
+    # require_account=False and are visible in chat and remind_action; verse
+    # hides them with the rest of PENDING_TASK_TOOLS.
     "schedule_llm_task": {
         "require_account": True,
     },
