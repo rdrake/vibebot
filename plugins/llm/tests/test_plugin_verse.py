@@ -2596,11 +2596,12 @@ class TestRunCompactionPassCallsAging:
 
 class TestMaxActorsRegistryPlumbing:
     """Phase 6.6: verseAutoEntityMaxNamesPerCall flows through
-    _build_verse_handlers_for into make_verse_extra_handlers."""
+    _build_verse_handlers_for_route into make_verse_extra_handlers."""
 
     def test_max_actors_flows_to_make_verse_extra_handlers(
         self, plugin_env, tmp_path, mocker, monkeypatch
     ) -> None:
+        from llm.plugin import VerseRoute
         from llm.verse import avatar as avatar_mod
         from llm.verse.store import VerseStore
 
@@ -2618,8 +2619,10 @@ class TestMaxActorsRegistryPlumbing:
         # Real store with one active avatar so the helper has something
         # to bind handlers to.
         store = VerseStore(tmp_path, "#x")
-        store.opt_in_avatar("alice", account=None, instruct_text="alice instruct")
-        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+        avatar_id = store.opt_in_avatar(
+            "alice", account=None, instruct_text="alice instruct"
+        ).entity_id
+        route = VerseRoute(avatar_id=avatar_id, system_prompt="", tools=[], store=store)
 
         real_registry_side_effect = plugin.registryValue.side_effect
 
@@ -2630,8 +2633,8 @@ class TestMaxActorsRegistryPlumbing:
 
         plugin.registryValue = mocker.MagicMock(side_effect=fake_registry)
 
-        handlers = plugin._build_verse_handlers_for(channel="#x")
-        assert handlers is not None
+        handlers = plugin._build_verse_handlers_for_route("#x", route)
+        assert handlers
         assert 4 in captured, f"max_actors not plumbed; got {captured}"
 
 
