@@ -28,6 +28,8 @@ from llm.verse.avatar import (
 )
 from llm.verse.store import VerseStore
 
+from .conftest import link_avatar
+
 
 class TestVerbWhitelist:
     def test_event_only_verbs(self) -> None:
@@ -443,7 +445,7 @@ class TestSystemPrompt:
 
         # Create carol manually at a different location
         carol_id = store.add_entity("avatar", "carol", "A mysterious stranger.")
-        store.link_avatar(carol_id, nick="carol")
+        link_avatar(store, carol_id, nick="carol")
         store.set_attribute(carol_id, "location", "Riverside")
         # Ensure Riverside exists as a place entity so the location is meaningful
         store.add_entity("place", "Riverside", "A bend in the river.")
@@ -461,7 +463,7 @@ class TestSystemPrompt:
     def test_no_location_uses_nowhere_in_particular(self, store: VerseStore) -> None:
         # Create avatar manually without location attribute
         avatar_id = store.add_entity("avatar", "ghost", "A wandering spirit.")
-        store.link_avatar(avatar_id, nick="ghost")
+        link_avatar(store, avatar_id, nick="ghost")
         prompt = build_verse_system_prompt(store, avatar_id, "a spirit")
         assert "nowhere in particular" in prompt
 
