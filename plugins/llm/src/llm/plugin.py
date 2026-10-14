@@ -8195,9 +8195,11 @@ class LLM(callbacks.Plugin):
                     brief = self._ambient_storybook_brief(msg, preflight, text)
                     if brief is not None:
                         persona = self.db.get_avatar_persona(preflight.nick) or ""
+                        # The job PMs ``nick`` from a PM: the IRC nick, not
+                        # the account (same rule as @story).
                         self._submit_storybook_job(
                             channel=preflight.channel,
-                            nick=preflight.nick,
+                            nick=msg.nick,
                             persona=persona,
                             brief=brief,
                             account=preflight.account,

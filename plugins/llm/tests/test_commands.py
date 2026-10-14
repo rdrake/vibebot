@@ -4430,6 +4430,31 @@ class TestVerseStorybook:
         assert job.call_args.kwargs["brief"] == "illustrate the lads' saga"
         ask.assert_not_called()
 
+    def test_ambient_storybook_delivers_to_irc_nick_not_account(self, plugin_env, mocker):
+        """GIVEN alice authenticated as acct WHEN an ambient storybook fires THEN
+        the job delivers to alice (a PM to acct reaches someone else, or no
+        one) and the account still rides as identity. Same rule as @story."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch.object(plugin, "_verse_route_for", return_value=None)
+        mocker.patch.object(plugin, "_roleplay_sticky_active", return_value=False)
+        mocker.patch.object(plugin, "_ambient_inline_story", return_value=False)
+        mocker.patch.object(plugin, "_ambient_storybook_brief", return_value="illustrate it")
+        plugin.db.get_avatar_persona = mocker.MagicMock(return_value="")
+        job = mocker.patch.object(plugin, "_submit_storybook_job")
+        mocker.patch.object(plugin, "_ask_impl")
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": True})
+        )
+        mock_msg.prefix = "alice!u@h"
+        mock_msg.nick = "alice"
+        pf = mocker.MagicMock(channel="#test", nick="acct", account="acct")
+
+        plugin._dispatch_with_verse_routing(
+            mock_irc, mock_msg, "illustrate it", pf, entry_route="addressed"
+        )
+        assert job.call_args.kwargs["nick"] == "alice"
+        assert job.call_args.kwargs["account"] == "acct"
+
     def test_ambient_question_falls_through_to_chat(self, plugin_env, mocker):
         plugin, mock_irc, mock_msg = plugin_env
         mocker.patch.object(plugin, "_verse_route_for", return_value=None)
