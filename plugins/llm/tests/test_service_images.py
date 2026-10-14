@@ -581,6 +581,7 @@ class TestCleanupWithImages:
         (Path(str(tmp_path)) / "img_ghi.jpg").write_bytes(b"jpg")
         (Path(str(tmp_path)) / "img_jkl.jpeg").write_bytes(b"jpeg")
         (Path(str(tmp_path)) / "img_mno.webp").write_bytes(b"webp")
+        (Path(str(tmp_path)) / "img_pqr.gif").write_bytes(b"gif")
         (Path(str(tmp_path)) / "other.txt").write_text("ignored")
 
         # Set max_files to 0 to force cleanup of all
@@ -592,6 +593,7 @@ class TestCleanupWithImages:
         assert not (Path(str(tmp_path)) / "img_ghi.jpg").exists()
         assert not (Path(str(tmp_path)) / "img_jkl.jpeg").exists()
         assert not (Path(str(tmp_path)) / "img_mno.webp").exists()
+        assert not (Path(str(tmp_path)) / "img_pqr.gif").exists()
         assert (Path(str(tmp_path)) / "other.txt").exists()
 
 
