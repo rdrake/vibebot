@@ -5127,11 +5127,6 @@ Examples (echo → action_prompt: ""):
                 ):
                     # tolerate model returning a string or non-positive int
                     recurrence_seconds = None
-                if recurrence_seconds is not None and recurrence_seconds < 60:
-                    return ReminderParseResult(
-                        action="clarify",
-                        confirmation=_("The minimum repeat interval is one minute."),
-                    )
                 recurrence_rrule = data.get("recurrence_rrule")
                 if recurrence_rrule is not None and not isinstance(recurrence_rrule, str):
                     recurrence_rrule = None
@@ -5148,11 +5143,14 @@ Examples (echo → action_prompt: ""):
 
                 # Validate rrule at parse time (defense-in-depth — invalid rules
                 # should fail loudly here, not silently at fire time).
+                gap = recurrence_seconds
                 if recurrence_rrule is not None:
                     try:
                         from dateutil.rrule import rrulestr
 
-                        rrulestr(recurrence_rrule)
+                        first_two = rrulestr(recurrence_rrule)[:2]
+                        if len(first_two) == 2:
+                            gap = (first_two[1] - first_two[0]).total_seconds()
                     except (ValueError, TypeError) as exc:
                         self.log.warning(
                             "parser returned invalid rrule %r: %s",
@@ -5161,6 +5159,15 @@ Examples (echo → action_prompt: ""):
                         )
                         # fall back to one-shot rather than rejecting whole reminder
                         recurrence_rrule = None
+
+                # Every fire of an action chain bills an LLM turn; this parser
+                # is the only way a cadence reaches storage (reminders and
+                # scheduled tasks alike), so the floor lives here.
+                if gap is not None and gap < 60:
+                    return ReminderParseResult(
+                        action="clarify",
+                        confirmation=_("The minimum repeat interval is one minute."),
+                    )
 
                 # Defense-in-depth: strip parentheticals from action_prompt that
                 # may have leaked through despite the prompt rules.

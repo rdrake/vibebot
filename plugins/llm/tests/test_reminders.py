@@ -1182,6 +1182,32 @@ class TestParseReminderService:
         assert result.action == "clarify"
         assert "one minute" in result.confirmation
 
+    def test_parse_reminder_sub_minute_rrule_clarifies(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a FREQ=SECONDLY rule WHEN parsing THEN the one-minute floor
+        applies to calendar cadences too."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion.return_value = make_completion_response(
+            json.dumps(
+                {
+                    "action": "schedule",
+                    "seconds": 10,
+                    "message": "check the build",
+                    "confirmation": "Set!",
+                    "action_prompt": "check the build",
+                    "recurrence_seconds": None,
+                    "recurrence_rrule": "FREQ=SECONDLY;INTERVAL=10",
+                    "watch_mode": False,
+                }
+            )
+        )
+
+        result = service.parse_reminder("every 10 seconds check the build")
+
+        assert result.action == "clarify"
+        assert "one minute" in result.confirmation
+
     def test_parse_reminder_calendar_recurrence(
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
