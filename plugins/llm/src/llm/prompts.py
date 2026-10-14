@@ -250,6 +250,9 @@ Rules:
   who or what should be in the picture ("the boyfriend is a sysadmin and the
   girl in red is a Kubernetes logo", "with a photo of ..."). A request that
   only supplies captions gets no draw.
+- A tag "blank picture area xN" means N separate picture areas (who would
+  win, a starter pack): give N descriptions in "draw", separated by " | ",
+  in reading order. One description fills every area with the same picture.
 - Blocks under the request ("Established facts about the real subjects...",
   canon) are facts about who and what it names. Use them for the captions,
   and copy the appearance facts into "draw" beside the name — the image

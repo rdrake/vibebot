@@ -90,7 +90,7 @@ class TestImageEdit:
 
         result = service.image_edit(CAPTIONED, "x")
 
-        assert result.error == "Image edit failed." and result.cost == 0.0
+        assert result.error == "The image model failed." and result.cost == 0.0
 
     def test_non_xai_model_is_refused_before_any_call(self, make_service, mocker) -> None:
         svc, _ = make_service(memeEditModel="gemini/gemini-2.5-flash-image")
@@ -174,7 +174,7 @@ class TestPictureFromThePicker:
             content="",
             cost=0.02,
             model="xai/grok-imagine-image",
-            error="The image model refused that edit.",
+            error="The image model refused that picture.",
         )
 
         plugin.meme(mock_irc, mock_msg, ["drake but x"])
@@ -258,3 +258,143 @@ class TestSharedGrounding:
 
         plugin.llm_service._begin_typing.assert_called_once_with(mock_irc, mock_msg)
         plugin.llm_service._begin_typing.return_value.assert_called_once()
+
+
+def _picture_png(colour: str) -> bytes:
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64), colour).save(buf, "PNG")
+    return buf.getvalue()
+
+
+@pytest.fixture
+def slot_plugin(plugin_env, mocker, tmp_path):
+    """A two-slot template (left and right halves) with real masks."""
+    from llm.service import MemePick, MemePicture
+    from PIL import Image
+
+    plugin, mock_irc, mock_msg = plugin_env
+    mock_irc.state.nickToAccount.return_value = "test_account"
+    plugin.registryValue.side_effect = make_registry_side_effect({"memeEnabled": True})
+    images, masks = tmp_path / "images", tmp_path / "masks"
+    images.mkdir()
+    masks.mkdir()
+    for i, box in enumerate(((0, 0, 100, 150), (100, 0, 200, 150))):
+        mask = Image.new("L", (200, 150), 0)
+        mask.paste(255, box)
+        mask.save(masks / f"www-{i}.png")
+    entry = {
+        "id": "www",
+        "name": "Who Would Win?",
+        "boxes": _boxes(2),
+        "slots": [
+            {"box": [0, 0, 0.5, 1], "mask": "www-0.png"},
+            {"box": [0.5, 0, 0.5, 1], "mask": "www-1.png"},
+        ],
+    }
+    mocker.patch.object(meme, "bundled_catalog", return_value=write_catalog([entry], images))
+    plugin.llm_service._save_image_bytes.return_value = CAPTIONED
+    plugin.llm_service.image_generate.side_effect = [
+        MemePicture(_picture_png("red"), 0.02, "xai/grok-imagine-image"),
+        MemePicture(_picture_png("blue"), 0.02, "xai/grok-imagine-image"),
+    ]
+    plugin.llm_service.meme_pick.return_value = MemePick(
+        '{"template": "www", "lines": ["cat", "dog"], "draw": "a cat | a dog"}', "test-model"
+    )
+    return plugin, mock_irc, mock_msg
+
+
+def _saved_image(plugin):
+    from PIL import Image
+
+    return Image.open(io.BytesIO(plugin.llm_service._save_image_bytes.call_args.args[0]))
+
+
+class TestSlotPictures:
+    """Templates with picture slots: generated pictures go in through the
+    masks, then the captions; the whole-image edit is not used."""
+
+    def test_each_slot_gets_its_own_picture(self, slot_plugin) -> None:
+        plugin, mock_irc, mock_msg = slot_plugin
+
+        plugin.meme(mock_irc, mock_msg, ["who would win, a cat or a dog"])
+
+        drawn = [c.args[0] for c in plugin.llm_service.image_generate.call_args_list]
+        assert sorted(drawn) == ["a cat", "a dog"]
+        ratios = {
+            c.kwargs["aspect_ratio"] for c in plugin.llm_service.image_generate.call_args_list
+        }
+        assert ratios == {"2:3"}  # each half is 100x150
+        plugin.llm_service.image_edit.assert_not_called()
+        saved = _saved_image(plugin).convert("RGB")
+        assert saved.getpixel((50, 75))[0] > 200  # red on the left
+        assert saved.getpixel((150, 75))[2] > 200  # blue on the right
+        assert mock_irc.reply.call_args.args[0].startswith(CAPTIONED)
+        rows = [(c.args[3], c.args[6]) for c in plugin.db.log_usage.call_args_list]
+        assert rows == [
+            ("test-model", 0.0),
+            ("xai/grok-imagine-image", 0.02),
+            ("xai/grok-imagine-image", 0.02),
+            ("meme-render", 0.0),
+        ]
+
+    def test_a_failed_picture_leaves_its_slot_blank_and_says_so(self, slot_plugin) -> None:
+        from llm.service import MemePicture
+
+        plugin, mock_irc, mock_msg = slot_plugin
+        plugin.llm_service.image_generate.side_effect = [
+            MemePicture(_picture_png("red"), 0.02, "xai/grok-imagine-image"),
+            MemePicture(
+                None, 0.02, "xai/grok-imagine-image", "The image model refused that picture."
+            ),
+        ]
+
+        plugin.meme(mock_irc, mock_msg, ["a cat versus a dog"])
+
+        reply = mock_irc.reply.call_args.args[0]
+        assert reply.startswith(CAPTIONED)
+        assert "1 of 2 pictures not added: The image model refused that picture." in reply
+        statuses = [c.kwargs["status"] for c in plugin.db.log_usage.call_args_list[1:3]]
+        assert sorted(statuses) == ["error", "success"]
+
+    def test_no_draw_means_no_pictures(self, slot_plugin) -> None:
+        plugin, mock_irc, mock_msg = slot_plugin
+
+        plugin.meme(mock_irc, mock_msg, ["www | cats | dogs"])
+
+        plugin.llm_service.image_generate.assert_not_called()
+        plugin.llm_service.image_edit.assert_not_called()
+
+
+class TestImageGenerate:
+    def test_posts_to_generations_with_the_aspect_ratio(self, service, mocker) -> None:
+        opened = mocker.patch(
+            "urllib.request.urlopen",
+            return_value=_response(
+                {
+                    "data": [{"b64_json": base64.b64encode(PNG).decode()}],
+                    "usage": {"cost_in_usd_ticks": 200000000},
+                }
+            ),
+        )
+
+        result = service.image_generate("a tired dad in a lawn chair", aspect_ratio="2:3")
+
+        assert result.data == PNG and result.error is None
+        assert result.cost == pytest.approx(0.02)
+        request = opened.call_args.args[0]
+        body = json.loads(request.data)
+        assert request.full_url == "https://api.x.ai/v1/images/generations"
+        assert body["aspect_ratio"] == "2:3"
+        assert body["prompt"].startswith("a tired dad in a lawn chair.")
+        assert "No text" in body["prompt"]
+
+    def test_non_xai_model_is_refused(self, make_service, mocker) -> None:
+        svc, _ = make_service(memeEditModel="gemini/gemini-2.5-flash-image")
+        opened = mocker.patch("urllib.request.urlopen")
+
+        result = svc.image_generate("x")
+
+        assert result.data is None and result.error
+        opened.assert_not_called()

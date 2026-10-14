@@ -23,7 +23,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from .meme_render import FONT_FILES, TOP_BOTTOM, Box
+from .meme_render import FONT_FILES, TOP_BOTTOM, Box, Slot
 from .meme_topics import PICTURE_SLOT
 
 # A caption past this length renders as unreadable four-point text anyway.
@@ -57,6 +57,8 @@ class MemeTemplate:
     image: Path | None = None
     # Popularity order (imgflip's); lower is more popular.
     rank: int = 10_000
+    # Blank picture areas a generated picture is masked into, in order.
+    slots: tuple[Slot, ...] = ()
 
 
 FONTS = tuple(FONT_FILES)
@@ -136,6 +138,17 @@ def parse_catalog(entries: Any, image_dir: Path) -> list[MemeTemplate]:
         keywords = tuple(k for k in entry.get("keywords") or [] if isinstance(k, str))
         example = tuple(t for t in entry.get("example") or [] if isinstance(t, str))
         rank = entry.get("rank")
+        slots: list[Slot] = []
+        for raw in entry.get("slots") or []:
+            try:
+                x, y, w, h = (float(v) for v in raw["box"])
+                mask = image_dir.parent / "masks" / str(raw["mask"])
+                corners = tuple((float(c[0]), float(c[1])) for c in raw.get("corners") or [])
+                slots.append(Slot((x, y, w, h), mask, corners if len(corners) == 4 else ()))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if slots and PICTURE_SLOT not in keywords:
+            keywords = (PICTURE_SLOT, *keywords)
         templates.append(
             MemeTemplate(
                 template_id,
@@ -146,6 +159,7 @@ def parse_catalog(entries: Any, image_dir: Path) -> list[MemeTemplate]:
                 boxes=tuple(boxes),
                 image=image_dir / f"{template_id}.jpg",
                 rank=rank if isinstance(rank, int) else 10_000,
+                slots=tuple(slots),
             )
         )
     return templates
@@ -408,7 +422,40 @@ def brief_templates(
 
 def _brief_row(t: MemeTemplate) -> str:
     example = _brief_example(t.example) if t.example else ""
-    return f"{t.id} | {t.name} | {t.lines} | {example} | {_brief_tags(t.keywords, t.name)}"
+    tags = _brief_tags(t.keywords, t.name)
+    if len(t.slots) > 1:
+        # The picker writes one picture per area, separated by " | ".
+        tags = tags.replace(PICTURE_SLOT, f"{PICTURE_SLOT} x{len(t.slots)}", 1)
+    return f"{t.id} | {t.name} | {t.lines} | {example} | {tags}"
+
+
+# The aspect ratios xAI's image generation takes.
+ASPECT_RATIOS = ("1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16")
+
+
+def nearest_aspect_ratio(width: int, height: int) -> str:
+    """The supported ratio closest to ``width:height`` (compared as logs,
+    so 2:1 and 1:2 are equally far from 1:1)."""
+    import math
+
+    target = math.log(width / height)
+
+    def distance(ratio: str) -> float:
+        w, h = (int(x) for x in ratio.split(":"))
+        return abs(math.log(w / h) - target)
+
+    return min(ASPECT_RATIOS, key=distance)
+
+
+def slot_drawings(draw: str, count: int) -> list[str]:
+    """One picture description per slot from ``a | b | c``.
+
+    Fewer descriptions than slots repeat the last one — "same" wants the
+    same picture twice, and a one-line draw on a two-slot template should
+    still fill both.
+    """
+    parts = [p.strip() for p in draw.split(" | ") if p.strip()] or [draw.strip()]
+    return [parts[min(i, len(parts) - 1)] for i in range(count)]
 
 
 def catalog_brief(
