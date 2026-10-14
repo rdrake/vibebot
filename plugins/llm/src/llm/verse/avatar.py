@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -70,8 +71,9 @@ def _render_style_exemplars(exemplars: Sequence[str]) -> list[str]:
 class VerseDispatchResult:
     """Structured result of a verse tool dispatch.
 
-    The mutation tools (verse_act / verse_move) return ok=True with
-    payload={'status': 'ok'}. The read tools (verse_look / verse_recall)
+    verse_act returns ok=True with payload={'status': 'ok', 'result': <scene
+    text>}; verse_move returns payload={'status': 'ok'}. Either returns
+    ok=False with ``error`` when the move/act is refused. The read tools (verse_look / verse_recall)
     additionally carry their data ('description' / 'events') so the model
     can use what it asked for. verse_record populates payload with
     tool-specific data on success or error with a model-facing string on
@@ -334,6 +336,9 @@ def verse_act(
 
     # 2. Verb classification
     effect = VERB_TABLE.get(verb.lower())
+    if not target and effect in (VerbEffect.MOVE, VerbEffect.ITEM):
+        # No target: record the bare verb instead of "tries to take None".
+        effect = VerbEffect.EVENT_ONLY
 
     # 3. MOVE
     if effect is VerbEffect.MOVE:
@@ -616,11 +621,7 @@ def build_verse_system_prompt(
         else "Scene: You are nowhere in particular."
     )
 
-    own = [
-        ev
-        for ev in store.recent_events(limit=50, require_active_entity=True)
-        if avatar_id in ev.entity_ids
-    ][:5]
+    own = store.events_for_entities([avatar_id], limit=5)
     parts.append("Recent events involving you:")
     parts.extend([f"- {ev.summary}" for ev in own] or ["- (none yet)"])
 
@@ -787,14 +788,16 @@ def dispatch_verse_edit(store, *, op, payload, authorized, account):
     reason = validate_payload(op, payload)
     if reason is not None:
         return {"status": "error", "detail": reason}
-    if op == "add_entity":
+    if op in ("add_entity", "update_entity") and isinstance(payload.get("name"), str):
         # Duplicate-name guard, mirroring the @versedit add command. Without it
         # a model that cannot address an existing entity (see _entity_line)
         # "edits" by re-adding, which spawns a case-identical twin that is
         # unpinned — invisible to list_canon_entities, so the original keeps
-        # being recited and the edit looks silently ignored.
-        name = payload.get("name", "")
-        if store.active_name_exists(name):
+        # being recited and the edit looks silently ignored. A rename onto
+        # another entity's name makes the same twin; re-casing its own is fine.
+        name = payload["name"]
+        existing = store.find_entity_by_name(name, active_only=True)
+        if existing is not None and existing.id != payload.get("entity_id"):
             return {
                 "status": "error",
                 "detail": (
@@ -807,7 +810,7 @@ def dispatch_verse_edit(store, *, op, payload, authorized, account):
         new_id = store.apply_direct(
             op=op, payload=payload, source="llm", provenance=f"verse_edit:{account}"
         )
-    except (LookupError, ValueError, PermissionError) as exc:
+    except (LookupError, ValueError, PermissionError, sqlite3.IntegrityError) as exc:
         return {"status": "error", "detail": str(exc)}
     return {"status": "ok", "id": new_id}
 
@@ -845,10 +848,12 @@ def dispatch_verse_tool_call(
     - Exception-level failures (retired avatar, DB gone) are caught here
       and logged at WARNING; no event row is written.
 
-    Returns a :class:`VerseDispatchResult`. The mutation tools (verse_act /
-    verse_move) return ``ok=True`` with ``payload={'status': 'ok'}``, and
-    their failures keep the historical swallow-and-skip semantics (logged,
-    ``ok=True``). The read tools now return their data to the model —
+    Returns a :class:`VerseDispatchResult`. verse_act returns ``ok=True``
+    with its in-world ``result`` text (including failures like "You can't
+    find that place."); verse_move returns ``payload={'status': 'ok'}``.
+    A ValueError from either ("no such place", "avatar retired") returns
+    ``ok=False`` with that ``error``; other exceptions keep the historical
+    swallow-and-skip semantics (logged, ``ok=True``). The read tools return their data to the model —
     verse_look carries ``description`` and verse_recall carries ``events``
     (≤5, summary + ts) — instead of computing it and dropping it.
     ``verse_record`` may return ``ok=False`` with a model-facing ``error``
@@ -862,8 +867,10 @@ def dispatch_verse_tool_call(
             if not verb:
                 log.warning("verse_act missing 'verb' arg (avatar=%s)", avatar_id)
                 return _ok
-            verse_act(store, avatar_id, verb, args.get("target"), args.get("details"))
-            return _ok
+            act = verse_act(store, avatar_id, verb, args.get("target"), args.get("details"))
+            return VerseDispatchResult(
+                ok=True, payload={"status": "ok", "result": act.scene_shift_text}
+            )
         elif name == "verse_move":
             place = args.get("place_name")
             if not place:
@@ -894,6 +901,11 @@ def dispatch_verse_tool_call(
         else:
             log.warning("unknown verse tool: %s (avatar=%s)", name, avatar_id)
             return _ok
+    except ValueError as exc:
+        # verse_act/verse_move business refusals ("no such place", "avatar
+        # retired"): nothing was written, so the model must not narrate it.
+        log.warning("verse tool dispatch failed: name=%s avatar=%s err=%s", name, avatar_id, exc)
+        return VerseDispatchResult(ok=False, error=str(exc))
     except Exception as exc:  # noqa: BLE001
         log.warning(
             "verse tool dispatch failed: name=%s avatar=%s err=%s",

@@ -37,7 +37,8 @@ _PAYLOAD_SCHEMA: dict[str, tuple[tuple[str, Callable[[Any], bool], str], ...]] =
         ("kind", lambda v: isinstance(v, str), "str"),
     ),
     "add_entity": (
-        ("kind", lambda v: isinstance(v, str), "str"),
+        # Not 'avatar': avatars are created by opt-in, never by canon edits.
+        ("kind", lambda v: v in ("npc", "place", "faction", "item"), "npc|place|faction|item"),
         ("name", lambda v: isinstance(v, str), "str"),
     ),
     "update_entity": (("entity_id", _is_strict_int, "int"),),

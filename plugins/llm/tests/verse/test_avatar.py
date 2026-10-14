@@ -231,6 +231,20 @@ class TestVerseAct:
         with pytest.raises(ValueError, match="avatar retired"):
             verse_act(store, 99999, "speak")
 
+    @pytest.mark.parametrize("verb", ["move", "take"])
+    def test_move_or_item_verb_without_target_is_event_only(
+        self, store: VerseStore, verb: str
+    ) -> None:
+        """A MOVE/ITEM verb with no target must not write 'tries to take None'
+        into canon; it records the bare verb like any event-only action."""
+        alice_id = _opt_in(store)
+        result = verse_act(store, alice_id, verb)
+
+        summary = store.recent_events(limit=1)[0].summary
+        assert "None" not in summary
+        assert summary == f"alice {verb}s"
+        assert result.scene_shift_text == f"You {verb}."
+
 
 # ---------------------------------------------------------------------------
 # TestVerseMove
@@ -430,6 +444,18 @@ class TestSystemPrompt:
 
         found = [s for s in summaries if s in prompt]
         assert len(found) == 5
+
+    def test_own_events_found_behind_many_unrelated(self, store: VerseStore) -> None:
+        """A returning player whose last event is 51+ events back still sees it
+        under 'Recent events involving you' (the filter must not run after a
+        channel-wide limit)."""
+        alice_id = _opt_in(store, nick="alice")
+        store.add_event(summary="alice buries the lantern", entity_ids=[alice_id], source="avatar")
+        for i in range(60):
+            store.add_event(summary=f"unrelated {i}", entity_ids=[], source="avatar")
+
+        prompt = build_verse_system_prompt(store, alice_id, "a traveller")
+        assert "- alice buries the lantern" in prompt
 
     def test_no_events_shows_none_yet_marker(self, store: VerseStore) -> None:
         alice_id = _opt_in(store, nick="alice")
@@ -858,15 +884,47 @@ class TestDispatchContract:
         )
 
         alice_id = _opt_in(store)
-        for name, args in [
-            ("verse_act", {"verb": "speak"}),
-            ("verse_move", {"place_name": "anywhere"}),
-        ]:
-            result = dispatch_verse_tool_call(store, alice_id, name, args)
-            assert isinstance(result, VerseDispatchResult)
-            assert result.ok is True
-            assert result.payload == {"status": "ok"}
-            assert result.error is None
+        store.add_entity("place", "Riverside", "A bend in the river.")
+        result = dispatch_verse_tool_call(
+            store, alice_id, "verse_move", {"place_name": "riverside"}
+        )
+        assert isinstance(result, VerseDispatchResult)
+        assert result == VerseDispatchResult(ok=True, payload={"status": "ok"})
+
+        result = dispatch_verse_tool_call(store, alice_id, "verse_act", {"verb": "speak"})
+        assert result == VerseDispatchResult(
+            ok=True, payload={"status": "ok", "result": "You speak."}
+        )
+
+    def test_verse_move_to_unknown_place_is_not_ok(self, store: VerseStore) -> None:
+        """A move to a place that does not exist must not be reported as a
+        success — the model would narrate a move that never happened."""
+        from llm.verse.avatar import VerseDispatchResult, dispatch_verse_tool_call
+
+        alice_id = _opt_in(store)
+        result = dispatch_verse_tool_call(store, alice_id, "verse_move", {"place_name": "anywhere"})
+        assert result == VerseDispatchResult(ok=False, error="no such place")
+        assert store.get_attribute(alice_id, "location") == "The Clearing"
+
+    def test_verse_act_failure_text_reaches_model(self, store: VerseStore) -> None:
+        """verse_act's in-world failure text ('You can't find that place.')
+        is carried in the payload instead of being dropped for a bare ok."""
+        from llm.verse.avatar import dispatch_verse_tool_call
+
+        alice_id = _opt_in(store)
+        result = dispatch_verse_tool_call(
+            store, alice_id, "verse_act", {"verb": "move", "target": "Nowhere"}
+        )
+        assert result.payload == {"status": "ok", "result": "You can't find that place."}
+
+    def test_verse_act_retired_avatar_is_not_ok(self, store: VerseStore) -> None:
+        from llm.verse.avatar import dispatch_verse_tool_call
+
+        alice_id = _opt_in(store)
+        store.set_status(alice_id, "retired")
+        result = dispatch_verse_tool_call(store, alice_id, "verse_act", {"verb": "speak"})
+        assert result.ok is False
+        assert result.error == "avatar retired"
 
     def test_verse_look_returns_description_payload(self, store: VerseStore) -> None:
         """verse_look no longer swallows its result: the dispatch payload
