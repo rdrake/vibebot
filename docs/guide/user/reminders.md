@@ -33,7 +33,7 @@ For the last two, the confirmation says which one it used.
 @tz clear
 ```
 
-Takes an IANA zone name (Area/City). With no argument it shows your current zone.
+Takes an IANA zone name (Area/City). With no argument it shows your current zone. `@tz` needs an authenticated account.
 
 A reminder has to fire between 10 seconds and 7 days from now, the text after `@remind` is capped at 500 characters, and you can hold 25 pending reminders at a time.
 

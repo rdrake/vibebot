@@ -12,6 +12,7 @@ regressions in the real command code are caught.
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -577,6 +578,7 @@ class TestCodeCommand:
         prepended to the facade.
         """
         plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "testnick"
         plugin.db.get_instruction.return_value = "You are Captain Picard."
         plugin.llm_service.assistant_request.side_effect = None
         plugin.llm_service.assistant_request.return_value = self._make_code_result()
@@ -3580,6 +3582,10 @@ class TestRateLimitIntegration:
 class TestInstructCommand:
     """Tests for the %instruct command."""
 
+    @pytest.fixture(autouse=True)
+    def _authenticated(self, plugin_env) -> None:
+        plugin_env[1].state.nickToAccount.return_value = "testnick"
+
     def test_instruct_sets_instruction(self, plugin_env):
         """GIVEN text WHEN instruct called THEN saves to DB and confirms."""
         plugin, mock_irc, mock_msg = plugin_env
@@ -3621,6 +3627,42 @@ class TestInstructCommand:
         assert "no instruction" in mock_irc.reply.call_args.args[0].lower()
 
 
+class TestPersonalDataNeedsAccount:
+    """@instruct, @memories, @tz and @avatar key on the account when there is
+    one and the raw nick otherwise, so an unauthenticated caller on nick
+    ``rdrake`` would read and write account rdrake's data. All four refuse
+    without an account."""
+
+    @pytest.mark.parametrize(
+        ("command", "args", "db_calls"),
+        [
+            ("instruct", [], ("get_instruction",)),
+            ("instruct", ["be a pirate"], ("save_instruction",)),
+            ("memories", [], ("get_memories",)),
+            ("memories", ["clear"], ("delete_all_memories",)),
+            ("tz", [], ("get_user_timezone",)),
+            ("tz", ["America/Toronto"], ("save_user_timezone",)),
+            ("avatar", [], ("get_avatar_persona",)),
+            ("avatar", ["a tree spirit"], ("save_avatar_persona",)),
+        ],
+    )
+    def test_unauthenticated_caller_is_refused(self, plugin_env, command, args, db_calls):
+        """GIVEN no account WHEN the command runs THEN it errors and touches no data."""
+        plugin, mock_irc, mock_msg = plugin_env
+        getattr(plugin, command)(mock_irc, mock_msg, args)
+        mock_irc.error.assert_called_once()
+        assert "identified" in mock_irc.error.call_args.args[0]
+        for name in db_calls:
+            getattr(plugin.db, name).assert_not_called()
+
+    def test_authenticated_caller_uses_account_key(self, plugin_env):
+        """GIVEN an account WHEN @instruct sets THEN it is stored under the account."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "acct"
+        plugin.instruct(mock_irc, mock_msg, ["be a pirate"])
+        plugin.db.save_instruction.assert_called_once_with("acct", "be a pirate")
+
+
 # ---------------------------------------------------------------------------
 # ask + instruct integration
 # ---------------------------------------------------------------------------
@@ -3628,6 +3670,35 @@ class TestInstructCommand:
 
 class TestAskWithInstruction:
     """Tests for %ask using user instructions from %instruct."""
+
+    @pytest.fixture(autouse=True)
+    def _authenticated(self, plugin_env) -> None:
+        plugin_env[1].state.nickToAccount.return_value = "testnick"
+
+    @pytest.mark.parametrize("command", ["ask", "code"])
+    def test_unauthenticated_caller_gets_no_instruction_or_memories(self, plugin_env, command):
+        """GIVEN no account WHEN ask/code runs THEN the account-or-nick key is
+        not read: a caller on someone's nick must not get their @instruct or
+        memories."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = None
+        plugin.db.get_instruction.return_value = "secret instruction"
+        plugin.db.get_memories.return_value = [SimpleNamespace(id=1, fact="secret fact")]
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="hi",
+            grounding_used=False,
+            prompt_tokens=1,
+            completion_tokens=1,
+            cost=0.0,
+            model="m",
+        )  # ty: ignore[invalid-argument-type]
+        getattr(plugin, command)(mock_irc, mock_msg, ["hello"])
+        plugin.db.get_instruction.assert_not_called()
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        assert kwargs["memories"] == []
+        assert kwargs["user_instruction"] is None
 
     def test_ask_passes_user_instruction_as_data_not_system(self, plugin_env):
         """GIVEN user has instruction WHEN ask called THEN it is forwarded as
