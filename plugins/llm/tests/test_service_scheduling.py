@@ -1293,3 +1293,18 @@ def test_scheduled_fire_short_circuits_when_closing(llm_service, db, mocker: Moc
 
     fire_callable()
     plugin._llm_executor.submit.assert_not_called()
+
+
+def test_stored_sub_minute_cadence_is_floored_at_fire_time(
+    llm_service, mocker: MockerFixture
+) -> None:
+    """Rows stored before the parse-time floor still fire at most once a minute."""
+    row = mocker.MagicMock(recurrence_seconds=5, recurrence_rrule=None)
+    assert llm_service._compute_next_fire(row, 1_000.0) == 1_060.0
+
+
+def test_secondly_rrule_is_floored_at_fire_time() -> None:
+    """The parse check sees one gap; the fire-time floor covers every later one."""
+    from llm.plugin import LLM
+
+    assert LLM._next_rrule_fire("FREQ=SECONDLY", 1_000.0) == 1_060.0
