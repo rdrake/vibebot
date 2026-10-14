@@ -2942,3 +2942,32 @@ class TestUndeadPluginReaper:
 
         assert not plugin._render_typing_thread.is_alive()
         plugin.db.close.assert_called_once_with()
+
+
+def test_unattended_assistant_reads_state_under_account_key(mocker: MockerFixture) -> None:
+    """GIVEN a fire owned by an account whose nick differs WHEN the unattended
+    turn gathers context THEN history, memories and @instruct use the account
+    key the commands stored them under, not the raw nick."""
+    from llm.plugin import LLM
+
+    plugin = mocker.MagicMock()
+    plugin._gather_history.return_value = ([], [])
+    plugin._get_user_memories.return_value = []
+    plugin.db.get_instruction.return_value = ""
+    plugin._pending_task_fns.return_value = {}
+
+    LLM._run_unattended_assistant(
+        plugin,
+        irc=mocker.MagicMock(),
+        msg=mocker.MagicMock(),
+        prompt="check the build",
+        nick="alice_away",
+        account="alice",
+        channel="#test",
+        bot_nick="vibebot",
+        entry_route="reminder_action",
+    )
+
+    plugin._gather_history.assert_called_once_with("alice", "#test")
+    plugin._get_user_memories.assert_called_once_with("alice")
+    plugin.db.get_instruction.assert_called_once_with("alice")
