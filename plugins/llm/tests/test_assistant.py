@@ -841,6 +841,38 @@ class TestMetaCompletion:
         db.save_instruction.assert_called_once_with("testuser", "respond in haiku")
         assert mock_completion.call_count == 2
 
+    def test_accountless_reminder_action_cannot_read_memories(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN an unattended remind_action turn for an accountless owner WHEN
+        the model calls list_memories THEN the tool refuses: the account
+        threads from the request into the executor's gate."""
+        tool_call = make_tool_call("list_memories", {}, call_id="call_1")
+        mock_completion = mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[
+                make_completion_response(None, tool_calls=[tool_call]),
+                make_completion_response("No can do."),
+            ],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+        db = mocker.MagicMock()
+
+        service.assistant_completion(
+            route_profile=PROFILE_REMIND_ACTION,
+            prompt="what do you remember about me",
+            nick="rdrake",
+            account=None,
+            channel="#test",
+            db=db,
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+        )
+
+        db.get_memories.assert_not_called()
+        tool_reply = mock_completion.call_args_list[1].kwargs["messages"][-1]["content"]
+        assert "authenticated account" in tool_reply
+
     def test_max_steps_exceeded(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN LLM keeps calling tools WHEN max steps hit THEN error."""
         tool_call = make_tool_call("list_memories", call_id="call_loop")
