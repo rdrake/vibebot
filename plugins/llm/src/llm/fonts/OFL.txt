@@ -1,10 +1,14 @@
-TitilliumWeb-Black.ttf, TitilliumWeb-SemiBold.ttf:
-Copyright (c) 2009-2011 by Accademia di Belle Arti di Urbino and students of MA course of Visual design.
+Anton-Regular.ttf:
+Copyright 2020 The Anton Project Authors (https://github.com/googlefonts/AntonFont.git).
+
+Arimo-Variable.ttf:
+Copyright 2020 The Arimo Project Authors (https://github.com/googlefonts/arimo).
 
 Kalam-Regular.ttf:
 Copyright (c) 2014 Indian Type Foundry (info@indiantypefoundry.com).
 
-The fonts were copied from memegen (https://github.com/jacebrowning/memegen).
+Anton and Arimo come from https://github.com/google/fonts; Kalam from memegen
+(https://github.com/jacebrowning/memegen).
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:

@@ -18,11 +18,15 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 FONT_DIR = Path(__file__).parent / "fonts"
+# thick: Anton, the free stand-in for Impact (white all-caps captions).
+# thin: Arimo, metric-compatible with Arial, which imgflip uses for black
+# label text; a variable font, drawn at the weight below.
 FONT_FILES = {
-    "thick": "TitilliumWeb-Black.ttf",
-    "thin": "TitilliumWeb-SemiBold.ttf",
+    "thick": "Anton-Regular.ttf",
+    "thin": "Arimo-Variable.ttf",
     "comic": "Kalam-Regular.ttf",
 }
+FONT_WEIGHTS = {"thin": "SemiBold"}
 DEFAULT_FONT = "thick"
 MINIMUM_FONT_SIZE = 7
 # A custom image larger than this is shrunk before drawing; nobody reads a
@@ -56,8 +60,11 @@ TOP_BOTTOM = (
 
 @lru_cache(maxsize=256)
 def _font(name: str, size: int) -> ImageFont.FreeTypeFont:
-    path = FONT_DIR / FONT_FILES.get(name, FONT_FILES[DEFAULT_FONT])
-    return ImageFont.truetype(str(path), size=size)
+    name = name if name in FONT_FILES else DEFAULT_FONT
+    font = ImageFont.truetype(str(FONT_DIR / FONT_FILES[name]), size=size)
+    if name in FONT_WEIGHTS:
+        font.set_variation_by_name(FONT_WEIGHTS[name])
+    return font
 
 
 def _stroke_width(font: ImageFont.FreeTypeFont) -> int:
