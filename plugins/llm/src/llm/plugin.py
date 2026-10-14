@@ -3761,8 +3761,8 @@ class LLM(callbacks.Plugin):
         """Match the inner _send closure semantics for reminder output.
 
         Reminders bypass _send_long_reply, so collapse multi-line content
-        here — raw \\n in a PRIVMSG body causes Excess Flood disconnects
-        on AfterNET.
+        here (raw \\n in a PRIVMSG body causes Excess Flood disconnects
+        on AfterNET) and pastebin anything longer than one wire line.
 
         ``reply_msgid`` threads the fire under the message that set the
         reminder via ``+draft/reply``, matching draw and animate delivery.
@@ -3777,9 +3777,8 @@ class LLM(callbacks.Plugin):
         if not reply_to:
             text = f"Reminder ({label}): {text}" if label else f"Reminder: {text}"
         safe_text = self.llm_service.sanitize_output(text)
-        safe_text = self._collapse_for_irc(safe_text) or safe_text
-        prefixed = f"{nick}: {safe_text}" if nick else safe_text
-        self._safe_queue(irc, self._safe_privmsg(target, prefixed, reply_to))
+        line = self._format_pending_completed_reply(nick, safe_text, target)
+        self._safe_queue(irc, self._safe_privmsg(target, line, reply_to))
 
     def _finalize_reminder_fire(
         self,

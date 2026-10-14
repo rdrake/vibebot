@@ -824,12 +824,8 @@ def test_reply_target_overrides_dispatch_target(llm_service, db, mocker: MockerF
     mocker.patch.object(plugin.db, "get_instruction", return_value="")
     plugin._pending_task_fns.return_value = {}
 
-    # Production routes the answer through _collapse_for_irc + _safe_privmsg;
-    # run the real impls so a real PRIVMSG (not a mock) is queued.
-    from llm.plugin import LLM
-
-    plugin._collapse_for_irc.side_effect = LLM._collapse_for_irc
-    plugin._safe_privmsg.side_effect = LLM._safe_privmsg
+    # Run the real line formatting so a real PRIVMSG (not a mock) is queued.
+    _bind_real_delivery(plugin)
 
     mocker.patch.object(
         llm_service,
@@ -855,6 +851,78 @@ def test_reply_target_overrides_dispatch_target(llm_service, db, mocker: MockerF
     assert privmsg_calls[-1].args[0].args[0] == "#deliver"
 
 
+def _bind_real_delivery(plugin) -> None:
+    """Run the real one-line formatter (collapse, pastebin, safeArgument)."""
+    from llm.plugin import LLM
+
+    plugin._collapse_for_irc.side_effect = LLM._collapse_for_irc
+    plugin._safe_privmsg.side_effect = LLM._safe_privmsg
+    plugin._fallback_long_reply_teaser.side_effect = LLM._fallback_long_reply_teaser
+    plugin._reply_mores_length.return_value = 400
+    plugin._finish_irc_line = LLM._finish_irc_line.__get__(plugin)
+    plugin._format_pending_completed_reply = LLM._format_pending_completed_reply.__get__(plugin)
+
+
+def _fire_with_answer(llm_service, mocker: MockerFixture, content: str):
+    """Schedule a one-shot task in #deliver, fire it with ``content``, return the irc."""
+    add_event = mocker.patch("llm.service.schedule.addEvent")
+    irc = _irc_with_channels(mocker, {"#deliver": ["rdrake", "bot"]})
+    _patch_parser(llm_service, mocker)
+    llm_service.plugin.registryValue.side_effect = _registry(
+        {"bridgeScheduledTaskLimit": 5, ("bridgeEnabled", "#deliver"): True}
+    )
+    res = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=_msg_mock(mocker),
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#deliver",
+        when_natural="in 60s",
+        prompt="say hi",
+    )
+    assert res.status == "ok"
+    fake_world = mocker.patch("llm.service.world", autospec=False, create=True)
+    fake_world.getIrc.return_value = irc
+    fake_world.ircs = [irc]
+    mocker.patch("llm.service.ircdb.checkCapability", return_value=True)
+    plugin = llm_service.plugin
+    plugin._check_rate_limit.return_value = False
+    plugin._gather_history.return_value = ([], [])
+    plugin._get_user_memories.return_value = []
+    mocker.patch.object(plugin.db, "get_instruction", return_value="")
+    plugin._pending_task_fns.return_value = {}
+    plugin.llm_service = llm_service
+    from llm.plugin import LLM
+
+    plugin._unattended_ask_rate_limited = LLM._unattended_ask_rate_limited.__get__(plugin)
+    plugin._run_unattended_assistant = LLM._run_unattended_assistant.__get__(plugin)
+    _bind_real_delivery(plugin)
+    mocker.patch.object(
+        llm_service,
+        "assistant_request",
+        return_value=mocker.MagicMock(
+            content=content, model="m", prompt_tokens=0, completion_tokens=0, cost=0.0, error=None
+        ),
+    )
+    add_event.call_args.args[0]()
+    return irc
+
+
+def test_long_fired_answer_is_pastebinned_not_truncated(llm_service, db, mocker: MockerFixture):
+    """A ~900-char scheduled answer goes out as teaser + URL, not one PRIVMSG
+    the server cuts off."""
+    mocker.patch.object(llm_service, "save_markdown_to_http", return_value="http://h/task.html")
+    long_answer = " ".join(f"word{i}" for i in range(150))
+    assert len(long_answer) > 850
+
+    irc = _fire_with_answer(llm_service, mocker, long_answer)
+
+    body = irc.queueMsg.call_args.args[0].args[1]
+    assert body.startswith("rdrake: ")
+    assert "http://h/task.html" in body
+    assert "word149" not in body
+
+
 def test_fired_answer_neutralizes_irc_injection(llm_service, db, mocker: MockerFixture):
     """A scheduled answer carrying CR/LF/NUL must not smuggle an IRC command.
 
@@ -863,68 +931,10 @@ def test_fired_answer_neutralizes_irc_injection(llm_service, db, mocker: MockerF
     Model output is attacker-influenceable, so the queued body must be free of
     the bytes that frame a second IRC line (\\r, \\n, \\x00).
     """
-    add_event = mocker.patch("llm.service.schedule.addEvent")
-    irc = _irc_with_channels(mocker, {"#deliver": ["rdrake", "bot"]})
-    msg = _msg_mock(mocker)
-    _patch_parser(llm_service, mocker)
-    llm_service.plugin.registryValue.side_effect = _registry(
-        {"bridgeScheduledTaskLimit": 5, ("bridgeEnabled", "#deliver"): True}
-    )
+    irc = _fire_with_answer(llm_service, mocker, "hi from the future\r\nQUIT :pwned\x00")
 
-    res = llm_service.schedule_llm_task(
-        irc=irc,
-        msg=msg,
-        creator_nick="rdrake",
-        account="rdrake_a",
-        channel="#deliver",
-        when_natural="in 60s",
-        prompt="say hi",
-        reply_target="#deliver",
-    )
-    assert res.status == "ok"
-
-    fire_callable = add_event.call_args.args[0]
-    fake_world = mocker.patch("llm.service.world", autospec=False, create=True)
-    fake_world.getIrc.return_value = irc
-    fake_world.ircs = [irc]
-    mocker.patch("llm.service.ircdb.checkCapability", return_value=True)
-
-    plugin = llm_service.plugin
-    plugin._check_rate_limit.return_value = False
-    plugin._gather_history.return_value = ([], [])
-    plugin._get_user_memories.return_value = []
-    mocker.patch.object(plugin.db, "get_instruction", return_value="")
-    plugin._pending_task_fns.return_value = {}
-
-    # The fixture's plugin is a mock; run the REAL collapse + safeArgument
-    # neutralization so this exercises production behavior, not mock behavior.
-    from llm.plugin import LLM
-
-    plugin._collapse_for_irc.side_effect = LLM._collapse_for_irc
-    plugin._safe_privmsg.side_effect = LLM._safe_privmsg
-
-    mocker.patch.object(
-        llm_service,
-        "assistant_request",
-        return_value=mocker.MagicMock(
-            content="hi from the future\r\nQUIT :pwned\x00",
-            model="m",
-            prompt_tokens=0,
-            completion_tokens=0,
-            cost=0.0,
-            error=None,
-        ),
-    )
-
-    fire_callable()
-
-    privmsg_calls = [
-        call
-        for call in irc.queueMsg.call_args_list
-        if getattr(call.args[0], "command", None) == "PRIVMSG"
-    ]
-    assert privmsg_calls, "expected the answer to be queued"
-    body = privmsg_calls[-1].args[0].args[1]
+    body = irc.queueMsg.call_args.args[0].args[1]
+    assert body.startswith("rdrake: hi from the future")
     assert "\r" not in body
     assert "\n" not in body
     assert "\x00" not in body
