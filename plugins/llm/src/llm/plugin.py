@@ -6603,30 +6603,6 @@ class LLM(callbacks.Plugin):
             self._roleplay_sticky[key] = (now + ttl) if ttl > 0 else float("inf")
             return True
 
-    def _build_verse_handlers_for(self, channel: str) -> dict | None:
-        """Build the verse extra-handlers dict for ``channel``, plumbing
-        the per-channel ``verseAutoEntityMaxNamesPerCall`` into the
-        dispatch closure.
-
-        Looks up the channel's verse store + most-recent active avatar
-        and binds handlers to that pair. Returns None if there is no
-        verse store or no active avatar in the channel.
-
-        The dispatch call site (which already has a full ``VerseRoute``
-        from ``_verse_route_for``) prefers
-        ``_build_verse_handlers_for_route`` so its avatar binding stays
-        caller-specific; this helper is the seam that the registry-
-        plumbing test relies on.
-        """
-        store = self._get_or_create_verse_store(channel)
-        if store is None:
-            return None
-        avatars = store.list_entities_by_kind("avatar", status="active")
-        if not avatars:
-            return None
-        max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
-        return make_verse_extra_handlers(store, avatars[0].id, max_actors=max_actors)
-
     def _build_verse_handlers_for_route(self, channel: str, route: VerseRoute) -> dict:
         """Build verse handlers for an existing ``VerseRoute``.
 
