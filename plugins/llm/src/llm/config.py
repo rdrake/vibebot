@@ -779,20 +779,6 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
-    "verseStoryAmbientMaxImages",
-    registry.NonNegativeInteger(
-        1,
-        _("""Image cap for an AMBIENT verse story — a plain narrative mention or a
-        recount question ("what have the lads done today"). These default to
-        prose-first tales; the odd hero image is fine but they don't want the
-        full illustrated storybook. An explicit "illustrate" cue, @story, or
-        the verse_storybook tool use the larger verseStorybookMaxImages instead.
-        0 = text only."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
     "verseStorybookMaxPerTurn",
     registry.NonNegativeInteger(
         1,

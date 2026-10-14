@@ -217,10 +217,7 @@ The storybook is reserved for pictures people asked for. A plain canon mention p
 
 Cost controls: `verseStorybookMaxImages` (default 5), `verseStorybookMaxPerTurn` (1), `verseStorybookCooldownSeconds` (300, per account, shared between the tool and `@story`), `verseStorybookMaxChars` (6000), and `verseStorybookImageTimeout` (45 seconds). Illustrations render concurrently; the page is published through the bot's HTTP output.
 
-Two keys in that family do nothing today:
-
-- `verseStorybookDailyImageCap` (30) is registered but **not enforced**: there is no per-account daily image count to check it against. What bounds image cost is `verseStorybookMaxImages` per page and the per-account cooldown between pages; the verse tool path adds `verseStorybookMaxPerTurn` on top, which `@story` does not read.
-- `verseStoryAmbientMaxImages` (1) is vestigial. Since plain canon mentions became prose tales, the only ambient route into the storybook is an explicit illustrate cue, and that route uses `verseStorybookMaxImages`.
+`verseStorybookDailyImageCap` (30) is registered but **not enforced**: there is no per-account daily image count to check it against. What bounds image cost is `verseStorybookMaxImages` per page and the per-account cooldown between pages; the verse tool path adds `verseStorybookMaxPerTurn` on top, which `@story` does not read.
 
 ## GM operations
 

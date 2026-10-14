@@ -32,6 +32,23 @@ def store_with_avatar(store: VerseStore) -> tuple[VerseStore, int]:
     return store, avatar_id
 
 
+def link_avatar(store: VerseStore, entity_id: int, nick: str, account: str | None = None) -> None:
+    """Seed an avatar_link row directly (prod links only via opt_in_avatar)."""
+    with store.write_transaction() as conn:
+        conn.execute(
+            "INSERT INTO avatar_link (entity_id, nick, account) VALUES (?, ?, ?)",
+            (entity_id, nick, account),
+        )
+
+
+def add_alias(store: VerseStore, entity_id: int, alias: str) -> None:
+    """Seed an entity_alias row directly (no prod writer exists)."""
+    with store.write_transaction() as conn:
+        conn.execute(
+            "INSERT INTO entity_alias (entity_id, alias) VALUES (?, ?)", (entity_id, alias)
+        )
+
+
 def fixture_text(name: str) -> str:
     """Return the text contents of a file under
     ``plugins/llm/tests/verse/fixtures/<name>``."""

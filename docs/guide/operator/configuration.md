@@ -221,7 +221,6 @@ The verse is the per-channel world model. See [The verse](verse.md) for concepts
 | `verseTriggerRegex` | channel | `\bverse\b` | Case-insensitive pattern that marks a message as a canon reference, alongside entity mentions. A match grounds the reply in canon and, for an avatar holder, turns it into a prose tale. It does not enter roleplay mode; that needs `@rp`. Empty disables the keyword signal |
 | `verseRoleplayStickyTtlSeconds` | channel | `900` | Sliding inactivity timeout for sticky `@rp on` roleplay. Each in-character turn refreshes it. `0` never expires |
 | `verseChatRecordEnabled` | channel | `False` | Let an opted-in avatar's ordinary chat turn call `verse_record`. Off keeps canon growing only during roleplay |
-| `verseStoryAmbientMaxImages` | channel | `1` | Vestigial. Since ambient canon mentions became inline prose, only an explicit illustrate cue reaches the storybook, and that path reads `verseStorybookMaxImages` instead. `0` does not give text only — the read falls back to `1` |
 | `verseEventRetentionDays` | channel | `30` | Events older than this are eligible for compaction. `0` disables compaction for the channel |
 | `verseAutoEntityRetireDays` | channel | `14` | Days without a mention before auto-created non-player characters (NPCs) retire. `0` disables the sweep. Pinned entities are exempt |
 | `verseAutoEntityMaxNamesPerCall` | channel | `8` | Cap on the `actors` array in one `verse_record` call |
