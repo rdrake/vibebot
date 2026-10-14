@@ -360,7 +360,9 @@ class TestRefusalFallback:
     def run(self, make_service, mocker: MockerFixture):  # type: ignore[no-untyped-def]
         """Run one chat turn against scripted completions; return result, calls, log."""
 
-        def _run(outcomes: list[object], **overrides: object) -> tuple[Any, list[dict], Any]:
+        def _run(
+            outcomes: list[object], call: dict[str, Any] | None = None, **overrides: object
+        ) -> tuple[Any, list[dict], Any]:
             svc, _plugin = make_service(
                 **{"assistantModel": "gpt-4", "refusalFallbackModel": FALLBACK, **overrides}
             )
@@ -372,7 +374,9 @@ class TestRefusalFallback:
                 outcome = outcomes[min(len(calls), len(outcomes)) - 1]
                 if isinstance(outcome, Exception):
                     raise outcome
-                return make_completion_response(str(outcome))
+                if not isinstance(outcome, str):
+                    return outcome
+                return make_completion_response(outcome)
 
             mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
             mocker.patch(
@@ -386,6 +390,7 @@ class TestRefusalFallback:
                 db=mocker.MagicMock(),
                 context=mocker.MagicMock(),
                 bot_nick="VibeBot",
+                **(call or {}),
             )
             served = [
                 c.args[0] % c.args[1:]
@@ -448,6 +453,36 @@ class TestRefusalFallback:
         assert result.content == REFUSAL
         assert len(calls) == 2
         assert served == []
+
+    def test_no_fallback_after_a_tool_with_side_effects(self, run) -> None:  # type: ignore[no-untyped-def]
+        """A reminder already set would be set twice by the re-run, so none happens."""
+        set_it = make_completion_response(
+            None, tool_calls=[make_tool_call("set_reminder", {"text": "in 5m stretch"})]
+        )
+        result, calls, served = run(
+            [set_it, REFUSAL, REFUSAL, "fallback"],
+            call={"set_reminder_fn": lambda _t: ToolCallbackResult(True, "Reminder set.")},
+        )
+
+        assert result.content == REFUSAL
+        assert {c["model"] for c in calls} == {"gpt-4"}
+        assert served == []
+
+    def test_fallback_after_read_only_tool(self, run) -> None:  # type: ignore[no-untyped-def]
+        """A search is safe to repeat, so a turn that only searched still falls back."""
+        from llm.assistant import ToolResult
+
+        search = make_completion_response(
+            None, tool_calls=[make_tool_call("search_web", {"query": "filthy jokes"})]
+        )
+        result, calls, served = run(
+            [search, REFUSAL, REFUSAL, search, "fallback"],
+            call={"search_fn": lambda _q: ToolResult(content='{"results": "jokes"}')},
+        )
+
+        assert result.content == "fallback"
+        assert [c["model"] for c in calls][-2:] == [FALLBACK, FALLBACK]
+        assert len(served) == 1
 
     def test_no_fallback_without_its_key(self, run, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
         """A fallback provider with no key is skipped silently."""
