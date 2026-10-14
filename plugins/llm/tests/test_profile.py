@@ -84,7 +84,7 @@ class TestProfileToolsAlignment:
 class TestBehaviorPreservation:
     """Pin pre-refactor scattered data; updates must be explicit."""
 
-    EXPECTED_MAX_TOKENS = {"chat": 4096, "verse": 3000, "remind_action": 400}
+    EXPECTED_MAX_TOKENS = {"chat": 4096, "verse": 3000, "remind_action": 4096}
     EXPECTED_FORCE_SEARCH = {"chat", "remind_action"}
     # Per-profile sampling overrides; absent → None (provider default). Verse
     # alone tunes sampling to dampen its non-reasoning quality-collapse spiral.

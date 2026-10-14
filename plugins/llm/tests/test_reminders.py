@@ -1208,6 +1208,59 @@ class TestParseReminderService:
         assert "(watch" not in result.action_prompt
         assert result.action_prompt == "check the build"
 
+    def test_parse_reminder_sub_minute_recurrence_clarifies(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a 30s cadence WHEN parsing THEN clarify instead of scheduling a
+        chain that fires (and bills an LLM turn) twice a minute. Scheduled
+        tasks share this parser, so the floor covers both."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion.return_value = make_completion_response(
+            json.dumps(
+                {
+                    "action": "schedule",
+                    "seconds": 30,
+                    "message": "check the build",
+                    "confirmation": "Reminder set for 30s.",
+                    "action_prompt": "check the build",
+                    "recurrence_seconds": 30,
+                    "recurrence_rrule": None,
+                    "watch_mode": False,
+                }
+            )
+        )
+
+        result = service.parse_reminder("every 30 seconds check the build")
+
+        assert result.action == "clarify"
+        assert "one minute" in result.confirmation
+
+    def test_parse_reminder_sub_minute_rrule_clarifies(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a FREQ=SECONDLY rule WHEN parsing THEN the one-minute floor
+        applies to calendar cadences too."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion.return_value = make_completion_response(
+            json.dumps(
+                {
+                    "action": "schedule",
+                    "seconds": 10,
+                    "message": "check the build",
+                    "confirmation": "Set!",
+                    "action_prompt": "check the build",
+                    "recurrence_seconds": None,
+                    "recurrence_rrule": "FREQ=SECONDLY;INTERVAL=10",
+                    "watch_mode": False,
+                }
+            )
+        )
+
+        result = service.parse_reminder("every 10 seconds check the build")
+
+        assert result.action == "clarify"
+        assert "one minute" in result.confirmation
+
     def test_parse_reminder_calendar_recurrence(
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
@@ -1887,6 +1940,38 @@ class TestReminderActionDelivery:
         # An unattached line has to say what it is answering.
         assert sent.args[1] == "alice: Reminder (check build): all green"
         assert "+draft/reply" not in (sent.server_tags or {})
+
+    def test_long_action_reply_is_pastebinned_not_truncated(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a ~900-char action result WHEN the reminder fires THEN it goes
+        out as a teaser + URL instead of one PRIVMSG the server cuts off."""
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        active_irc.state.capabilities_ack = set()
+        mock_world.ircs = [active_irc]
+        mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
+        long_reply = " ".join(f"word{i}" for i in range(150))  # ~900 chars
+        assert len(long_reply) > 850
+        plugin.llm_service.assistant_request.return_value = AssistantResult(content=long_reply)
+        plugin.llm_service.save_markdown_to_http.return_value = "http://h/remind.html"
+
+        deliver = plugin._make_reminder_delivery_closure(
+            "alice",
+            "#ops",
+            "check build",
+            "llm_remind_long_1",
+            action_prompt="check build",
+            account="acct",
+        )
+        deliver()
+
+        sent = active_irc.queueMsg.call_args[0][0]
+        assert sent.args[1].startswith("alice: ")
+        assert "http://h/remind.html" in sent.args[1]
+        assert "word149" not in sent.args[1]
+        assert long_reply in plugin.llm_service.save_markdown_to_http.call_args.args[0]
 
     def test_action_delivery_falls_back_on_pre_request_exception(
         self, plugin: MagicMock, mocker: MockerFixture

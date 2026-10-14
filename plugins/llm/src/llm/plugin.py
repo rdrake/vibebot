@@ -3787,8 +3787,8 @@ class LLM(callbacks.Plugin):
         """Match the inner _send closure semantics for reminder output.
 
         Reminders bypass _send_long_reply, so collapse multi-line content
-        here — raw \\n in a PRIVMSG body causes Excess Flood disconnects
-        on AfterNET.
+        here (raw \\n in a PRIVMSG body causes Excess Flood disconnects
+        on AfterNET) and pastebin anything longer than one wire line.
 
         ``reply_msgid`` threads the fire under the message that set the
         reminder via ``+draft/reply``, matching draw and animate delivery.
@@ -3803,9 +3803,8 @@ class LLM(callbacks.Plugin):
         if not reply_to:
             text = f"Reminder ({label}): {text}" if label else f"Reminder: {text}"
         safe_text = self.llm_service.sanitize_output(text)
-        safe_text = self._collapse_for_irc(safe_text) or safe_text
-        prefixed = f"{nick}: {safe_text}" if nick else safe_text
-        self._safe_queue(irc, self._safe_privmsg(target, prefixed, reply_to))
+        line = self._format_pending_completed_reply(nick, safe_text, target)
+        self._safe_queue(irc, self._safe_privmsg(target, line, reply_to))
 
     def _finalize_reminder_fire(
         self,
@@ -3895,17 +3894,17 @@ class LLM(callbacks.Plugin):
             # Same per-feature caps as @ask/@draw/@code; owner/admin excluded.
             capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
         )
-        history, channel_history = self._gather_history(nick, channel)
+        caller = Identity(raw_nick=nick, account=account)
+        history, channel_history = self._gather_history(caller.key, channel)
         # Account-or-nick key: unauthenticated, it could be someone else's data.
-        memories = self._get_user_memories(nick) if account else []
-        user_instruction = self.db.get_instruction(nick) if account else None
+        memories = self._get_user_memories(caller.key) if account else []
+        user_instruction = self.db.get_instruction(caller.key) if account else None
         ask_prompt = self.registryValue(PROFILES[PROFILE_REMIND_ACTION].overlay_setting, channel)
         if fold_instruction_into_prompt:
             system_prompt = f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
             user_instruction = None
         else:
             system_prompt = ask_prompt
-        caller = Identity(raw_nick=nick, account=account)
         return self.llm_service.assistant_request(
             prompt=prompt,
             request_context=request_context,
@@ -4260,8 +4259,8 @@ class LLM(callbacks.Plugin):
     def _reload_reminders(self, irc: callbacks.Irc) -> None:
         """Reload persisted reminders from database on startup.
 
-        Reschedules future reminders and delivers overdue ones immediately.
-        Reminders more than 24h overdue are cleaned up by the database layer.
+        Reschedules every reminder; overdue ones fire about a second later.
+        One-shots more than 24h overdue are cleaned up by the database layer.
         """
         pending = self.db.load_pending_reminders()
         now = time.time()
@@ -4286,33 +4285,31 @@ class LLM(callbacks.Plugin):
                 reply_msgid=reminder.reply_msgid,
             )
 
-            if reminder.fire_at <= now:
-                # Overdue — deliver immediately
-                deliver()
-            else:
-                # Future — reschedule
-                try:
-                    schedule.addEvent(deliver, reminder.fire_at, name=event_name)
-                    with self._reminders_lock:
-                        self._reminders[event_name] = ReminderRow(
-                            id=reminder.id,
-                            event_name=event_name,
-                            nick=nick,
-                            channel=channel,
-                            message=message,
-                            action_prompt=reminder.action_prompt,
-                            account=reminder.account,
-                            fire_at=reminder.fire_at,
-                            created_at=reminder.created_at,
-                            chain_position=reminder.chain_position or 1,
-                            recurrence_seconds=reminder.recurrence_seconds,
-                            recurrence_rrule=reminder.recurrence_rrule,
-                            watch_mode=reminder.watch_mode,
-                            reply_msgid=reminder.reply_msgid,
-                        )
-                except Exception as e:
-                    self.log.error("Failed to reload reminder %s: %s", event_name, e)
-                    self.db.delete_reminder(event_name)
+            # Overdue rows fire on a scheduler tick, not inside __init__.
+            # Every row is registered: a recurring fire whose event is missing
+            # from _reminders reads as cancelled mid-fire and ends its chain.
+            try:
+                schedule.addEvent(deliver, max(reminder.fire_at, now + 1), name=event_name)
+                with self._reminders_lock:
+                    self._reminders[event_name] = ReminderRow(
+                        id=reminder.id,
+                        event_name=event_name,
+                        nick=nick,
+                        channel=channel,
+                        message=message,
+                        action_prompt=reminder.action_prompt,
+                        account=reminder.account,
+                        fire_at=reminder.fire_at,
+                        created_at=reminder.created_at,
+                        chain_position=reminder.chain_position or 1,
+                        recurrence_seconds=reminder.recurrence_seconds,
+                        recurrence_rrule=reminder.recurrence_rrule,
+                        watch_mode=reminder.watch_mode,
+                        reply_msgid=reminder.reply_msgid,
+                    )
+            except Exception as e:
+                self.log.error("Failed to reload reminder %s: %s", event_name, e)
+                self.db.delete_reminder(event_name)
 
         if pending:
             self.log.info("Reloaded %s reminder(s) from database", len(pending))
