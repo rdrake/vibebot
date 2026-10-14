@@ -79,6 +79,31 @@ class TestTzCommand:
 
 
 class TestResolveUserTz:
+    def test_accountless_caller_gets_utc_and_touches_nothing(self, plugin_env) -> None:
+        """@tz and the clock offset key on account-or-nick: unauthenticated on
+        nick rdrake, they would be account rdrake's. Fall back to UTC."""
+        plugin, mock_irc, _ = plugin_env
+        plugin.db.get_user_timezone.return_value = "America/Toronto"
+        plugin.db.get_clock_offset.return_value = (3600, time.time())
+
+        assert plugin._resolve_user_tz(Identity("rdrake", None), irc=mock_irc) == UTC_DEFAULT
+        plugin.db.get_user_timezone.assert_not_called()
+        plugin.db.get_clock_offset.assert_not_called()
+        plugin.db.save_clock_offset.assert_not_called()
+        plugin._probe_ctcp_tz.assert_not_called()
+
+    def test_accountless_reminder_parses_in_utc(self, plugin_env, mocker: MockerFixture) -> None:
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_user_timezone.return_value = "America/Toronto"
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="schedule", seconds=3600, message="x", confirmation="Set."
+        )
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        plugin._schedule_reminder(mock_irc, mock_msg, Identity("rdrake", None), "at 5pm x")
+
+        assert plugin.llm_service.parse_reminder.call_args.kwargs["user_tz"] == UTC_DEFAULT
+
     def test_stored_zone_wins_without_probing(self, plugin_env) -> None:
         plugin, mock_irc, _ = plugin_env
         plugin.db.get_user_timezone.return_value = "America/Toronto"
@@ -100,7 +125,7 @@ class TestResolveUserTz:
         offset = timezone(timedelta(hours=-4))
         plugin._probe_ctcp_tz.return_value = offset
 
-        tz = plugin._resolve_user_tz(Identity("rdrake", None), irc=mock_irc)
+        tz = plugin._resolve_user_tz(Identity("rdrake", "rdrake"), irc=mock_irc)
 
         assert tz == UserTz(tz=offset, source=SOURCE_CTCP)
         plugin._probe_ctcp_tz.assert_called_once_with(mock_irc, "rdrake")
@@ -108,14 +133,14 @@ class TestResolveUserTz:
     def test_no_irc_means_no_probe(self, plugin_env) -> None:
         plugin, _, _ = plugin_env
 
-        assert plugin._resolve_user_tz(Identity("rdrake", None)) == UTC_DEFAULT
+        assert plugin._resolve_user_tz(Identity("rdrake", "rdrake")) == UTC_DEFAULT
         plugin._probe_ctcp_tz.assert_not_called()
 
     def test_fresh_answer_skips_probe(self, plugin_env) -> None:
         plugin, mock_irc, _ = plugin_env
         plugin.db.get_clock_offset.return_value = (3600, time.time())
 
-        tz = plugin._resolve_user_tz(Identity("RDrake", None), irc=mock_irc)
+        tz = plugin._resolve_user_tz(Identity("RDrake", "RDrake"), irc=mock_irc)
 
         assert tz == UserTz(tz=timezone(timedelta(hours=1)), source=SOURCE_CTCP)
         plugin.db.get_clock_offset.assert_called_once_with("RDrake")
@@ -125,7 +150,7 @@ class TestResolveUserTz:
         plugin, mock_irc, _ = plugin_env
         plugin.db.get_clock_offset.return_value = (None, time.time())
 
-        assert plugin._resolve_user_tz(Identity("rdrake", None), irc=mock_irc) == UTC_DEFAULT
+        assert plugin._resolve_user_tz(Identity("rdrake", "rdrake"), irc=mock_irc) == UTC_DEFAULT
         plugin._probe_ctcp_tz.assert_not_called()
 
     def test_week_old_answer_is_reprobed(self, plugin_env) -> None:
@@ -133,7 +158,7 @@ class TestResolveUserTz:
         plugin.db.get_clock_offset.return_value = (3600, time.time() - 8 * 86400)
         plugin._probe_ctcp_tz.return_value = timezone(timedelta(hours=-5))
 
-        tz = plugin._resolve_user_tz(Identity("rdrake", None), irc=mock_irc)
+        tz = plugin._resolve_user_tz(Identity("rdrake", "rdrake"), irc=mock_irc)
 
         assert tz.tz == timezone(timedelta(hours=-5))
         plugin.db.save_clock_offset.assert_called_once_with("rdrake", -5 * 3600)
@@ -144,7 +169,7 @@ class TestResolveUserTz:
         plugin, _, _ = plugin_env
         plugin.db.get_clock_offset.return_value = (-4 * 3600, 0.0)
 
-        tz = plugin._resolve_user_tz(Identity("rdrake", None))
+        tz = plugin._resolve_user_tz(Identity("rdrake", "rdrake"))
 
         assert tz == UserTz(tz=timezone(timedelta(hours=-4)), source=SOURCE_CTCP)
 
@@ -160,7 +185,7 @@ class TestResolveUserTz:
     def test_silence_is_saved(self, plugin_env) -> None:
         plugin, mock_irc, _ = plugin_env
 
-        plugin._resolve_user_tz(Identity("rdrake", None), irc=mock_irc)
+        plugin._resolve_user_tz(Identity("rdrake", "rdrake"), irc=mock_irc)
 
         plugin.db.save_clock_offset.assert_called_once_with("rdrake", None)
 
@@ -240,7 +265,7 @@ class TestScheduleReminderUsesZone:
         mocker.patch("llm.plugin.schedule.addEvent")
 
         plugin._schedule_reminder(
-            mock_irc, mock_msg, Identity("testnick", None), "tomorrow morning strike"
+            mock_irc, mock_msg, Identity("testnick", "testnick"), "tomorrow morning strike"
         )
 
         kwargs = plugin.llm_service.parse_reminder.call_args.kwargs
@@ -254,7 +279,7 @@ class TestScheduleReminderUsesZone:
         mocker.patch("llm.plugin.schedule.addEvent")
 
         plugin._schedule_reminder(
-            mock_irc, mock_msg, Identity("testnick", None), "x", parent_chain=1
+            mock_irc, mock_msg, Identity("testnick", "testnick"), "x", parent_chain=1
         )
 
         plugin._probe_ctcp_tz.assert_not_called()
@@ -267,7 +292,7 @@ class TestScheduleReminderUsesZone:
         mocker.patch("llm.plugin.schedule.addEvent")
 
         plugin._schedule_reminder(
-            mock_irc, mock_msg, Identity("Rubin", None), "remind d0nk when its going to rain"
+            mock_irc, mock_msg, Identity("Rubin", "Rubin"), "remind d0nk when its going to rain"
         )
 
         plugin._probe_ctcp_tz.assert_not_called()
@@ -284,7 +309,7 @@ class TestScheduleReminderUsesZone:
         )
         mocker.patch("llm.plugin.schedule.addEvent")
 
-        plugin._schedule_reminder(mock_irc, mock_msg, Identity("Rubin", None), "in 1 hour x")
+        plugin._schedule_reminder(mock_irc, mock_msg, Identity("Rubin", "Rubin"), "in 1 hour x")
 
         assert plugin.llm_service.parse_reminder.call_args.kwargs["user_tz"].tz == offset
 
@@ -295,7 +320,7 @@ class TestScheduleReminderUsesZone:
         )
         mocker.patch("llm.plugin.schedule.addEvent")
 
-        plugin._schedule_reminder(mock_irc, mock_msg, Identity("Rubin", None), "at 5pm x")
+        plugin._schedule_reminder(mock_irc, mock_msg, Identity("Rubin", "Rubin"), "at 5pm x")
 
         plugin._probe_ctcp_tz.assert_called_once_with(mock_irc, "Rubin")
 

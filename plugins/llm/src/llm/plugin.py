@@ -6303,7 +6303,8 @@ class LLM(callbacks.Plugin):
         # (where the mention still injects canon facts).
         if not force_roleplay:
             return None
-        persona = self.db.get_avatar_persona(nick) or ""
+        # Account-or-nick key: unauthenticated, it could be someone else's persona.
+        persona = (self.db.get_avatar_persona(nick) or "") if account else ""
         system_prompt = build_verse_system_prompt(
             store,
             avatar_id,
@@ -6767,7 +6768,6 @@ class LLM(callbacks.Plugin):
         msg: IrcMsg,
         channel: str,
         account: str | None,
-        nick: str,
         persona: str,
     ) -> Callable[[dict], _VerseToolResult]:
         """Build the ``verse_storybook`` tool handler for one completion.
@@ -6822,8 +6822,9 @@ class LLM(callbacks.Plugin):
                 raw = args.get("brief")
                 if isinstance(raw, str):
                     brief = raw
+            # Deliver to the IRC nick, not the account (same rule as @story).
             self._submit_storybook_job(
-                channel=channel, nick=nick, persona=persona, brief=brief, account=account
+                channel=channel, nick=msg.nick, persona=persona, brief=brief, account=account
             )
             return _VerseToolResult(
                 content=json.dumps(
@@ -7978,8 +7979,14 @@ class LLM(callbacks.Plugin):
             rendered_prompt=rendered_prompt,
         )
 
-        # Schedule background memory extraction for eligible commands
-        if command in _MEMORY_COMMANDS and result.error is None:
+        # Schedule background memory extraction for eligible commands. Only for
+        # an account: memories are read by account only, so a nick-keyed fact
+        # is a wasted LLM call (and could land on someone else's account key).
+        if (
+            command in _MEMORY_COMMANDS
+            and result.error is None
+            and self._account_from_msg(irc, msg)
+        ):
             self._schedule_memory_extraction(nick, channel, text, result.content)
 
     def ask(
@@ -8153,9 +8160,11 @@ class LLM(callbacks.Plugin):
                     brief = self._ambient_storybook_brief(msg, preflight, text)
                     if brief is not None:
                         persona = self.db.get_avatar_persona(preflight.nick) or ""
+                        # The job PMs ``nick`` from a PM: the IRC nick, not
+                        # the account (same rule as @story).
                         self._submit_storybook_job(
                             channel=preflight.channel,
-                            nick=preflight.nick,
+                            nick=msg.nick,
                             persona=persona,
                             brief=brief,
                             account=preflight.account,
@@ -8419,7 +8428,7 @@ class LLM(callbacks.Plugin):
                         account=pf.account,
                     )
                     # Storybook tool (gated): overlay a live handler that can
-                    # capture irc/msg/channel/account/nick/persona. Only wired
+                    # capture irc/msg/channel/account/persona. Only wired
                     # when the per-channel flag is on; otherwise the spec isn't
                     # advertised and this key is never reached. The persona is
                     # the clean character voice (NOT the system_prompt overlay).
@@ -8430,7 +8439,6 @@ class LLM(callbacks.Plugin):
                             msg=msg,
                             channel=channel,
                             account=pf.account,
-                            nick=nick,
                             persona=persona,
                         )
                 elif verse_list:
@@ -11118,7 +11126,12 @@ class LLM(callbacks.Plugin):
         ``irc`` enables the CTCP TIME probe. Leave it out on paths that must
         not block or talk to the user (a recurring reminder rescheduling
         itself); they still get the stored answer, however old.
+
+        An accountless caller gets UTC: both stores key on account-or-nick,
+        so their nick could be someone else's account.
         """
+        if not caller.account:
+            return UTC_DEFAULT
         zone = parse_zone(self.db.get_user_timezone(caller.key) or "")
         if zone is not None:
             return UserTz(tz=zone, source=SOURCE_SET)
@@ -11882,7 +11895,8 @@ class LLM(callbacks.Plugin):
         account = caller.account
 
         if mode == "in":
-            persona_text = self.db.get_avatar_persona(caller.key) or ""
+            # Account-or-nick key: unauthenticated, it could be someone else's persona.
+            persona_text = (self.db.get_avatar_persona(caller.key) or "") if account else ""
             store = self._get_or_create_verse_store(channel)
             result = store.opt_in_avatar(nick, account, persona_text)
             reply = result.scene_text

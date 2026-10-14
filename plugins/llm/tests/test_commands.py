@@ -4417,6 +4417,31 @@ class TestVerseStorybook:
         assert job.call_args.kwargs["brief"] == "illustrate the lads' saga"
         ask.assert_not_called()
 
+    def test_ambient_storybook_delivers_to_irc_nick_not_account(self, plugin_env, mocker):
+        """GIVEN alice authenticated as acct WHEN an ambient storybook fires THEN
+        the job delivers to alice (a PM to acct reaches someone else, or no
+        one) and the account still rides as identity. Same rule as @story."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch.object(plugin, "_verse_route_for", return_value=None)
+        mocker.patch.object(plugin, "_roleplay_sticky_active", return_value=False)
+        mocker.patch.object(plugin, "_ambient_inline_story", return_value=False)
+        mocker.patch.object(plugin, "_ambient_storybook_brief", return_value="illustrate it")
+        plugin.db.get_avatar_persona = mocker.MagicMock(return_value="")
+        job = mocker.patch.object(plugin, "_submit_storybook_job")
+        mocker.patch.object(plugin, "_ask_impl")
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": True})
+        )
+        mock_msg.prefix = "alice!u@h"
+        mock_msg.nick = "alice"
+        pf = mocker.MagicMock(channel="#test", nick="acct", account="acct")
+
+        plugin._dispatch_with_verse_routing(
+            mock_irc, mock_msg, "illustrate it", pf, entry_route="addressed"
+        )
+        assert job.call_args.kwargs["nick"] == "alice"
+        assert job.call_args.kwargs["account"] == "acct"
+
     def test_ambient_question_falls_through_to_chat(self, plugin_env, mocker):
         plugin, mock_irc, mock_msg = plugin_env
         mocker.patch.object(plugin, "_verse_route_for", return_value=None)
@@ -4471,7 +4496,6 @@ class TestVerseStorybook:
             msg=mock_msg,
             channel="#test",
             account=account,
-            nick="testnick",
             persona="a sly fox",
         )
 
@@ -4554,6 +4578,20 @@ class TestVerseStorybook:
         assert submit.call_args[0][0] == "verse_storybook"
         # generate_storybook is NOT invoked synchronously in the handler.
         plugin.llm_service.generate_storybook.assert_not_called()
+
+    def test_job_delivers_to_irc_nick_not_account(self, plugin_env, mocker):
+        """GIVEN alice authenticated as acct WHEN verse_storybook runs THEN the
+        job delivers to alice, not the account (same rule as @story)."""
+        plugin, mock_irc, mock_msg = plugin_env
+        self._enable_storybook(plugin, mocker)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        job = mocker.patch.object(plugin, "_submit_storybook_job")
+        mock_msg.nick = "alice"
+
+        self._build(plugin, mock_irc, mock_msg, mocker)({"brief": "a tale"})
+
+        assert job.call_args.kwargs["nick"] == "alice"
+        assert job.call_args.kwargs["account"] == "acct"
 
     def test_job_delivers_url_to_channel(self, plugin_env, mocker):
         """The scheduled job posts the storybook URL via the world.ircs path."""
