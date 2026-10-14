@@ -843,6 +843,44 @@ class TestMemoriesCommand:
         assert "Before: 3" in reply
         assert "after: 2" in reply
 
+    def test_memories_cleanup_runs_under_executor_permit(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN memories WHEN memories cleanup THEN the LLM call holds a permit."""
+        from llm.service import CleanupResult
+
+        plugin, mock_irc = plugin_with_real_db
+        plugin.db.save_memory("testuser", "fact a", "#test")
+        plugin.db.save_memory("testuser", "fact b", "#test")
+        running: list[int] = []
+
+        def _cleanup(*_a, **_k):
+            running.append(plugin._llm_executor.running())
+            return CleanupResult(drop=[], merge=[])
+
+        plugin.llm_service.cleanup_memories = mocker.MagicMock(side_effect=_cleanup)
+
+        plugin.memories(mock_irc, self._make_msg(mocker), ["cleanup"])
+
+        assert running == [1]
+
+    def test_memories_cleanup_blocked_by_preflight(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a rate-limited caller WHEN memories cleanup THEN no LLM call."""
+        plugin, mock_irc = plugin_with_real_db
+        plugin.db.save_memory("testuser", "fact a", "#test")
+        plugin.db.save_memory("testuser", "fact b", "#test")
+        preflight = mocker.patch.object(
+            plugin, "_run_preflight", return_value=mocker.MagicMock(blocked=True)
+        )
+        plugin.llm_service.cleanup_memories = mocker.MagicMock()
+
+        plugin.memories(mock_irc, self._make_msg(mocker), ["cleanup"])
+
+        assert preflight.call_args.args[3] == "ask"
+        plugin.llm_service.cleanup_memories.assert_not_called()
+
     def test_memories_cleanup_other_user_owner(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
     ) -> None:
