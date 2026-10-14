@@ -1398,6 +1398,21 @@ class TestWatchModeReminderMigration:
 
 
 class TestMemoryExtractionMigration:
+    @pytest.mark.parametrize(("account", "scheduled"), [(None, False), ("acct", True)])
+    def test_extraction_needs_an_account(self, plugin_env, mocker, account, scheduled) -> None:
+        """GIVEN a successful ask WHEN the caller has no account THEN no extraction
+        runs: facts would land under the raw nick, which nothing reads."""
+        plugin, irc, msg = plugin_env
+        irc.state.nickToAccount.return_value = account
+        extract = mocker.patch.object(plugin, "_schedule_memory_extraction")
+        result = mocker.MagicMock(error=None, content="reply", cost=0.0)
+
+        plugin._store_context_and_log_usage(
+            "testnick", "#test", "ask", "hi", "reply", result, irc, msg
+        )
+
+        assert extract.called is scheduled
+
     def test_extraction_submitted_to_executor(self, plugin_env, mocker) -> None:
         plugin, _irc, _msg = plugin_env
         plugin._llm_executor = mocker.MagicMock()

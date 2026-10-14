@@ -8014,8 +8014,14 @@ class LLM(callbacks.Plugin):
             rendered_prompt=rendered_prompt,
         )
 
-        # Schedule background memory extraction for eligible commands
-        if command in _MEMORY_COMMANDS and result.error is None:
+        # Schedule background memory extraction for eligible commands. Only for
+        # an account: memories are read by account only, so a nick-keyed fact
+        # is a wasted LLM call (and could land on someone else's account key).
+        if (
+            command in _MEMORY_COMMANDS
+            and result.error is None
+            and self._account_from_msg(irc, msg)
+        ):
             self._schedule_memory_extraction(nick, channel, text, result.content)
 
     def ask(
