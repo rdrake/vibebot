@@ -98,7 +98,7 @@ from .verse.avatar import (
     strip_ooc,
 )
 from .verse.compaction import CompactionOutcome
-from .verse.store import VerseStore
+from .verse.store import VerseStore, db_path_for_channel
 
 if TYPE_CHECKING:
     from PIL import Image
@@ -11815,13 +11815,16 @@ class LLM(callbacks.Plugin):
         Thread-safe: guarded by ``_verse_stores_lock``.  The store itself is
         safe to use outside the lock — it carries its own write lock.
         """
+        key = ircutils.toLower(channel)
         with self._verse_stores_lock:
-            store = self._verse_stores.get(channel)
+            store = self._verse_stores.get(key)
             if store is None:
-                base = Path(conf.supybot.directories.data()) / "verse"
-                store = VerseStore(base, channel)
-                self._verse_stores[channel] = store
+                store = VerseStore(self._verse_data_dir(), channel)
+                self._verse_stores[key] = store
             return store
+
+    def _verse_data_dir(self) -> Path:
+        return Path(conf.supybot.directories.data()) / "verse"
 
     def verseopt(
         self,
@@ -11893,15 +11896,18 @@ class LLM(callbacks.Plugin):
             return None
         return channel
 
+    @staticmethod
+    def _avatar_place(store: VerseStore, entity_id: int):
+        """Return the active place the avatar is at, or None. The 'location'
+        attribute holds the place NAME (opt_in_avatar / verse_move)."""
+        location = store.get_attribute(entity_id, "location")
+        if location is None:
+            return None
+        return store.find_entity_by_name(location, kind="place", active_only=True)
+
     def _avatar_scene_oneliner(self, store: VerseStore, entity_id: int) -> str:
         """Build an IRC-friendly one-liner for the avatar's current location."""
-        location_id_str = store.get_attribute(entity_id, "location")
-        if location_id_str is None:
-            return "You are nowhere in particular."
-        try:
-            place = store.get_entity(int(location_id_str))
-        except (ValueError, TypeError):
-            place = None
+        place = self._avatar_place(store, entity_id)
         if place is None:
             return "You are nowhere in particular."
         return f"You are at {place.name}. {place.summary}".rstrip()
@@ -12014,16 +12020,8 @@ class LLM(callbacks.Plugin):
 
         parts: list[str] = []
         for avatar in avatars:
-            location_id_str = store.get_attribute(avatar.id, "location")
-            if location_id_str is not None:
-                try:
-                    place = store.get_entity(int(location_id_str))
-                except (ValueError, TypeError):
-                    place = None
-                if place is not None:
-                    parts.append(f"{avatar.name} (at {place.name})")
-                    continue
-            parts.append(avatar.name)
+            place = self._avatar_place(store, avatar.id)
+            parts.append(f"{avatar.name} (at {place.name})" if place else avatar.name)
 
         irc.reply(", ".join(parts), prefixNick=False)
 
@@ -12507,13 +12505,18 @@ class LLM(callbacks.Plugin):
                 # before the purge still holds its own conn; its in-flight write
                 # is best-effort and may be lost — acceptable for this admin-only,
                 # token-gated destructive command.)
+                # Stores open lazily, so after a restart the cache misses and
+                # the path must be computed from the channel.
                 with self._verse_stores_lock:
-                    store = self._verse_stores.pop(channel, None)
-                    if store is not None:
-                        db_path = Path(store.path)
-                        db_path.unlink(missing_ok=True)
-                        db_path.with_suffix(".db-wal").unlink(missing_ok=True)
-                        db_path.with_suffix(".db-shm").unlink(missing_ok=True)
+                    store = self._verse_stores.pop(ircutils.toLower(channel), None)
+                    db_path = (
+                        Path(store.path)
+                        if store is not None
+                        else db_path_for_channel(self._verse_data_dir(), channel)
+                    )
+                    db_path.unlink(missing_ok=True)
+                    db_path.with_suffix(".db-wal").unlink(missing_ok=True)
+                    db_path.with_suffix(".db-shm").unlink(missing_ok=True)
                 irc.reply(f"Verse for {channel} purged.", prefixNick=False)
             else:
                 irc.reply(

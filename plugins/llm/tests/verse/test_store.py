@@ -19,10 +19,19 @@ class TestDbPathForChannel:
         assert result.name.startswith("_foo_")
         assert result.suffix == ".db"
 
-    def test_distinguishes_case_variants(self, verse_db_dir: Path) -> None:
-        upper = db_path_for_channel(verse_db_dir, "#Foo")
-        lower = db_path_for_channel(verse_db_dir, "#foo")
-        assert upper != lower
+    def test_folds_irc_case_variants(self, verse_db_dir: Path) -> None:
+        """IRC channel names are case-insensitive (rfc1459), so '#AfterNet'
+        typed from a PM must open the same DB as '#afternet'."""
+        assert db_path_for_channel(verse_db_dir, "#AfterNet") == db_path_for_channel(
+            verse_db_dir, "#afternet"
+        )
+        assert db_path_for_channel(verse_db_dir, "#a[b]") == db_path_for_channel(
+            verse_db_dir, "#a{b}"
+        )
+
+    def test_lowercase_name_unchanged(self, verse_db_dir: Path) -> None:
+        """Prod's existing file must keep its name across the case-fold fix."""
+        assert db_path_for_channel(verse_db_dir, "#afternet").name == "_afternet_2de47b99.db"
 
     def test_strips_funky_characters(self, verse_db_dir: Path) -> None:
         result = db_path_for_channel(verse_db_dir, "#foo!bar/baz")

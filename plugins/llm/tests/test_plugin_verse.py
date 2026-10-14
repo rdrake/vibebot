@@ -415,24 +415,38 @@ class TestVerseCommand:
         plugin, irc, msg, store = verse_env
         entity_id = self._opt_in(plugin, irc, msg, store)
 
-        # Add a place and set avatar's location attribute.
-        place_id = store.add_entity("place", self.PLACE_NAME, "A sunlit glade.")
-        store.set_attribute(entity_id, "location", str(place_id))
+        # Add a place and set avatar's location attribute. The store keeps
+        # the place NAME in 'location' (opt_in_avatar / verse_move), not an id.
+        store.add_entity("place", "The Mill", "A sunlit glade.")
+        store.set_attribute(entity_id, "location", "The Mill")
 
         plugin.verse(irc, msg, [])
 
         reply_text = irc.reply.call_args[0][0]
-        assert f"You are at {self.PLACE_NAME}." in reply_text
+        assert "You are at The Mill." in reply_text
         assert "A sunlit glade." in reply_text
+
+    def test_verse_after_opt_in_names_starter_place(self, verse_env) -> None:
+        """GIVEN a fresh opt-in WHEN @verse THEN the reply names the starter place
+        opt_in_avatar wrote, not 'nowhere in particular'."""
+        plugin, irc, msg, store = verse_env
+        self._opt_in(plugin, irc, msg, store)
+
+        plugin.verse(irc, msg, [])
+
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text.startswith(f"You are at {self.PLACE_NAME}.")
 
     # ------------------------------------------------------------------
     # Branch 2: avatar present, no location → "nowhere in particular"
     # ------------------------------------------------------------------
 
     def test_verse_no_location_returns_nowhere(self, verse_env) -> None:
-        """GIVEN avatar with no location WHEN @verse THEN 'nowhere in particular' reply."""
+        """GIVEN avatar whose location names no active place WHEN @verse THEN
+        'nowhere in particular' reply."""
         plugin, irc, msg, store = verse_env
-        self._opt_in(plugin, irc, msg, store)
+        entity_id = self._opt_in(plugin, irc, msg, store)
+        store.set_attribute(entity_id, "location", "Atlantis")
 
         plugin.verse(irc, msg, [])
 
@@ -578,14 +592,14 @@ class TestLookCommand:
         plugin, irc, msg, store = verse_env
         entity_id = self._opt_in(plugin, irc, msg, store)
 
-        place_id = store.add_entity("place", self.PLACE_NAME, "A sunlit glade.")
-        store.set_attribute(entity_id, "location", str(place_id))
+        store.add_entity("place", "The Mill", "A sunlit glade.")
+        store.set_attribute(entity_id, "location", "The Mill")
 
         # Wrapped: args=[] means no optional target → target=None inside handler.
         plugin.look(irc, msg, [])
 
         reply_text = irc.reply.call_args[0][0]
-        assert f"You are at {self.PLACE_NAME}." in reply_text
+        assert "You are at The Mill." in reply_text
 
     # ------------------------------------------------------------------
     # Branch 7: no target, no avatar → no-avatar message
@@ -738,13 +752,13 @@ class TestWhoCommand:
         plugin, irc, msg, store = verse_env
 
         # Create two avatars and a place.
-        place_id = store.add_entity("place", "The Clearing", "A sunlit glade.")
+        store.add_entity("place", "The Clearing", "A sunlit glade.")
         alice_id = store.add_entity("avatar", "alice")
         bob_id = store.add_entity("avatar", "bob")
         store.link_avatar(alice_id, "alice")
         store.link_avatar(bob_id, "bob")
-        store.set_attribute(alice_id, "location", str(place_id))
-        store.set_attribute(bob_id, "location", str(place_id))
+        store.set_attribute(alice_id, "location", "The Clearing")
+        store.set_attribute(bob_id, "location", "The Clearing")
 
         plugin.who(irc, msg, [])
 
@@ -1069,6 +1083,31 @@ class TestVersepurgeCommand:
         reply_text = irc.reply.call_args[0][0]
         assert reply_text == "Verse for #newchan purged."
         assert "#newchan" not in plugin._versepurge_tokens
+
+    def test_purge_after_restart_unlinks_files_on_disk(self, purge_env, tmp_path, mocker) -> None:
+        """GIVEN a verse DB on disk but no store in the cache (stores open
+        lazily, so this is every channel after a restart) WHEN purge is
+        confirmed THEN the DB and its -wal/-shm files are unlinked."""
+        from llm.verse.store import VerseStore
+
+        plugin, irc, msg, _store = purge_env
+        data_dir = tmp_path / "verse-data"
+        mocker.patch.object(plugin, "_verse_data_dir", return_value=data_dir)
+        on_disk = VerseStore(data_dir, "#Restarted")
+        on_disk.add_entity("npc", "Bob")
+        db = on_disk.path
+        db.with_suffix(".db-wal").touch()
+        db.with_suffix(".db-shm").touch()
+        plugin._verse_stores.pop("#restarted", None)
+
+        plugin.versepurge(irc, msg, ["#Restarted"])
+        token, _ = plugin._versepurge_tokens["#Restarted"]
+        plugin.versepurge(irc, msg, [f"#Restarted {token}"])
+
+        assert irc.reply.call_args[0][0] == "Verse for #Restarted purged."
+        assert not db.exists()
+        assert not db.with_suffix(".db-wal").exists()
+        assert not db.with_suffix(".db-shm").exists()
 
     # ------------------------------------------------------------------
     # Test 7: lacking capability is denied
@@ -3485,3 +3524,17 @@ class TestCompactionKeyResolution:
         from llm.verse import compaction
 
         assert "api_key" not in inspect.signature(compaction.LiteLLMVerseClient).parameters
+
+
+def test_verse_store_cache_folds_channel_case(plugin_env, tmp_path, mocker) -> None:
+    """GIVEN '#AfterNet' (e.g. @versedit from a PM) and '#afternet' WHEN the
+    store is fetched THEN both resolve to the one cached store and DB file."""
+    plugin, _irc, _msg = plugin_env
+    mocker.patch.object(plugin, "_verse_data_dir", return_value=tmp_path / "verse")
+    plugin._verse_stores.clear()
+
+    a = plugin._get_or_create_verse_store("#AfterNet")
+    b = plugin._get_or_create_verse_store("#afternet")
+
+    assert a is b
+    assert a.path.name == "_afternet_2de47b99.db"
