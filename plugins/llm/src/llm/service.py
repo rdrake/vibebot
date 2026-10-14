@@ -439,6 +439,27 @@ def _strip_verse_denials(
 # would punish the model for admitting a gap and push it toward inventing an
 # answer instead, which is a worse failure than the refusal.
 _MAX_SAFETY_REFUSAL_RETRIES = 1
+
+# Tools a refusal fallback may safely run a second time: they only read. Any
+# other tool that worked this turn rules the fallback out, since the re-run
+# would repeat it (a second reminder, image, verse event or memory write).
+# An allowlist so that a new tool is treated as a writer until listed here.
+_READ_ONLY_TOOLS = frozenset(
+    {
+        "search_web",
+        "fetch_url",
+        "list_pending_tasks",
+        "list_memories",
+        "get_usage",
+        "get_channel_usage",
+        "check_service_status",
+        "irc_lookup",
+        "aurora",
+        "search_bridge_commands",
+        "verse_look",
+        "verse_recall",
+    }
+)
 # The nudge targets PRISSINESS, not judgement. Measured against 14k real bot
 # lines, the refusals split into "that's rude/vulgar/grim" (the complaint —
 # retry those) and substantive ones (meth synthesis, malware, sexual imagery of
@@ -6068,7 +6089,8 @@ Examples (echo → action_prompt: ""):
 
         The whole turn runs again from the original call, so the fallback never
         sees the refusal or its nudge: non-reasoning grok copies a refusal it
-        finds in context. Tools that ran before the refusal run again.
+        finds in context. Tools that ran before the refusal run again, which is
+        why the caller only gets here when every one was in _READ_ONLY_TOOLS.
         """
         rerun: dict[str, Any] = {**turn_args, "model_override": fallback, "manage_typing": False}
         result = self.assistant_completion(**rerun)
@@ -6945,6 +6967,13 @@ Examples (echo → action_prompt: ""):
                         parsed = json.loads(tool_result.content)
                     except (json.JSONDecodeError, TypeError):
                         parsed = None
+                    # The fallback re-runs the whole turn, tools included, so
+                    # once anything but a lookup has worked there is no going
+                    # back. Only an explicit error result counts as not worked.
+                    if tc.function.name not in _READ_ONLY_TOOLS and not (
+                        isinstance(parsed, dict) and "error" in parsed
+                    ):
+                        fallback_model = ""
                     if isinstance(parsed, dict) and "error" not in parsed:
                         last_successful_tool = tc.function.name
                         last_tool_message = str(parsed.get("message", "")).strip()
