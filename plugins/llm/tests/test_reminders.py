@@ -314,6 +314,59 @@ class TestReminderHelperMethods:
         result = plugin._find_user_reminder(Identity(raw_nick="testnick", account=None), "456")
         assert result is None
 
+    def test_nick_squatter_cannot_see_or_clear_account_owned_reminder(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN alice's reminder stored under account alice WHEN an unidentified
+        caller on nick alice lists, finds, or clears THEN nothing is theirs."""
+        from llm.plugin import Identity
+
+        remove = mocker.patch("llm.plugin.schedule.removeEvent")
+        plugin._reminders["llm_remind_a_111"] = make_reminder_row(
+            event_name="llm_remind_a_111",
+            nick="alice",
+            channel="#chan",
+            message="alice 1",
+            account="alice",
+        )
+        squatter = Identity(raw_nick="alice", account=None)
+
+        assert plugin._get_user_reminders(squatter) == []
+        assert plugin._find_user_reminder(squatter, "111") is None
+        plugin._remind_clear_for_assistant(squatter)
+        remove.assert_not_called()
+        assert "llm_remind_a_111" in plugin._reminders
+
+    def test_owner_keeps_account_owned_reminder_after_nick_change(self, plugin: MagicMock) -> None:
+        """GIVEN alice's account-owned reminder WHEN she returns as alice_ THEN she still owns it."""
+        from llm.plugin import Identity
+
+        plugin._reminders["llm_remind_a_111"] = make_reminder_row(
+            event_name="llm_remind_a_111",
+            nick="alice",
+            channel="#chan",
+            message="alice 1",
+            account="alice",
+        )
+        owner = Identity(raw_nick="alice_", account="alice")
+
+        assert len(plugin._get_user_reminders(owner)) == 1
+        assert plugin._find_user_reminder(owner, "111") == "llm_remind_a_111"
+
+    def test_identified_caller_still_owns_nick_only_reminder(self, plugin: MagicMock) -> None:
+        """GIVEN a reminder set before identifying (no account) WHEN the same nick
+        asks while identified THEN it matches by nick."""
+        from llm.plugin import Identity
+
+        plugin._reminders["llm_remind_a_111"] = make_reminder_row(
+            event_name="llm_remind_a_111",
+            nick="alice",
+            channel="#chan",
+            message="alice 1",
+        )
+
+        assert len(plugin._get_user_reminders(Identity(raw_nick="alice", account="alice"))) == 1
+
     def test_remind_clear_for_assistant_cancels_user_reminders_only(
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
