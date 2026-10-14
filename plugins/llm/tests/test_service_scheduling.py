@@ -1096,7 +1096,7 @@ class TestMaybeRescheduleOrClean:
         add_event = mocker.patch("llm.service.schedule.addEvent")
         bad_db = mocker.MagicMock()
         row = self._make_row(recurrence_seconds=None, recurrence_rrule=None)
-        llm_service._maybe_reschedule_or_clean(row, bad_db)
+        llm_service._maybe_reschedule_or_clean(row, bad_db, 0.0)
         bad_db.delete_scheduled_llm_task.assert_called_once_with("ev1")
         add_event.assert_not_called()
 
@@ -1106,7 +1106,7 @@ class TestMaybeRescheduleOrClean:
         bad_db = mocker.MagicMock()
         bad_db.get_scheduled_llm_task.return_value = None  # Cancelled mid-fire.
         row = self._make_row()
-        llm_service._maybe_reschedule_or_clean(row, bad_db)
+        llm_service._maybe_reschedule_or_clean(row, bad_db, 0.0)
         add_event.assert_not_called()
 
     def test_exhausted_rrule_deletes_row(self, llm_service, mocker: MockerFixture) -> None:
@@ -1117,7 +1117,7 @@ class TestMaybeRescheduleOrClean:
         row = self._make_row(recurrence_seconds=None, recurrence_rrule="FREQ=DAILY")
         # _next_rrule_fire returns None when the rule is exhausted.
         llm_service.plugin._next_rrule_fire = mocker.Mock(return_value=None)
-        llm_service._maybe_reschedule_or_clean(row, bad_db)
+        llm_service._maybe_reschedule_or_clean(row, bad_db, 0.0)
         bad_db.delete_scheduled_llm_task.assert_called_once_with("ev1")
 
     def test_chain_position_cap_stops_recurring_task(
@@ -1129,7 +1129,7 @@ class TestMaybeRescheduleOrClean:
         bad_db.get_scheduled_llm_task.return_value = "row-still-there"
         cap = llm_service._SCHEDULED_LLM_TASK_MAX_CHAIN_POSITION
         row = self._make_row(chain_position=cap)
-        llm_service._maybe_reschedule_or_clean(row, bad_db)
+        llm_service._maybe_reschedule_or_clean(row, bad_db, 0.0)
         bad_db.delete_scheduled_llm_task.assert_called_once_with("ev1")
         bad_db.update_scheduled_llm_task_fire_at.assert_not_called()
         add_event.assert_not_called()
@@ -1141,12 +1141,32 @@ class TestMaybeRescheduleOrClean:
         bad_db.get_scheduled_llm_task.return_value = "row-still-there"
         cap = llm_service._SCHEDULED_LLM_TASK_MAX_CHAIN_POSITION
         row = self._make_row(chain_position=cap - 1)
-        llm_service._maybe_reschedule_or_clean(row, bad_db)
+        llm_service._maybe_reschedule_or_clean(row, bad_db, 0.0)
         bad_db.update_scheduled_llm_task_fire_at.assert_called_once()
         _, kwargs = bad_db.update_scheduled_llm_task_fire_at.call_args
         assert kwargs["chain_position"] == cap
         add_event.assert_called_once()
         bad_db.delete_scheduled_llm_task.assert_not_called()
+
+    def test_next_fire_anchors_to_fire_start_not_turn_end(
+        self, llm_service, mocker: MockerFixture
+    ) -> None:
+        """A 100s LLM turn does not push an every-5-minutes task 100s later."""
+        mocker.patch("llm.service.schedule.addEvent")
+        mocker.patch("llm.service.time.time", return_value=10_100.0)
+        bad_db = mocker.MagicMock()
+        bad_db.get_scheduled_llm_task.return_value = "row-still-there"
+        llm_service._maybe_reschedule_or_clean(self._make_row(), bad_db, 10_000.0)
+        assert bad_db.update_scheduled_llm_task_fire_at.call_args.args[1] == 10_300.0
+
+    def test_next_fire_never_in_the_past(self, llm_service, mocker: MockerFixture) -> None:
+        """A turn longer than the interval reschedules from now, not behind it."""
+        mocker.patch("llm.service.schedule.addEvent")
+        mocker.patch("llm.service.time.time", return_value=10_500.0)
+        bad_db = mocker.MagicMock()
+        bad_db.get_scheduled_llm_task.return_value = "row-still-there"
+        llm_service._maybe_reschedule_or_clean(self._make_row(), bad_db, 10_000.0)
+        assert bad_db.update_scheduled_llm_task_fire_at.call_args.args[1] >= 10_500.0
 
 
 def test_cancel_scheduled_llm_task_swallows_keyerror(

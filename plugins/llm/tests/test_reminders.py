@@ -1155,6 +1155,33 @@ class TestParseReminderService:
         assert "(watch" not in result.action_prompt
         assert result.action_prompt == "check the build"
 
+    def test_parse_reminder_sub_minute_recurrence_clarifies(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a 30s cadence WHEN parsing THEN clarify instead of scheduling a
+        chain that fires (and bills an LLM turn) twice a minute. Scheduled
+        tasks share this parser, so the floor covers both."""
+        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion.return_value = make_completion_response(
+            json.dumps(
+                {
+                    "action": "schedule",
+                    "seconds": 30,
+                    "message": "check the build",
+                    "confirmation": "Reminder set for 30s.",
+                    "action_prompt": "check the build",
+                    "recurrence_seconds": 30,
+                    "recurrence_rrule": None,
+                    "watch_mode": False,
+                }
+            )
+        )
+
+        result = service.parse_reminder("every 30 seconds check the build")
+
+        assert result.action == "clarify"
+        assert "one minute" in result.confirmation
+
     def test_parse_reminder_calendar_recurrence(
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
