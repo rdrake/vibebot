@@ -1,0 +1,13 @@
+{
+  "_note": "Picture slots: where a generated picture is inserted. 'seed' [x, y] flood-fills the blank area from that point (exact mask for curved/irregular blanks); 'rect' [x, y, w, h] is a plain box for areas that are not one flat colour. 'corners': true warps the picture onto the blank's four corners (a sheet of paper held at an angle, seen in perspective). Fractions of the template image. build_meme_catalog.py writes masks to memes/masks/.",
+  "spirit": [{"seed": [0.65, 0.55]}],
+  "same": [{"seed": [0.275, 0.19], "corners": true}, {"seed": [0.8, 0.25], "corners": true}],
+  "who-would-win": [{"rect": [0.03, 0.14, 0.44, 0.83]}, {"rect": [0.53, 0.14, 0.44, 0.83]}],
+  "milk-carton": [{"seed": [0.59, 0.55]}],
+  "wanted-poster": [{"rect": [0.13, 0.22, 0.74, 0.6]}],
+  "blank-t-shirt": [{"rect": [0.34, 0.27, 0.32, 0.33]}],
+  "youtube-video-template": [{"rect": [0.02, 0.03, 0.96, 0.75]}],
+  "blank-starter-pack": [{"rect": [0.03, 0.03, 0.43, 0.43]}, {"rect": [0.54, 0.03, 0.43, 0.43]}, {"rect": [0.03, 0.54, 0.43, 0.43]}, {"rect": [0.54, 0.54, 0.43, 0.43]}],
+  "i-m-in-danger-blank": [{"seed": [0.5, 0.08]}],
+  "blank-wild-pokemon": [{"rect": [0.55, 0.04, 0.4, 0.36]}]
+}

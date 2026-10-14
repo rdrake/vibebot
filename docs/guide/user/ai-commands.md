@@ -139,7 +139,7 @@ Flags go before the template. `--font <name>` changes the typeface (`thick`, the
 @meme --font comic --top rollsafe | can't fail tests if you don't run them
 ```
 
-Say who or what should be in the picture and the picker edits the picture too: after the captions are on it (so the text always survives), the meme goes through an image-edit model — filling a template's blank photo (`spirit`, the Spirit Halloween costume; `same`, Pam's two pictures) or changing who is in the picture on any template. About $0.02 per edit, booked in `@usage` beside the meme; a refused edit posts the captioned meme with a note instead of failing. No flags to type: the `|` form with a template you name is the only path that never calls a model.
+Say who or what should be in the picture and the bot draws it too. Templates with a blank picture area — `spirit` (the Spirit Halloween costume), `same` (Pam's two sheets), `who-would-win`, `milk-carton`, `wanted-poster`, `blank-t-shirt`, `youtube-video-template`, `blank-starter-pack`, `i-m-in-danger-blank`, `blank-wild-pokemon` — get a freshly generated picture per area, cut to the blank's exact outline (and warped onto Pam's tilted sheets) before the captions go on; for two areas the picker writes two pictures, so `who would win, a goose or a sysadmin` gets one of each. On any other template the captioned meme goes through an image-edit model that changes who is in the picture. About $0.02 per picture, booked in `@usage` beside the meme; a refused picture leaves its area blank and the reply says so. No flags to type: the `|` form with a template you name is the only path that never calls a model.
 
 ```
 @meme spirit halloween costume of my dad

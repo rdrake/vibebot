@@ -195,6 +195,96 @@ def _pad_top(image: Image.Image) -> Image.Image:
     return padded
 
 
+@dataclass(frozen=True)
+class Slot:
+    """Where a picture goes: a box (fractions) and the mask inside it."""
+
+    box: tuple[float, float, float, float]
+    mask: Path
+    # Top-left, top-right, bottom-right, bottom-left (fractions of the
+    # template) of a blank seen in perspective — the two sheets of paper in
+    # "same". The picture is warped onto them instead of cropped square.
+    corners: tuple[tuple[float, float], ...] = ()
+
+
+def slot_size(image: Image.Image, slot: Slot) -> tuple[int, int]:
+    return max(1, int(image.width * slot.box[2])), max(1, int(image.height * slot.box[3]))
+
+
+def insert_pictures(
+    image: Image.Image, slots: tuple[Slot, ...], pictures: list[Image.Image | None]
+) -> Image.Image:
+    """Paste each picture into its slot through the slot's mask.
+
+    The picture is scaled to cover the slot's box and centre-cropped, so it
+    fills the blank edge to edge; the mask (the blank's exact outline, made
+    at catalog build time) keeps it off the template around it. A None
+    picture leaves its slot blank.
+    """
+    image = image.copy()
+    for slot, picture in zip(slots, pictures, strict=False):
+        if picture is None:
+            continue
+        width, height = slot_size(image, slot)
+        left, top = int(image.width * slot.box[0]), int(image.height * slot.box[1])
+        mask = Image.open(slot.mask).convert("L")
+        if mask.size != image.size:
+            mask = mask.resize(image.size, Image.Resampling.NEAREST)
+        if len(slot.corners) == 4:
+            quad = [(x * image.width, y * image.height) for x, y in slot.corners]
+            image.paste(_warp(picture.convert("RGB"), quad, image.size), (0, 0), mask)
+            continue
+        fitted = _cover(picture.convert("RGB"), width, height)
+        image.paste(fitted, (left, top), mask.crop((left, top, left + width, top + height)))
+    return image
+
+
+def _cover(picture: Image.Image, width: int, height: int) -> Image.Image:
+    """``picture`` scaled to cover ``width`` x ``height``, centre-cropped."""
+    scale = max(width / picture.width, height / picture.height)
+    resized = picture.resize(
+        (max(width, round(picture.width * scale)), max(height, round(picture.height * scale))),
+        Image.Resampling.LANCZOS,
+    )
+    cx, cy = (resized.width - width) // 2, (resized.height - height) // 2
+    return resized.crop((cx, cy, cx + width, cy + height))
+
+
+def _solve(matrix: list[list[float]], values: list[float]) -> list[float]:
+    """Gaussian elimination with partial pivoting; 8x8 here, no numpy."""
+    n = len(values)
+    rows = [[*matrix[i], values[i]] for i in range(n)]
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(rows[r][col]))
+        rows[col], rows[pivot] = rows[pivot], rows[col]
+        for r in range(n):
+            if r != col:
+                factor = rows[r][col] / rows[col][col]
+                rows[r] = [a - factor * b for a, b in zip(rows[r], rows[col], strict=True)]
+    return [rows[i][n] / rows[i][i] for i in range(n)]
+
+
+def _warp(
+    picture: Image.Image, quad: list[tuple[float, float]], size: tuple[int, int]
+) -> Image.Image:
+    """``picture`` warped so its corners land on ``quad`` (TL, TR, BR, BL)
+    on a canvas of ``size``. Pillow's PERSPECTIVE maps output pixels back
+    to input ones, so the coefficients solve quad -> picture corners."""
+    w, h = picture.size
+    source = [(0.0, 0.0), (float(w), 0.0), (float(w), float(h)), (0.0, float(h))]
+    matrix: list[list[float]] = []
+    values: list[float] = []
+    for (x, y), (u, v) in zip(quad, source, strict=True):
+        matrix.append([x, y, 1, 0, 0, 0, -u * x, -u * y])
+        values.append(u)
+        matrix.append([0, 0, 0, x, y, 1, -v * x, -v * y])
+        values.append(v)
+    coeffs = _solve(matrix, values)
+    return picture.transform(
+        size, Image.Transform.PERSPECTIVE, tuple(coeffs), Image.Resampling.BICUBIC
+    )
+
+
 def load_image(source: Path | bytes) -> Image.Image:
     """The first frame as RGB, transparency flattened onto white."""
     image = Image.open(io.BytesIO(source) if isinstance(source, bytes) else source)

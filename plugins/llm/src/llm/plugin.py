@@ -101,10 +101,11 @@ from .verse.compaction import CompactionOutcome
 from .verse.store import VerseStore
 
 if TYPE_CHECKING:
+    from PIL import Image
     from supybot.ircmsgs import IrcMsg
 
     from .assistant import ToolCallbackResult, ToolResult
-    from .service import PendingTaskResult
+    from .service import MemePicture, PendingTaskResult
 
 _ = PluginInternationalization("LLM")
 
@@ -8736,9 +8737,7 @@ class LLM(callbacks.Plugin):
         if catalog is None:
             self.log.warning("meme: templates unavailable: %s missing", meme.CATALOG_PATH)
             return None
-        catalog = catalog.with_keywords(meme_topics.TOPICS).with_keywords(
-            dict.fromkeys(meme_topics.PICTURE_SLOTS, (meme_topics.PICTURE_SLOT,))
-        )
+        catalog = catalog.with_keywords(meme_topics.TOPICS)
         aliases = meme.parse_aliases(self.registryValue("memeAliases") or [])
         return catalog.with_aliases(aliases) if aliases else catalog
 
@@ -8784,7 +8783,14 @@ class LLM(callbacks.Plugin):
         if plan.error or plan.lines is None or plan.template is None:
             return None, plan.error or _("Could not build that meme.")
         self.log.info("meme: template=%s lines=%s", plan.template.id, len(lines))
-        hosted, error = self._render_meme(plan.template, plan.lines, options)
+        # A template with picture slots gets generated pictures masked into
+        # its blanks before the captions go on; any other template keeps the
+        # whole-image edit below.
+        pictures: list[Image.Image | None] = []
+        picture_note = ""
+        if options.draw and plan.template.slots:
+            pictures, picture_note = self._slot_pictures(msg, plan.template, options.draw)
+        hosted, error = self._render_meme(plan.template, plan.lines, options, pictures)
         try:
             self.db.log_usage(
                 ircutils.nickFromHostmask(msg.prefix),
@@ -8802,17 +8808,88 @@ class LLM(callbacks.Plugin):
             self.log.exception("meme usage logging failed")
         if not hosted:
             return None, error
-        if options.draw:
+        if picture_note:
+            return f"{hosted} — {picture_note}", ""
+        if options.draw and not plan.template.slots:
             return self._edit_meme(msg, hosted, options.draw), ""
         return hosted, ""
 
+    # Parallel picture generations for one meme; the starter pack has four.
+    _MEME_PICTURE_WORKERS = 4
+
+    def _slot_pictures(
+        self, msg: IrcMsg, template: meme.MemeTemplate, draw: str
+    ) -> tuple[list[Image.Image | None], str]:
+        """One generated picture per slot, and a note if any failed.
+
+        Each slot's picture is generated at the aspect ratio nearest its
+        box, in parallel, and booked as its own ``meme`` usage row under the
+        image model. A failed slot stays blank and the note says why: the
+        captions are the meme, the pictures are extras.
+        """
+        assert template.image is not None
+        base = meme_render.load_image(template.image)
+        drawings = meme.slot_drawings(draw, len(template.slots))
+
+        def one(index: int) -> MemePicture:
+            width, height = meme_render.slot_size(base, template.slots[index])
+            ratio = meme.nearest_aspect_ratio(width, height)
+            return self.llm_service.image_generate(drawings[index], aspect_ratio=ratio)
+
+        workers = min(self._MEME_PICTURE_WORKERS, len(template.slots))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(one, range(len(template.slots))))
+        pictures: list[Image.Image | None] = []
+        errors: list[str] = []
+        for drawing, result in zip(drawings, results, strict=True):
+            try:
+                self.db.log_usage(
+                    ircutils.nickFromHostmask(msg.prefix),
+                    self._get_channel(msg),
+                    "meme",
+                    result.model,
+                    0,
+                    0,
+                    result.cost,
+                    prompt=drawing[:200],
+                    status="error" if result.error else "success",
+                    error_detail=(result.error or "")[:200],
+                )
+            except Exception:
+                self.log.exception("meme usage logging failed")
+            picture = None
+            if result.data:
+                try:
+                    picture = meme_render.load_image(result.data)
+                except Exception:
+                    self.log.exception("meme: generated picture unreadable")
+            if picture is None:
+                errors.append(result.error or "no picture")
+            pictures.append(picture)
+        self.log.info(
+            "meme_pictures: template=%s slots=%s failed=%s",
+            template.id,
+            len(template.slots),
+            len(errors),
+        )
+        if not errors:
+            return pictures, ""
+        if len(errors) == len(pictures):
+            return pictures, f"picture not added: {errors[0]}"
+        return pictures, f"{len(errors)} of {len(pictures)} pictures not added: {errors[0]}"
+
     def _render_meme(
-        self, template: meme.MemeTemplate, lines: list[str], options: meme.MemeOptions
+        self,
+        template: meme.MemeTemplate,
+        lines: list[str],
+        options: meme.MemeOptions,
+        pictures: list[Image.Image | None] | None = None,
     ) -> tuple[str | None, str]:
         """Draw the captions and host the PNG. ``(url, error)``; one is set.
 
-        A custom template's image is fetched through the same guarded
-        downloader as any untrusted URL.
+        ``pictures`` go into the template's slots first, so the captions sit
+        on top. A custom template's image is fetched through the same
+        guarded downloader as any untrusted URL.
         """
         source: Path | bytes | None = template.image
         if template.background:
@@ -8823,8 +8900,11 @@ class LLM(callbacks.Plugin):
         if source is None:
             return None, _("That template has no image.")
         try:
+            image = meme_render.load_image(source)
+            if pictures and template.slots:
+                image = meme_render.insert_pictures(image, template.slots, pictures)
             png = meme_render.render(
-                meme_render.load_image(source),
+                image,
                 template.boxes,
                 lines,
                 font=options.font,
@@ -9310,8 +9390,10 @@ class LLM(callbacks.Plugin):
                             "description": (
                                 "Only if the user asked to change the picture itself: "
                                 "what to put in a blank photo area, or who/what to "
-                                "swap in ('make the boyfriend a sysadmin'). Costs a "
-                                "draw; omit otherwise."
+                                "swap in ('make the boyfriend a sysadmin'). For a "
+                                "template with several picture areas, one description "
+                                "per area separated by ' | '. Costs a draw per "
+                                "picture; omit otherwise."
                             ),
                         },
                     },

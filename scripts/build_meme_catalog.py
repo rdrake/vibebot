@@ -26,6 +26,7 @@ import argparse
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import yaml
 from PIL import Image
@@ -148,6 +149,60 @@ def load_meta(work: Path, imgflip_id: str) -> dict:
     return json.loads(path.read_text()) if path.exists() else {}
 
 
+# Flood-fill tolerance for a seed slot: blanks are flat colour plus JPEG
+# noise; 40 of 255 per channel holds to the blank without leaking past a
+# printed border.
+_FILL_THRESH = 40
+_FILL_MIN = 0.01
+
+
+def slot_mask(image: Image.Image, spec: dict) -> tuple[Image.Image, tuple[float, ...]]:
+    """An L-mode mask (255 = picture goes here) and its box as fractions.
+
+    ``seed`` flood-fills the blank area from that point, so a curved or
+    irregular blank (the costume card) gets an exact outline; the mask is
+    grown a pixel to cover the anti-aliased edge. ``rect`` is a plain box.
+    """
+    from PIL import ImageDraw, ImageFilter
+
+    width, height = image.size
+    if "rect" in spec:
+        x, y, w, h = spec["rect"]
+        mask = Image.new("L", image.size, 0)
+        box_px = (int(x * width), int(y * height), int((x + w) * width), int((y + h) * height))
+        ImageDraw.Draw(mask).rectangle(box_px, fill=255)
+    else:
+        sx, sy = spec["seed"]
+        marked = image.convert("RGB").copy()
+        sentinel = (255, 0, 254)
+        ImageDraw.floodfill(
+            marked, (int(sx * width), int(sy * height)), sentinel, thresh=_FILL_THRESH
+        )
+        mask = Image.new("L", image.size, 0)
+        mask.putdata([255 if p == sentinel else 0 for p in marked.getdata()])
+        mask = mask.filter(ImageFilter.MaxFilter(3))
+    bbox = mask.getbbox()
+    if bbox is None or (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) < _FILL_MIN * width * height:
+        raise ValueError(f"slot {spec} covers almost nothing")
+    left, top, right, bottom = bbox
+    return mask, (left / width, top / height, (right - left) / width, (bottom - top) / height)
+
+
+def mask_corners(mask: Image.Image) -> list[list[float]]:
+    """Top-left, top-right, bottom-right, bottom-left of a tilted quad mask,
+    as fractions: the extreme top, right, bottom and left pixels, which is
+    which corner for a sheet turned less than 45 degrees clockwise."""
+    width, height = mask.size
+    data = mask.load()
+    assert data is not None
+    points = [(x, y) for y in range(height) for x in range(width) if data[x, y]]
+    top = min(points, key=lambda p: (p[1], p[0]))
+    right = max(points, key=lambda p: (p[0], -p[1]))
+    bottom = max(points, key=lambda p: (p[1], p[0]))
+    left = min(points, key=lambda p: (p[0], -p[1]))
+    return [[round(x / width, 4), round(y / height, 4)] for x, y in (top, right, bottom, left)]
+
+
 def save_jpeg(src: Path, dest: Path) -> tuple[int, int]:
     image = Image.open(src)
     image.seek(0)
@@ -176,6 +231,7 @@ def main() -> None:
     ap.add_argument(
         "--validated", type=Path, default=Path(__file__).with_name("meme_validated.json")
     )
+    ap.add_argument("--slots", type=Path, default=Path(__file__).with_name("meme_slots.json"))
     ap.add_argument("--out", type=Path, default=Path("plugins/llm/src/llm/memes"))
     args = ap.parse_args()
 
@@ -186,6 +242,10 @@ def main() -> None:
     images_dir = args.out / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
     for old in images_dir.glob("*.jpg"):
+        old.unlink()
+    masks_dir = args.out / "masks"
+    masks_dir.mkdir(parents=True, exist_ok=True)
+    for old in masks_dir.glob("*.png"):
         old.unlink()
 
     # imgflip's name for a memegen template is what people type ("Two
@@ -313,6 +373,27 @@ def main() -> None:
         elif e["id"] in issues:
             e["issue"] = issues[e["id"]]
     stats["validated"] = sum(1 for e in entries if e.get("validated"))
+
+    # Picture slots: the mask says exactly where a generated picture goes.
+    slot_spec = json.loads(args.slots.read_text()) if args.slots.exists() else {}
+    by_id = {e["id"]: e for e in entries}
+    for tid, specs in slot_spec.items():
+        if tid.startswith("_"):
+            continue
+        if tid not in by_id:
+            raise SystemExit(f"meme_slots.json names {tid!r}, which is not in the catalog")
+        image = Image.open(images_dir / f"{tid}.jpg")
+        slots = []
+        for i, spec in enumerate(specs):
+            mask, box = slot_mask(image, spec)
+            name = f"{tid}-{i}.png"
+            mask.convert("1").save(masks_dir / name, optimize=True)
+            slot: dict[str, Any] = {"mask": name, "box": [round(b, 4) for b in box]}
+            if spec.get("corners"):
+                slot["corners"] = mask_corners(mask)
+            slots.append(slot)
+        by_id[tid]["slots"] = slots
+    stats["slotted"] = sum(1 for e in entries if e.get("slots"))
     stats["issues"] = sum(1 for e in entries if e.get("issue"))
 
     entries.sort(key=lambda e: (e["rank"], e["id"]))

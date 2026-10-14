@@ -1650,6 +1650,15 @@ class ImageResult(NamedTuple):
     blocked_attempts: tuple[BlockedAttempt, ...] = ()
 
 
+class MemePicture(NamedTuple):
+    """A generated picture for a meme's picture slot: bytes, or why not."""
+
+    data: bytes | None
+    cost: float = 0.0
+    model: str = ""
+    error: str | None = None
+
+
 class ReferenceImage(NamedTuple):
     """A user-supplied still, fetched and re-encoded, ready to condition a clip.
 
@@ -4548,31 +4557,67 @@ class LLMService:
         or any failure comes back as ``error`` with the captioned meme still
         in the caller's hands: the picture is an extra, not the meme.
         """
+        prompt = self._MEME_EDIT_FRAME.format(draw=draw.strip())
+        data, cost, model, error = self._xai_image(
+            "edits", {"prompt": prompt, "image": {"url": image_url}}, op="image_edit"
+        )
+        if data is None:
+            return ImageResult(content="", cost=cost, model=model, error=error)
+        try:
+            hosted = self._save_image_bytes(data, "png")
+        except Exception as exc:  # noqa: BLE001
+            self.log.warning("image_edit save failed: %s", str(exc)[:200])
+            hosted = None
+        if not hosted:
+            return ImageResult(
+                content="", cost=cost, model=model, error="Could not host the edited image."
+            )
+        return ImageResult(content=hosted, cost=cost, model=model, url=hosted)
+
+    # Wrapped around a picture description for a meme's picture slot. The
+    # result is cropped into the slot and the captions drawn over it, so
+    # any text the model paints would collide with them.
+    _MEME_PICTURE_FRAME = (
+        "{draw}. One photo-style picture filling the whole frame. "
+        "No text, no captions, no letters, no borders, no frame."
+    )
+
+    def image_generate(self, draw: str, *, aspect_ratio: str = "1:1") -> MemePicture:
+        """Generate a picture for a meme's picture slot; raw bytes, not hosted.
+
+        The same xAI model, key and billing as :meth:`image_edit`, on
+        ``/v1/images/generations``. The caller composites the bytes into
+        the template, so nothing is hosted here.
+        """
+        prompt = self._MEME_PICTURE_FRAME.format(draw=draw.strip().rstrip("."))
+        data, cost, model, error = self._xai_image(
+            "generations", {"prompt": prompt, "aspect_ratio": aspect_ratio}, op="image_generate"
+        )
+        return MemePicture(data, cost, model, error)
+
+    def _xai_image(
+        self, endpoint: str, fields: dict[str, Any], *, op: str
+    ) -> tuple[bytes | None, float, str, str | None]:
+        """POST to xAI ``/v1/images/<endpoint>`` with ``memeEditModel``.
+
+        ``(png bytes, cost, model, error)``; bytes is None when there is an
+        error. A billed refusal is still costed.
+        """
         import base64
         import urllib.error
         import urllib.request
 
         model = (self.plugin.registryValue("memeEditModel") or "").strip()
         if not model.startswith("xai/"):
-            return ImageResult(
-                content="", model=model, error="memeEditModel must be an xai/ model."
-            )
+            return None, 0.0, model, "memeEditModel must be an xai/ model."
         api_key = apikeys.api_key_for(model)
         if not api_key:
-            return ImageResult(
-                content="", model=model, error="The image edit model has no API key."
-            )
-        prompt = self._MEME_EDIT_FRAME.format(draw=draw.strip())
+            return None, 0.0, model, "The image model has no API key."
         body = json.dumps(
-            {
-                "model": model.removeprefix("xai/"),
-                "prompt": prompt,
-                "image": {"url": image_url},
-                "response_format": "b64_json",
-            }
+            {"model": model.removeprefix("xai/"), "response_format": "b64_json", **fields}
         ).encode()
         request = urllib.request.Request(
-            "https://api.x.ai/v1/images/edits",
+            f"https://api.x.ai/v1/images/{endpoint}",
             data=body,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         )
@@ -4584,24 +4629,26 @@ class LLMService:
         except urllib.error.HTTPError as exc:
             detail = exc.read()[:400].decode("utf-8", "replace")
             self.log.warning(
-                "completion_timing op=image_edit model=%s elapsed_ms=%.0f result=error http=%s",
+                "completion_timing op=%s model=%s elapsed_ms=%.0f result=error http=%s",
+                op,
                 model,
                 (time.monotonic() - t0) * 1000.0,
                 exc.code,
             )
             cost = self._billed_failure_cost(Exception(detail), model)
             refused = exc.code in (400, 403, 422)
-            return ImageResult(
-                content="",
-                cost=cost,
-                model=model,
-                error="The image model refused that edit." if refused else "Image edit failed.",
+            return (
+                None,
+                cost,
+                model,
+                "The image model refused that picture." if refused else "The image model failed.",
             )
         except Exception as exc:  # noqa: BLE001 — the meme is already made
-            self.log.warning("image_edit failed: %s", self._sanitize(str(exc))[:200])
-            return ImageResult(content="", model=model, error="Image edit failed.")
+            self.log.warning("%s failed: %s", op, self._sanitize(str(exc))[:200])
+            return None, 0.0, model, "The image model failed."
         self.log.warning(
-            "completion_timing op=image_edit model=%s elapsed_ms=%.0f",
+            "completion_timing op=%s model=%s elapsed_ms=%.0f",
+            op,
             model,
             (time.monotonic() - t0) * 1000.0,
         )
@@ -4622,19 +4669,11 @@ class LLMService:
             else None
         )
         if not isinstance(b64, str) or not b64:
-            return ImageResult(
-                content="", cost=cost, model=model, error="The image model returned no picture."
-            )
+            return None, cost, model, "The image model returned no picture."
         try:
-            hosted = self._save_image_bytes(base64.b64decode(b64), "png")
-        except Exception as exc:  # noqa: BLE001
-            self.log.warning("image_edit save failed: %s", str(exc)[:200])
-            hosted = None
-        if not hosted:
-            return ImageResult(
-                content="", cost=cost, model=model, error="Could not host the edited image."
-            )
-        return ImageResult(content=hosted, cost=cost, model=model, url=hosted)
+            return base64.b64decode(b64), cost, model, None
+        except ValueError:
+            return None, cost, model, "The image model returned no picture."
 
     def _xai_responses_call(
         self,

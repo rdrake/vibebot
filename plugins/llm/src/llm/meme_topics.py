@@ -247,24 +247,7 @@ TOPICS: dict[str, tuple[str, ...]] = {
     "zero-wing": ("all your base", "zero wing", "engrish", "video game", "retro"),
 }
 
-# Templates with an empty spot where a picture belongs: the costume photo,
-# the milk carton's missing child, the wanted poster. The picker adds a
-# "draw" (an image edit that fills the spot) for these unasked, and the
-# brief always shows this tag first so the keyword cut cannot hide it.
-# Picked by eye from the blanks on 2026-10-14.
+# The tag the picker reads as "this template has a blank picture area". The
+# catalog adds it to every template with picture slots (masks built from
+# scripts/meme_slots.json), so it lives here beside the other tags.
 PICTURE_SLOT = "blank picture area"
-PICTURE_SLOTS = frozenset(
-    {
-        "blank-starter-pack",
-        "blank-t-shirt",
-        "blank-wild-pokemon",
-        "i-m-in-danger-blank",
-        "milk-carton",
-        "same",
-        "spirit",
-        "this-is-where-i-d-put-my",
-        "wanted-poster",
-        "who-would-win",
-        "youtube-video-template",
-    }
-)

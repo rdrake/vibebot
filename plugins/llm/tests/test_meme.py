@@ -524,13 +524,110 @@ class TestCatalogBrief:
         example = meme.catalog_brief(cat).split(" | ")[3]
         assert len(example) <= 60 and example.endswith("…")
 
-    def test_every_picture_slot_id_is_in_the_bundled_catalog(self):
+    def test_bundled_slotted_templates_have_masks_and_the_tag(self):
         from llm import meme_topics
 
         catalog = meme.bundled_catalog()
         assert catalog is not None
-        missing = [tid for tid in meme_topics.PICTURE_SLOTS if catalog.resolve(tid) is None]
-        assert missing == []
+        slotted = [t for t in catalog.templates if t.slots]
+        assert {"spirit", "same", "who-would-win", "milk-carton"} <= {t.id for t in slotted}
+        for t in slotted:
+            assert meme_topics.PICTURE_SLOT in t.keywords, t.id
+            for slot in t.slots:
+                assert slot.mask.exists(), slot.mask
+                x, y, w, h = slot.box
+                assert min(x, y) >= 0 and max(x + w, y + h) <= 1.0001, t.id
+
+    def test_a_multi_slot_row_says_how_many_pictures(self, tmp_path):
+        Image.new("L", (10, 10), 255).save(tmp_path / "m.png")
+        entry = _entry("www", "Who Would Win?", 2)
+        entry["slots"] = [{"box": [0, 0, 0.5, 1], "mask": "m.png"}] * 2
+        (tmp_path / "images").mkdir()
+        row = meme.catalog_brief(meme.MemeCatalog(meme.parse_catalog([entry], tmp_path / "images")))
+        assert row.endswith("| blank picture area x2")
+
+
+class TestSlots:
+    """Picture slots: where a generated picture is masked into a template."""
+
+    def test_parse_catalog_reads_slots_and_tags_the_template(self, tmp_path):
+        from llm import meme_topics
+
+        entry = _entry("spirit", "Spirit", 1)
+        entry["slots"] = [{"box": [0.5, 0.1, 0.4, 0.8], "mask": "spirit-0.png"}, {"box": "bad"}]
+        (t,) = meme.parse_catalog([entry], tmp_path / "images")
+        assert len(t.slots) == 1
+        assert t.slots[0].box == (0.5, 0.1, 0.4, 0.8)
+        assert t.slots[0].mask == tmp_path / "masks" / "spirit-0.png"
+        assert t.keywords[0] == meme_topics.PICTURE_SLOT
+
+    @pytest.mark.parametrize(
+        ("draw", "count", "expected"),
+        [
+            ("a cat", 2, ["a cat", "a cat"]),
+            ("a cat | a dog", 2, ["a cat", "a dog"]),
+            ("a cat | a dog | a cow", 2, ["a cat", "a dog"]),
+            ("a | b", 4, ["a", "b", "b", "b"]),
+        ],
+    )
+    def test_slot_drawings(self, draw, count, expected):
+        assert meme.slot_drawings(draw, count) == expected
+
+    @pytest.mark.parametrize(
+        ("size", "ratio"),
+        [((500, 500), "1:1"), ((1000, 560), "16:9"), ((300, 410), "3:4"), ((100, 400), "9:16")],
+    )
+    def test_nearest_aspect_ratio(self, size, ratio):
+        assert meme.nearest_aspect_ratio(*size) == ratio
+
+    def test_picture_lands_inside_the_mask_only(self, tmp_path):
+        base = Image.new("RGB", (100, 100), "white")
+        mask = Image.new("L", (100, 100), 0)
+        mask.paste(255, (60, 20, 90, 80))  # the slot's blank, inside a wider box
+        mask.save(tmp_path / "m.png")
+        slot = meme_render.Slot((0.5, 0.1, 0.45, 0.8), tmp_path / "m.png")
+
+        out = meme_render.insert_pictures(base, (slot,), [Image.new("RGB", (40, 40), "red")])
+
+        assert out.getpixel((75, 50)) == (255, 0, 0)
+        assert out.getpixel((55, 50)) == (255, 255, 255)  # in the box, outside the mask
+        assert out.getpixel((10, 10)) == (255, 255, 255)
+        assert base.getpixel((75, 50)) == (255, 255, 255)  # input untouched
+
+    def test_corners_are_parsed_only_when_there_are_four(self, tmp_path):
+        entry = _entry("same", "Same", 1)
+        entry["slots"] = [
+            {
+                "box": [0, 0, 1, 1],
+                "mask": "a.png",
+                "corners": [[0.1, 0], [1, 0.1], [0.9, 1], [0, 0.9]],
+            },
+            {"box": [0, 0, 1, 1], "mask": "b.png", "corners": [[0, 0]]},
+        ]
+        (t,) = meme.parse_catalog([entry], tmp_path / "images")
+        assert t.slots[0].corners == ((0.1, 0.0), (1.0, 0.1), (0.9, 1.0), (0.0, 0.9))
+        assert t.slots[1].corners == ()
+
+    def test_a_cornered_slot_warps_the_picture_onto_the_quad(self, tmp_path):
+        """A picture split red (left) / blue (right) keeps that split along
+        a tilted quad: its left edge lands on the quad's left edge."""
+        Image.new("L", (100, 100), 255).save(tmp_path / "m.png")
+        corners = ((0.3, 0.1), (0.9, 0.2), (0.7, 0.9), (0.1, 0.8))
+        slot = meme_render.Slot((0.1, 0.1, 0.8, 0.8), tmp_path / "m.png", corners)
+        picture = Image.new("RGB", (200, 200), "blue")
+        picture.paste((255, 0, 0), (0, 0, 100, 200))
+
+        out = meme_render.insert_pictures(Image.new("RGB", (100, 100), "white"), (slot,), [picture])
+
+        assert out.getpixel((25, 60))[0] > 200  # near the left edge: red
+        assert out.getpixel((70, 40))[2] > 200  # near the right edge: blue
+
+    def test_a_missing_picture_leaves_its_slot_blank(self, tmp_path):
+        Image.new("L", (50, 50), 255).save(tmp_path / "m.png")
+        slot = meme_render.Slot((0, 0, 1, 1), tmp_path / "m.png")
+        base = Image.new("RGB", (50, 50), "white")
+        out = meme_render.insert_pictures(base, (slot,), [None])
+        assert ImageChops.difference(out, base).getbbox() is None
 
 
 class TestPicker:
