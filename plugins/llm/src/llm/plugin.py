@@ -10086,6 +10086,8 @@ class LLM(callbacks.Plugin):
         bot answers stop feeding follow-ups. Volatile memory expires automatically
         after a timeout.
         """
+        if self._is_old_message(msg):
+            return
         caller = self._resolve_identity(irc, msg)
         origin = self._get_channel(msg)
         # Default to current channel if not specified
@@ -10120,6 +10122,8 @@ class LLM(callbacks.Plugin):
         'cleanup' to trigger a cleanup pass. Bot owners can use 'memories <nick>'
         or 'memories cleanup <nick>' for other users.
         """
+        if self._is_old_message(msg):
+            return
         caller = self._resolve_identity(irc, msg)
 
         if not text:
@@ -10228,6 +10232,8 @@ class LLM(callbacks.Plugin):
           @instruct clear
           @instruct          (show current instruction)
         """
+        if self._is_old_message(msg):
+            return
         caller = self._resolve_identity(irc, msg)
 
         if not text:
@@ -10269,6 +10275,8 @@ class LLM(callbacks.Plugin):
           @tz clear
           @tz          (show current zone)
         """
+        if self._is_old_message(msg):
+            return
         caller = self._resolve_identity(irc, msg)
 
         if not text:
@@ -10324,6 +10332,8 @@ class LLM(callbacks.Plugin):
           @avatar clear
           @avatar          (show current persona)
         """
+        if self._is_old_message(msg):
+            return
         caller = self._resolve_identity(irc, msg)
 
         if not text:
@@ -11476,6 +11486,8 @@ class LLM(callbacks.Plugin):
           @remind admin del <nick> <id>  (owner only)
           @remind admin clear <nick>     (owner only)
         """
+        if self._is_old_message(msg):
+            return
         caller = self._resolve_identity(irc, msg)
 
         if not text:
@@ -11849,6 +11861,8 @@ class LLM(callbacks.Plugin):
 
         Requires the llm.verse capability and a verse-enabled channel.
         """
+        if self._is_old_message(msg):
+            return
         channel = msg.args[0] if msg.args else None
         if not channel or not ircutils.isChannel(channel):
             irc.error(_("This command must be used in a channel."), prefixNick=False)
@@ -12246,6 +12260,8 @@ class LLM(callbacks.Plugin):
         that channel (useful in a PM, to avoid flooding the channel itself);
         otherwise the channel the command was run in is used.
         """
+        if self._is_old_message(msg):
+            return
         # A leading "#channel" token lets an operator target a channel from a
         # private message — where msg carries no channel of its own (msg.channel
         # is None and msg.args[0] is the bot's nick) — so a batch of edits can be

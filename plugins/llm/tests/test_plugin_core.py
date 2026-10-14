@@ -406,6 +406,34 @@ class TestPluginHelperMethods:
 
         assert result is False
 
+    @pytest.mark.parametrize(
+        ("command", "args"),
+        [
+            ("remind", ["clear"]),
+            ("memories", ["clear"]),
+            ("instruct", ["clear"]),
+            ("tz", ["clear"]),
+            ("avatar", ["clear"]),
+            ("forget", []),
+            ("verseopt", ["out"]),
+            ("versedit", ["delete 1"]),
+        ],
+    )
+    def test_replayed_mutating_command_is_ignored(self, plugin_env, command, args) -> None:
+        """GIVEN a ZNC-replayed line from before startup WHEN a mutating command
+        runs THEN it returns before touching state — a replayed '@remind clear'
+        after a restart must not wipe reminders."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_msg.time = plugin.startup_time - 100
+        plugin.db.reset_mock()
+
+        getattr(plugin, command)(mock_irc, mock_msg, args)
+
+        assert plugin.db.method_calls == []
+        mock_irc.reply.assert_not_called()
+        mock_irc.replies.assert_not_called()
+        mock_irc.error.assert_not_called()
+
     def test_get_plugin_help_uses_help_url_config(self, mocker: MockerFixture) -> None:
         """GIVEN helpUrl configured WHEN getPluginHelp called THEN uses config URL."""
         from llm.plugin import LLM
