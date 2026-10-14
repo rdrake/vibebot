@@ -521,6 +521,28 @@ class TestBuildBridgeTool:
         called_allowed = enum_mock.call_args.args[2]
         assert called_allowed == frozenset({"Misc"})
 
+    def test_handler_passes_the_allowlist_to_dispatch(self, plugin_env, mocker):
+        """The run handler hands dispatch the same allowlist enumerate got, so a
+        loaded plugin outside it is refused at call time too."""
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = lambda k, ch=None: (
+            True if k == "bridgeEnabled" else ["Time"] if k == "bridgeAllowedPlugins" else False
+        )
+        mocker.patch(
+            "llm.limnoria_bridge.enumerate_commands",
+            return_value=[
+                mocker.MagicMock(plugin="Time", command="time", arg_syntax="", description="")
+            ],
+        )
+        dispatch = mocker.patch(
+            "llm.limnoria_bridge.dispatch", return_value={"error": "denied: Alias.add"}
+        )
+
+        _schema, handlers = plugin._build_bridge_tool(irc, msg, "#test")
+        handlers["run_limnoria_command"]({"plugin": "Alias", "command": "add", "args": "x"})
+
+        assert dispatch.call_args.kwargs["allowed"] == frozenset({"Time"})
+
     def test_returns_schema_and_handler_when_commands_present(self, plugin_env, mocker):
         plugin, irc, msg = plugin_env
         plugin.registryValue.side_effect = lambda k, ch=None: (

@@ -5634,6 +5634,7 @@ class LLM(callbacks.Plugin):
                 plugin=plugin_name,
                 command=command_name,
                 arg_string=arg_string,
+                allowed=allowed,
                 allow_mutating=allow_mutating,
             )
             if trace is not None:

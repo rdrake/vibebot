@@ -732,6 +732,53 @@ def test_dispatch_captures_reply(mocker):
     assert out == {"status": "ok", "reply": "pong"}
 
 
+def test_dispatch_refuses_loaded_plugin_outside_allowlist(mocker):
+    """GIVEN bridgeAllowedPlugins Time WHEN the model calls a loaded Alias.add
+    THEN dispatch refuses it — the allowlist binds dispatch, not just the menu."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Alias", commands=["add"])
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+
+    out = lb.dispatch(
+        irc,
+        msg,
+        plugin="Alias",
+        command="add",
+        arg_string="x echo y",
+        allowed=frozenset({"Time"}),
+        allow_mutating=True,
+    )
+
+    assert out == {"error": "denied: Alias.add"}
+    cb._callCommand.assert_not_called()
+
+
+def test_dispatch_empty_allowlist_means_curated_default(mocker):
+    """GIVEN an empty allowlist WHEN dispatching THEN the curated default
+    applies, as in enumerate: Misc runs, Anonymous is refused."""
+    from llm import limnoria_bridge as lb
+
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+    mocker.patch.object(lb.callbacks, "tokenize", return_value=[])
+    msg = _fake_msg(mocker)
+
+    anon = _stub_callback(mocker, "Anonymous", commands=["say"])
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = anon
+    out = lb.dispatch(irc, msg, plugin="Anonymous", command="say", arg_string="#c hi")
+    assert out == {"error": "denied: Anonymous.say"}
+
+    misc = _stub_callback(mocker, "Misc", commands=["ping"])
+    misc._callCommand.side_effect = lambda _c, proxy, _m, _t: proxy.reply("pong")
+    irc.getCallback.return_value = misc
+    out = lb.dispatch(irc, msg, plugin="misc", command="ping", arg_string="", allowed=frozenset())
+    assert out == {"status": "ok", "reply": "pong"}
+
+
 def test_dispatch_does_not_log_raw_arg_string_at_info(mocker):
     """LLM-generated arg_string can carry secrets (e.g. a URL with an API key);
     it must never be logged at INFO. Only its length is INFO-logged."""
