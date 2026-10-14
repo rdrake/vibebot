@@ -5311,22 +5311,6 @@ Examples (echo → action_prompt: ""):
             self.log.info("Ask completion failed: %s", self._sanitize(str(e)))
             return None
 
-    def summarize(self, content: str, channel: str | None = None) -> str | None:
-        """Generate a ~50 word summary using the ask model.
-
-        Returns the summary string, or None on any error (graceful degradation).
-        """
-        system_prompt = (
-            "You are a summarization assistant. Generate a ~50 word summary "
-            "of the provided content. Output only the summary as a single paragraph. "
-            "No markdown, no bullet points, no introductory phrases like 'This is...' "
-            "or 'Here is...'. Just the summary itself."
-        )
-        summary = self._ask_completion(system_prompt, content, channel)
-        if not summary:
-            return None
-        return " ".join(summary.split())
-
     def summarize_for_irc(
         self, content: str, channel: str | None = None, *, max_chars: int = 220
     ) -> str | None:
