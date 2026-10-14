@@ -146,8 +146,7 @@ PROFILES: dict[str, Profile] = {
         # prose then poisons the next turn via self-imitation. Bumped to 3000
         # (~2250 words) on request for fuller multi-paragraph scenes; still
         # capped to bound the worst-case run-on blob, and overflow pastebins
-        # via _send_long_reply. (Higher than PROFILE_CHAT's 2000 by design —
-        # verse is the one profile people ask to run long.)
+        # via _send_long_reply.
         max_output_tokens=3000,
         force_search_on_explicit=False,
         # Dampen the run-on/repetition spiral a non-reasoning model falls into
@@ -164,7 +163,8 @@ PROFILES: dict[str, Profile] = {
         model_setting="assistantModel",
         prompt_id="remind_action",
         overlay_setting="assistantSystemPrompt",
-        max_output_tokens=400,
+        # Same as PROFILE_CHAT: Haiku counts thinking against this cap.
+        max_output_tokens=4096,
         force_search_on_explicit=True,
     ),
 }
