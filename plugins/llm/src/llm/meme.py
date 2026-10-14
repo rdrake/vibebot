@@ -376,31 +376,64 @@ def _brief_example(example: tuple[str, ...]) -> str:
 # keeps the brief near the ~30 KB it was with memegen's two hundred.
 BRIEF_POPULAR = 150
 BRIEF_MATCHES = 60
+# With the search_templates tool the opening brief only has to cover the
+# obvious picks; anything else the picker looks up.
+SEARCH_BRIEF_POPULAR = 40
+SEARCH_BRIEF_MATCHES = 20
+SEARCH_RESULTS = 15
 
 
-def brief_templates(catalog: MemeCatalog, request: str = "") -> list[MemeTemplate]:
+def brief_templates(
+    catalog: MemeCatalog,
+    request: str = "",
+    *,
+    popular: int | None = None,
+    matches: int | None = None,
+) -> list[MemeTemplate]:
     """The shortlist :func:`catalog_brief` shows: request matches, custom
     (URL-alias) templates, then the most popular."""
+    popular = BRIEF_POPULAR if popular is None else popular
+    matches = BRIEF_MATCHES if matches is None else matches
     chosen: dict[str, MemeTemplate] = {}
-    if request.strip():
-        for t in catalog.suggest(request, limit=BRIEF_MATCHES):
+    if request.strip() and matches:
+        for t in catalog.suggest(request, limit=matches):
             chosen.setdefault(t.id, t)
     for t in catalog.templates:
         if t.background:
             chosen.setdefault(t.id, t)
-    for t in sorted(catalog.templates, key=lambda t: t.rank)[:BRIEF_POPULAR]:
+    for t in sorted(catalog.templates, key=lambda t: t.rank)[:popular]:
         chosen.setdefault(t.id, t)
     return list(chosen.values())
 
 
-def catalog_brief(catalog: MemeCatalog, request: str = "") -> str:
+def _brief_row(t: MemeTemplate) -> str:
+    example = _brief_example(t.example) if t.example else ""
+    return f"{t.id} | {t.name} | {t.lines} | {example} | {_brief_tags(t.keywords, t.name)}"
+
+
+def catalog_brief(
+    catalog: MemeCatalog,
+    request: str = "",
+    *,
+    popular: int | None = None,
+    matches: int | None = None,
+) -> str:
     """The shortlist as the picker sees it: ``id | name | N | example | tags``."""
-    rows: list[str] = []
-    for t in brief_templates(catalog, request):
-        example = _brief_example(t.example) if t.example else ""
-        tags = _brief_tags(t.keywords, t.name)
-        rows.append(f"{t.id} | {t.name} | {t.lines} | {example} | {tags}")
-    return "\n".join(rows)
+    templates = brief_templates(catalog, request, popular=popular, matches=matches)
+    return "\n".join(_brief_row(t) for t in templates)
+
+
+def search_brief(catalog: MemeCatalog, query: str, limit: int = SEARCH_RESULTS) -> str:
+    """The picker's ``search_templates`` answer: matching rows, best first.
+
+    The same word matching as ``@meme list`` — names, alt names, tags and
+    example captions — so a search for a character or a situation finds
+    what a person listing templates would.
+    """
+    found = catalog.suggest(query, limit=limit) if query.strip() else []
+    if not found:
+        return f"No templates match '{query.strip()}'. Try other words, or pick from the catalog."
+    return "\n".join(_brief_row(t) for t in found)
 
 
 @dataclass(frozen=True)

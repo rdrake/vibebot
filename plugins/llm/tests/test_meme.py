@@ -476,6 +476,18 @@ class TestCatalogBrief:
         assert ids.count("drake") == 1
         assert len(ids) == len(ranked)
 
+    def test_search_brief_returns_matching_rows_best_first(self, ranked):
+        rows = meme.search_brief(ranked, "workout").splitlines()
+        assert rows == ["gym | Gym Bro | 2 |  | workout"]
+
+    def test_search_brief_says_so_when_nothing_matches(self, ranked):
+        assert meme.search_brief(ranked, "zzzz").startswith("No templates match 'zzzz'")
+        assert meme.search_brief(ranked, "  ").startswith("No templates match")
+
+    def test_search_opening_brief_is_short(self, ranked):
+        ids = [t.id for t in meme.brief_templates(ranked, popular=1, matches=0)]
+        assert ids == ["drake"]
+
     def test_picture_slot_tag_survives_the_keyword_cut(self, ranked):
         """2026-10-14: imgflip alt names pushed spirit's tag to index 9 of
         an 8-tag row, so the picker stopped adding the costume photo."""

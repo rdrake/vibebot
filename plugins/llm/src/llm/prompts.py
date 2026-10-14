@@ -258,6 +258,17 @@ Rules:
 Catalog (id | name | lines | example | tags):
 """
 
+# Appended to MEME_PICK_PROMPT, before the catalog, when the picker has the
+# search_templates tool: the catalog it sees is then a short opening list.
+MEME_SEARCH_NOTE = """\
+The catalog below is only the most popular templates plus a few that share
+words with the request; over a thousand more exist. If none of these is a
+strong fit, call search_templates with two or three words — a character, a
+show, the joke's shape ("two choices", "waiting", "costume") — and pick from
+what comes back. At most two searches, then answer with the JSON object.
+
+"""
+
 # Verse mode is interactive in-world roleplay, not Q&A. It needs a different
 # output discipline (long-form scenes, not 3-line replies) and a different
 # tool stance (verse_record is mandatory canon-logging, not optional). A

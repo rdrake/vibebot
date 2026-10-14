@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 from urllib.parse import urlparse
 
 import litellm
@@ -50,6 +50,7 @@ from .prompts import (
     IRC_LOOKUP_GUIDANCE,
     MEME_GUIDANCE,
     MEME_PICK_PROMPT,
+    MEME_SEARCH_NOTE,
     MEMORY_CLEANUP_PROMPT,
     MEMORY_EXTRACTION_PROMPT,
     NOTIFY_GUIDANCE,
@@ -4398,16 +4399,52 @@ class LLMService:
                 break
         return "\n".join(lines)
 
+    # Searches the picker may run before it must answer. Each is another
+    # round trip (~1-2 s on Haiku); two covers "character, then situation".
+    MEME_MAX_SEARCHES = 2
+
+    _MEME_SEARCH_TOOL: ClassVar[dict[str, Any]] = {
+        "type": "function",
+        "function": {
+            "name": "search_templates",
+            "description": (
+                "Search all meme templates by name, alternative names, tags and "
+                "example captions. Returns up to 15 rows in the catalog's format."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Two or three words: a character, show or situation.",
+                    }
+                },
+                "required": ["query"],
+            },
+        },
+    }
+
     def meme_pick(
-        self, request_text: str, *, catalog_brief: str, channel: str, context: str | None = None
+        self,
+        request_text: str,
+        *,
+        catalog_brief: str,
+        channel: str,
+        context: str | None = None,
+        search: Callable[[str], str] | None = None,
     ) -> MemePick:
         """Ask the meme model which template fits ``request_text`` and what it says.
 
-        One JSON completion, catalog in the system prompt, request as the
-        user turn — concatenated, never formatted in. ``context`` is the
-        grounding the media commands share (canon block, subject dossier),
-        appended under the request. The answer is not trusted here;
-        :func:`meme.parse_pick` checks it against the catalog.
+        Catalog in the system prompt, request as the user turn —
+        concatenated, never formatted in. ``context`` is the grounding the
+        media commands share (canon block, subject dossier), appended under
+        the request. With ``search`` the brief is a short opening list and
+        the model may call ``search_templates`` up to
+        :attr:`MEME_MAX_SEARCHES` times; the last step offers the tool with
+        ``tool_choice="none"`` so it has to answer (Anthropic wants the tool
+        defined while its calls are in the history). Usage is summed over
+        every step. The answer is not trusted here; :func:`meme.parse_pick`
+        checks it against the catalog.
         """
         if context:
             request_text = f"{request_text}\n\n{context}"
@@ -4417,26 +4454,79 @@ class LLMService:
         )
         if self._missing_key_error(model):
             return MemePick(None, model, error="The meme model has no API key.")
-        messages = [
-            {"role": Role.SYSTEM, "content": MEME_PICK_PROMPT + catalog_brief},
+        system = MEME_PICK_PROMPT + (MEME_SEARCH_NOTE if search else "") + catalog_brief
+        messages: list[dict[str, Any]] = [
+            {"role": Role.SYSTEM, "content": system},
             {"role": Role.USER, "content": request_text},
         ]
-        try:
-            response = self._timed_completion(
-                "meme_pick",
-                model=model,
-                messages=messages,
-                channel=channel,
-                timeout=self.plugin.registryValue("timeout"),
-                response_format={"type": "json_object"},
-                **self._get_provider_kwargs(model, include_tools=False),
+        total_prompt, total_completion, total_cost = 0, 0, 0.0
+        searches = 0
+        while True:
+            kwargs: dict[str, Any] = dict(self._get_provider_kwargs(model, include_tools=False))
+            if search:
+                kwargs["tools"] = [self._MEME_SEARCH_TOOL]
+                if searches >= self.MEME_MAX_SEARCHES:
+                    kwargs["tool_choice"] = "none"
+            else:
+                kwargs["response_format"] = {"type": "json_object"}
+            try:
+                response = self._timed_completion(
+                    "meme_pick",
+                    model=model,
+                    messages=messages,
+                    channel=channel,
+                    timeout=self.plugin.registryValue("timeout"),
+                    **kwargs,
+                )
+            except Exception as exc:
+                self.log.warning("meme_pick failed: %s", self._sanitize(str(exc)))
+                return MemePick(
+                    None,
+                    model,
+                    total_prompt,
+                    total_completion,
+                    total_cost,
+                    error="The meme picker is not answering.",
+                )
+            prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
+            total_prompt += prompt_tokens
+            total_completion += completion_tokens
+            total_cost += cost
+            message = response.choices[0].message if response.choices else None
+            calls = getattr(message, "tool_calls", None) if message is not None else None
+            if not (search and calls and searches < self.MEME_MAX_SEARCHES):
+                content = message.content if message is not None else None
+                return MemePick(content, model, total_prompt, total_completion, total_cost)
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in calls
+                    ],
+                }
             )
-        except Exception as exc:
-            self.log.warning("meme_pick failed: %s", self._sanitize(str(exc)))
-            return MemePick(None, model, error="The meme picker is not answering.")
-        prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
-        content = response.choices[0].message.content if response.choices else None
-        return MemePick(content, model, prompt_tokens, completion_tokens, cost)
+            for tc in calls:
+                searches += 1
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                query = str(args.get("query") or "") if isinstance(args, dict) else ""
+                if searches > self.MEME_MAX_SEARCHES:
+                    result = "No more searches. Answer with the JSON object now."
+                else:
+                    result = search(query)
+                self.log.info("meme_pick: search %s %r", searches, query[:80])
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
     # Wrapped around the user's picture instruction for a meme edit. The
     # captioned PNG is the input, so the text is pixels the model must leave
