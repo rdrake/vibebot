@@ -26,7 +26,7 @@ class TestSummarize:
         )
 
     def test_summarize_returns_none_on_empty_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """GIVEN an empty provider variable WHEN summarize called THEN returns None."""
+        """GIVEN an empty provider variable WHEN summarize_for_irc called THEN returns None."""
         monkeypatch.setenv("OPENAI_API_KEY", "")
         mock_completion = self.mocker.patch("llm.service.litellm.completion")
 
@@ -36,14 +36,14 @@ class TestSummarize:
         mock_completion.assert_not_called()
 
     def test_summarize_returns_none_on_exception(self) -> None:
-        """GIVEN API error WHEN summarize called THEN returns None gracefully."""
+        """GIVEN API error WHEN summarize_for_irc called THEN returns None gracefully."""
         self.mocker.patch("llm.service.litellm.completion", side_effect=Exception("API error"))
         result = self.service.summarize_for_irc("content")
 
         assert result is None
 
     def test_summarize_returns_none_on_empty_response(self) -> None:
-        """GIVEN empty response WHEN summarize called THEN returns None."""
+        """GIVEN empty response WHEN summarize_for_irc called THEN returns None."""
         mock_response = make_completion_response("")
 
         self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
@@ -52,7 +52,7 @@ class TestSummarize:
         assert result is None
 
     def test_summarize_uses_ask_model_and_key(self) -> None:
-        """GIVEN summarize call WHEN API called THEN uses ask model and key."""
+        """GIVEN summarize_for_irc call WHEN API called THEN uses ask model and key."""
         completion_kwargs = {}
 
         def capture_kwargs(**kwargs):
@@ -67,7 +67,7 @@ class TestSummarize:
         assert completion_kwargs["api_key"] == FAKE_PROVIDER_KEYS["OPENAI_API_KEY"]
 
     def test_summarize_uses_channel_for_model_lookup(self) -> None:
-        """GIVEN channel WHEN summarize called THEN passes channel for model config."""
+        """GIVEN channel WHEN summarize_for_irc called THEN passes channel for model config."""
         registry_calls = []
 
         def track_registry(key, channel=None):
@@ -86,7 +86,7 @@ class TestSummarize:
         assert model_call[1] == "#test"
 
     def test_summarize_uses_gemini_safety_settings(self) -> None:
-        """GIVEN gemini model WHEN summarize called THEN includes safety settings."""
+        """GIVEN gemini model WHEN summarize_for_irc called THEN includes safety settings."""
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
                 "assistantModel": "gemini/gemini-2.0-flash",
@@ -107,7 +107,7 @@ class TestSummarize:
         assert completion_kwargs.get("safety_settings") is not None
 
     def test_summarize_no_safety_settings_for_non_gemini(self) -> None:
-        """GIVEN non-gemini model WHEN summarize called THEN no safety settings."""
+        """GIVEN non-gemini model WHEN summarize_for_irc called THEN no safety settings."""
         completion_kwargs = {}
 
         def capture_kwargs(**kwargs):
