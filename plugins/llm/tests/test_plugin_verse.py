@@ -1304,6 +1304,7 @@ class TestAvatarVerseSync:
         from llm.verse.store import VerseStore
 
         plugin, irc, msg = plugin_env
+        irc.state.nickToAccount.return_value = "alice"  # @avatar needs an account
 
         store = VerseStore(tmp_path / "verse", "#afnet")
 
@@ -1331,7 +1332,7 @@ class TestAvatarVerseSync:
             side_effect=lambda prefix, cap: cap.startswith("llm."),
         )
 
-        # msg arrives in #afnet from alice (no account → nick fallback).
+        # msg arrives in #afnet from alice, authenticated as alice.
         msg.args = ("#afnet", "@avatar hello")
         msg.prefix = "alice!user@host"
         msg.nick = "alice"
@@ -1376,6 +1377,7 @@ class TestAvatarVerseSync:
     def test_in_non_verse_channel_only_updates_persona(self, plugin_env, tmp_path, mocker) -> None:
         """GIVEN verseEnabled=False WHEN @avatar THEN only persona updated, no verse store."""
         plugin, irc, msg = plugin_env
+        irc.state.nickToAccount.return_value = "alice"  # @avatar needs an account
 
         get_store_spy = mocker.patch.object(plugin, "_get_or_create_verse_store")
 
@@ -1457,6 +1459,7 @@ class TestInstructDoesNotTouchAvatar:
         from llm.verse.store import VerseStore
 
         plugin, irc, msg = plugin_env
+        irc.state.nickToAccount.return_value = "alice"  # @avatar needs an account
         store = VerseStore(tmp_path / "verse", "#afnet")
         mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
 
@@ -1521,6 +1524,7 @@ class TestAvatarRetiredAvatar:
         from llm.verse.store import VerseStore
 
         plugin, irc, msg = plugin_env
+        irc.state.nickToAccount.return_value = "alice"  # @avatar needs an account
         store = VerseStore(tmp_path / "verse", "#afnet")
         mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
 

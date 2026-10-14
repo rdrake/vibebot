@@ -3880,8 +3880,9 @@ class LLM(callbacks.Plugin):
             capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
         )
         history, channel_history = self._gather_history(nick, channel)
-        memories = self._get_user_memories(nick)
-        user_instruction = self.db.get_instruction(nick)
+        # Account-or-nick key: unauthenticated, it could be someone else's data.
+        memories = self._get_user_memories(nick) if account else []
+        user_instruction = self.db.get_instruction(nick) if account else None
         ask_prompt = self.registryValue(PROFILES[PROFILE_REMIND_ACTION].overlay_setting, channel)
         if fold_instruction_into_prompt:
             system_prompt = f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
@@ -8310,8 +8311,9 @@ class LLM(callbacks.Plugin):
 
             history, channel_history = self._gather_history(nick, channel)
 
-            memories = self._get_user_memories(nick)
-            user_instruction = self.db.get_instruction(nick)
+            # Account-or-nick key: unauthenticated, it could be someone else's data.
+            memories = self._get_user_memories(nick) if pf.account else []
+            user_instruction = self.db.get_instruction(nick) if pf.account else None
 
             # Personality overlay assembly.
             #
@@ -8572,8 +8574,9 @@ class LLM(callbacks.Plugin):
             with self._trace_request("code", nick, channel):
                 history, channel_history = self._gather_history(nick, channel)
 
-                memories = self._get_user_memories(nick)
-                user_instruction = self.db.get_instruction(nick)
+                # Account-or-nick key: unauthenticated, it could be someone else's data.
+                memories = self._get_user_memories(nick) if pf.account else []
+                user_instruction = self.db.get_instruction(nick) if pf.account else None
                 # CODE_SYSTEM_PROMPT is the facade prompt that tells the planner
                 # to call generate_code (not the registry codeSystemPrompt, the
                 # inner-call prompt used by _code_for_assistant). The user's
@@ -10117,6 +10120,9 @@ class LLM(callbacks.Plugin):
         'cleanup' to trigger a cleanup pass. Bot owners can use 'memories <nick>'
         or 'memories cleanup <nick>' for other users.
         """
+        # Stored under account-or-nick; a bare nick could be someone else's.
+        if self._require_account(irc, msg) is None:
+            return
         caller = self._resolve_identity(irc, msg)
 
         if not text:
@@ -10220,6 +10226,9 @@ class LLM(callbacks.Plugin):
           @instruct clear
           @instruct          (show current instruction)
         """
+        # Stored under account-or-nick; a bare nick could be someone else's.
+        if self._require_account(irc, msg) is None:
+            return
         caller = self._resolve_identity(irc, msg)
 
         if not text:
@@ -10261,6 +10270,9 @@ class LLM(callbacks.Plugin):
           @tz clear
           @tz          (show current zone)
         """
+        # Stored under account-or-nick; a bare nick could be someone else's.
+        if self._require_account(irc, msg) is None:
+            return
         caller = self._resolve_identity(irc, msg)
 
         if not text:
@@ -10316,6 +10328,9 @@ class LLM(callbacks.Plugin):
           @avatar clear
           @avatar          (show current persona)
         """
+        # Stored under account-or-nick; a bare nick could be someone else's.
+        if self._require_account(irc, msg) is None:
+            return
         caller = self._resolve_identity(irc, msg)
 
         if not text:
