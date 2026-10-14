@@ -5457,7 +5457,11 @@ Examples (echo → action_prompt: ""):
                 return it, self._attempt_image_generation(styled, model, timeout, channel)
             except Exception as e:  # noqa: BLE001 — isolate per-image failures
                 self.log.warning("storybook: draw id=%s raised %s", it.get("id"), e)
-                return it, None
+                # A refusal can still have been charged; carry it to the total.
+                error = self._sanitize(str(e))[:200]
+                return it, ImageResult(
+                    content=error, error=error, cost=self._billed_failure_cost(e, model)
+                )
 
         # Draw illustrations CONCURRENTLY — each is an independent blocking
         # image-gen call, so the old sequential loop made the user wait
@@ -5951,7 +5955,15 @@ Examples (echo → action_prompt: ""):
                         url=url,
                     )
                 error_content = _("Error: Failed to save generated image")
-                return ImageResult(content=error_content, error=error_content)
+                # The provider billed the generation even though it was lost here.
+                return ImageResult(
+                    content=error_content,
+                    error=error_content,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost=cost,
+                    model=model,
+                )
 
         # No image data — content was blocked
         return None
