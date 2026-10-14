@@ -260,6 +260,45 @@ class TestSharedGrounding:
         plugin.llm_service._begin_typing.return_value.assert_called_once()
 
 
+class TestMemeExecutorPermit:
+    """Every @meme LLM call (dossier, picker, pictures, edit) runs under one
+    executor permit taken at the command entry, never a nested one."""
+
+    def test_picker_runs_under_the_permit_without_deadlock_at_max_one(
+        self, meme_plugin, mocker
+    ) -> None:
+        import logging
+        import threading
+
+        from llm.executor import LLMExecutor
+
+        plugin, mock_irc, mock_msg = meme_plugin
+        executor = LLMExecutor(max_concurrency=1, log=logging.getLogger("test"))
+        plugin._llm_executor = executor
+        mocker.patch.object(plugin, "_subject_dossier_for", return_value="- x — y")
+        running_at_pick: list[int] = []
+        plugin.llm_service.meme_pick.side_effect = lambda *a, **k: (
+            running_at_pick.append(executor.running()) or meme_pick_decline()
+        )
+
+        worker = threading.Thread(
+            target=plugin.meme, args=(mock_irc, mock_msg, ["waiting for ci"]), daemon=True
+        )
+        worker.start()
+        worker.join(timeout=5)
+
+        assert not worker.is_alive(), "nested permit deadlocked at maxConcurrentLLMCalls=1"
+        assert running_at_pick == [1]
+        assert executor.running() == 0
+        executor.shutdown()
+
+
+def meme_pick_decline():
+    from llm.service import MemePick
+
+    return MemePick('{"template": null, "reason": "Nothing fits."}', "test-model")
+
+
 def _picture_png(colour: str) -> bytes:
     from PIL import Image
 

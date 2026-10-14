@@ -9519,8 +9519,11 @@ class LLM(callbacks.Plugin):
         # person>" carries what they look like into the edit.
         picks = not self._meme_names(template_query, has_lines=any(x.strip() for x in lines))
         stop_typing = self.llm_service._begin_typing(irc, msg) if picks else None
+        # One permit for the whole picker path: dossier, meme_pick, the slot
+        # pictures and the edit. Nothing inside may take another (no nesting).
+        permit = self._llm_executor.permit() if picks else contextlib.nullcontext()
         try:
-            with self._allow_concurrent():
+            with self._allow_concurrent(), permit:
                 context = self._meme_grounding(pf, text) if picks else None
                 hosted, error = self._meme_or_infer(
                     msg, template_query, lines, options, context=context
@@ -9539,13 +9542,14 @@ class LLM(callbacks.Plugin):
         The same two pre-stages @draw runs, in the same order (canon first;
         the dossier block says canon wins on overlap), minus the planner
         overlay wrapping: the picker takes the blocks as they are.
+
+        Caller holds the executor permit (``meme`` takes it).
         """
         parts: list[str] = []
         verse_ctx = self._verse_context_for(pf, text)
         if verse_ctx:
             parts.append(verse_ctx)
-        with self._llm_executor.permit():
-            dossier_block = self._subject_dossier_for(pf.nick, pf.channel, text)
+        dossier_block = self._subject_dossier_for(pf.nick, pf.channel, text)
         if dossier_block:
             parts.append(dossier_block)
         return "\n\n".join(parts) or None
