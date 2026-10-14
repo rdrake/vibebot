@@ -8776,7 +8776,7 @@ Examples (echo → action_prompt: ""):
 
             # Collect files with mtime
             files: list[tuple[Path, float]] = []
-            for pattern in ("*.html", "*.png", "*.jpg", "*.jpeg", "*.webp", "*.mp4"):
+            for pattern in ("*.html", "*.png", "*.jpg", "*.jpeg", "*.webp", "*.gif", "*.mp4"):
                 for file_path in dir_path.glob(pattern):
                     with contextlib.suppress(OSError):
                         files.append((file_path, file_path.stat().st_mtime))
