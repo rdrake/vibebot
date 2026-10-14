@@ -476,6 +476,29 @@ class TestCatalogBrief:
         assert ids.count("drake") == 1
         assert len(ids) == len(ranked)
 
+    def test_picture_slot_tag_survives_the_keyword_cut(self, ranked):
+        """2026-10-14: imgflip alt names pushed spirit's tag to index 9 of
+        an 8-tag row, so the picker stopped adding the costume photo."""
+        from llm import meme_topics
+
+        many = tuple(f"alt name {i}" for i in range(12))
+        cat = ranked.with_keywords({"fine": many}).with_keywords(
+            {"fine": (meme_topics.PICTURE_SLOT,)}
+        )
+        row = next(r for r in meme.catalog_brief(cat).splitlines() if r.startswith("fine |"))
+        assert row.endswith(
+            f"| {meme_topics.PICTURE_SLOT}, alt name 0, alt name 1, "
+            "alt name 2, alt name 3, alt name 4, alt name 5, alt name 6"
+        )
+
+    def test_every_picture_slot_id_is_in_the_bundled_catalog(self):
+        from llm import meme_topics
+
+        catalog = meme.bundled_catalog()
+        assert catalog is not None
+        missing = [tid for tid in meme_topics.PICTURE_SLOTS if catalog.resolve(tid) is None]
+        assert missing == []
+
 
 class TestPicker:
     """The model's answer is a proposal; the catalog decides whether it stands."""

@@ -192,7 +192,6 @@ TOPICS: dict[str, tuple[str, ...]] = {
         "same picture",
         "identical",
         "no difference",
-        "blank picture area",
     ),
     "sarcasticbear": ("bear", "sarcasm", "sorry", "know it all"),
     "say": ("simpsons", "bart", "say the line", "catchphrase", "predictable"),
@@ -216,7 +215,6 @@ TOPICS: dict[str, tuple[str, ...]] = {
         "spirit halloween",
         "includes",
         "nothing",
-        "blank picture area",
     ),
     "spongebob": ("spongebob", "mocking", "sarcasm", "mimic", "sPoNgEbOb"),
     "ss": ("scumbag steve", "jerk", "freeloader", "bad friend", "hat"),
@@ -248,3 +246,25 @@ TOPICS: dict[str, tuple[str, ...]] = {
     "yuno": ("y u no", "why", "rage comic", "frustrated"),
     "zero-wing": ("all your base", "zero wing", "engrish", "video game", "retro"),
 }
+
+# Templates with an empty spot where a picture belongs: the costume photo,
+# the milk carton's missing child, the wanted poster. The picker adds a
+# "draw" (an image edit that fills the spot) for these unasked, and the
+# brief always shows this tag first so the keyword cut cannot hide it.
+# Picked by eye from the blanks on 2026-10-14.
+PICTURE_SLOT = "blank picture area"
+PICTURE_SLOTS = frozenset(
+    {
+        "blank-starter-pack",
+        "blank-t-shirt",
+        "blank-wild-pokemon",
+        "i-m-in-danger-blank",
+        "milk-carton",
+        "same",
+        "spirit",
+        "this-is-where-i-d-put-my",
+        "wanted-poster",
+        "who-would-win",
+        "youtube-video-template",
+    }
+)
