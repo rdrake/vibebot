@@ -1913,9 +1913,18 @@ class TestPluginDatabaseWiring:
         mock_world = mocker.patch("llm.plugin.world")
         mocks["LLMService"].return_value.sanitize_output.side_effect = lambda x: x
         mock_world.ircs = [mock_irc]
+        mock_add_event = mocker.patch("llm.plugin.schedule.addEvent")
+        before = time.time()
         LLM(mock_irc)
 
-        # Overdue reminder should be delivered immediately via irc.queueMsg
+        # Overdue reminder fires on the first scheduler tick, not during
+        # __init__ (IRC may not be registered yet).
+        mock_irc.queueMsg.assert_not_called()
+        [scheduled] = [
+            c for c in mock_add_event.call_args_list if c.kwargs.get("name") == "llm_remind_123_1"
+        ]
+        assert scheduled.args[1] >= before
+        scheduled.args[0]()
         mock_irc.queueMsg.assert_called_once()
         queued_msg = mock_irc.queueMsg.call_args[0][0]
         assert queued_msg.args[0] == "#test"
@@ -1923,6 +1932,54 @@ class TestPluginDatabaseWiring:
         assert "check build" in queued_msg.args[1]
         # Overdue reminder should be deleted from DB after delivery
         mock_db.delete_reminder.assert_called_once_with("llm_remind_123_1")
+
+    def test_plugin_reload_reminders_keeps_overdue_recurring_chain(
+        self, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a recurring reminder whose fire time passed during a restart
+        WHEN it fires after reload THEN the chain is rescheduled, not dropped
+        as cancelled mid-fire."""
+        from llm.persistence import ReminderRow
+        from llm.plugin import LLM
+
+        from .conftest import make_registry_side_effect, plugin_init_patches
+
+        reminder = ReminderRow(
+            id=1,
+            event_name="llm_remind_rec_1",
+            nick="testuser",
+            channel="#test",
+            message="stretch",
+            action_prompt="",
+            account=None,
+            fire_at=time.time() - 60,
+            created_at=time.time() - 7200,
+            chain_position=3,
+            recurrence_seconds=3600,
+            recurrence_rrule=None,
+            watch_mode=False,
+        )
+        mock_db = mocker.MagicMock()
+        mock_db.load_pending_reminders.return_value = [reminder]
+
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        mocks = plugin_init_patches(mocker, mock_database=False)
+        mocker.patch("llm.plugin.LLMDatabase", return_value=mock_db)
+        mocker.patch("llm.plugin.world").ircs = [mock_irc]
+        mocks["LLMService"].return_value.sanitize_output.side_effect = lambda x: x
+        mock_add_event = mocker.patch("llm.plugin.schedule.addEvent")
+        plugin = LLM(mock_irc)
+
+        [scheduled] = [
+            c for c in mock_add_event.call_args_list if c.kwargs.get("name") == "llm_remind_rec_1"
+        ]
+        scheduled.args[0]()
+
+        mock_irc.queueMsg.assert_called_once()
+        mock_db.save_reminder.assert_called_once()
+        assert mock_db.save_reminder.call_args.kwargs["chain_position"] == 4
+        [next_event] = [n for n in plugin._reminders if n != "llm_remind_rec_1"]
+        assert next_event.startswith("llm_remind_")
 
     def test_plugin_die_cleans_expired_reminders(
         self, mock_irc: MagicMock, mocker: MockerFixture

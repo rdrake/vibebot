@@ -4232,8 +4232,8 @@ class LLM(callbacks.Plugin):
     def _reload_reminders(self, irc: callbacks.Irc) -> None:
         """Reload persisted reminders from database on startup.
 
-        Reschedules future reminders and delivers overdue ones immediately.
-        Reminders more than 24h overdue are cleaned up by the database layer.
+        Reschedules every reminder; overdue ones fire about a second later.
+        One-shots more than 24h overdue are cleaned up by the database layer.
         """
         pending = self.db.load_pending_reminders()
         now = time.time()
@@ -4258,33 +4258,31 @@ class LLM(callbacks.Plugin):
                 reply_msgid=reminder.reply_msgid,
             )
 
-            if reminder.fire_at <= now:
-                # Overdue — deliver immediately
-                deliver()
-            else:
-                # Future — reschedule
-                try:
-                    schedule.addEvent(deliver, reminder.fire_at, name=event_name)
-                    with self._reminders_lock:
-                        self._reminders[event_name] = ReminderRow(
-                            id=reminder.id,
-                            event_name=event_name,
-                            nick=nick,
-                            channel=channel,
-                            message=message,
-                            action_prompt=reminder.action_prompt,
-                            account=reminder.account,
-                            fire_at=reminder.fire_at,
-                            created_at=reminder.created_at,
-                            chain_position=reminder.chain_position or 1,
-                            recurrence_seconds=reminder.recurrence_seconds,
-                            recurrence_rrule=reminder.recurrence_rrule,
-                            watch_mode=reminder.watch_mode,
-                            reply_msgid=reminder.reply_msgid,
-                        )
-                except Exception as e:
-                    self.log.error("Failed to reload reminder %s: %s", event_name, e)
-                    self.db.delete_reminder(event_name)
+            # Overdue rows fire on a scheduler tick, not inside __init__.
+            # Every row is registered: a recurring fire whose event is missing
+            # from _reminders reads as cancelled mid-fire and ends its chain.
+            try:
+                schedule.addEvent(deliver, max(reminder.fire_at, now + 1), name=event_name)
+                with self._reminders_lock:
+                    self._reminders[event_name] = ReminderRow(
+                        id=reminder.id,
+                        event_name=event_name,
+                        nick=nick,
+                        channel=channel,
+                        message=message,
+                        action_prompt=reminder.action_prompt,
+                        account=reminder.account,
+                        fire_at=reminder.fire_at,
+                        created_at=reminder.created_at,
+                        chain_position=reminder.chain_position or 1,
+                        recurrence_seconds=reminder.recurrence_seconds,
+                        recurrence_rrule=reminder.recurrence_rrule,
+                        watch_mode=reminder.watch_mode,
+                        reply_msgid=reminder.reply_msgid,
+                    )
+            except Exception as e:
+                self.log.error("Failed to reload reminder %s: %s", event_name, e)
+                self.db.delete_reminder(event_name)
 
         if pending:
             self.log.info("Reloaded %s reminder(s) from database", len(pending))

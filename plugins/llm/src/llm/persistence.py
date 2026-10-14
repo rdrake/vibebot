@@ -878,7 +878,8 @@ class LLMDatabase:
 
         Returns reminders whose fire_at is within the last 24 hours or in the
         future. This allows delivery of slightly overdue reminders (e.g., after
-        a bot restart) while excluding very old ones.
+        a bot restart) while excluding very old ones. Recurring chains load
+        however overdue they are, so a long outage does not end them.
 
         Returns:
             List of ReminderRow ordered by fire_at ascending.
@@ -889,7 +890,9 @@ class LLMDatabase:
             "SELECT id, event_name, nick, channel, message, action_prompt, account, "
             "fire_at, created_at, chain_position, "
             "recurrence_seconds, recurrence_rrule, watch_mode, reply_msgid "
-            "FROM reminders WHERE fire_at > ? ORDER BY fire_at",
+            "FROM reminders WHERE fire_at > ? "
+            "OR recurrence_seconds IS NOT NULL OR recurrence_rrule IS NOT NULL "
+            "ORDER BY fire_at",
             (cutoff,),
         ).fetchall()
         # watch_mode is stored as INTEGER 0/1; expose as bool on the row.
@@ -914,7 +917,7 @@ class LLMDatabase:
         ]
 
     def delete_expired_reminders(self) -> int:
-        """Delete reminders that are more than 24 hours overdue.
+        """Delete one-shot reminders that are more than 24 hours overdue.
 
         Returns:
             Number of reminders deleted.
@@ -922,7 +925,8 @@ class LLMDatabase:
         cutoff = time.time() - EXPIRY_THRESHOLD_SECONDS
         with self._write_txn() as conn:
             cursor = conn.execute(
-                "DELETE FROM reminders WHERE fire_at <= ?",
+                "DELETE FROM reminders WHERE fire_at <= ? "
+                "AND recurrence_seconds IS NULL AND recurrence_rrule IS NULL",
                 (cutoff,),
             )
             return cursor.rowcount
