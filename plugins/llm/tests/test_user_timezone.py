@@ -429,7 +429,7 @@ class TestScheduledTaskUsesZone:
             account="rdrake",
         )
 
-        service._compute_next_fire(row)
+        service._compute_next_fire(row, 0.0)
 
         service.plugin._owner_tz.assert_called_once_with("rd_phone", "rdrake")
         assert service.plugin._next_rrule_fire.call_args.args[2] == TORONTO
