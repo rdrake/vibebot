@@ -145,6 +145,7 @@ class TestVerseoptCommand:
     def test_verseopt_in_uses_avatar_persona(self, verse_env, mocker) -> None:
         """GIVEN user has @avatar set WHEN @verseopt in THEN opt_in_avatar called with persona."""
         plugin, irc, msg, store = verse_env
+        irc.state.nickToAccount.return_value = "alice"
         plugin.db.get_avatar_persona = mocker.MagicMock(return_value="Be a wizard.")
 
         spy = mocker.patch.object(store, "opt_in_avatar", wraps=store.opt_in_avatar)
@@ -154,6 +155,18 @@ class TestVerseoptCommand:
         spy.assert_called_once()
         _, _, persona_arg = spy.call_args[0]
         assert persona_arg == "Be a wizard."
+
+    def test_verseopt_in_accountless_gets_no_persona(self, verse_env, mocker) -> None:
+        """GIVEN no account WHEN @verseopt in THEN no @avatar is read: keyed on
+        the nick, it could be another user's account persona."""
+        plugin, irc, msg, store = verse_env
+        plugin.db.get_avatar_persona = mocker.MagicMock(return_value="Be a wizard.")
+        spy = mocker.patch.object(store, "opt_in_avatar", wraps=store.opt_in_avatar)
+
+        self._call(plugin, irc, msg, "in")
+
+        plugin.db.get_avatar_persona.assert_not_called()
+        assert spy.call_args[0][2] == ""
 
     def test_verseopt_in_ignores_instruction(self, verse_env, mocker) -> None:
         """GIVEN @instruct set but no @avatar WHEN @verseopt in THEN persona is empty.
@@ -1775,6 +1788,19 @@ class TestVerseRouteForC7c:
         irc.reply.reset_mock()
 
         return plugin, irc, msg, store
+
+    @pytest.mark.parametrize(("account", "loaded"), [(None, False), ("alice", True)])
+    def test_persona_needs_an_account(self, verse_env, account, loaded) -> None:
+        """@avatar keys on account-or-nick: unauthenticated on nick alice, it
+        could be account alice's persona. Roleplay runs without one."""
+        plugin, _irc, _msg, _store = verse_env
+        plugin.db.get_avatar_persona.return_value = "Be a wizard."
+
+        route = plugin._verse_route_for("#afnet", "alice", account, "hi", force_roleplay=True)
+
+        assert route is not None
+        assert ("Be a wizard." in route.system_prompt) is loaded
+        assert plugin.db.get_avatar_persona.called is loaded
 
     def test_avatar_present_returns_route(self, verse_env) -> None:
         """GIVEN opted-in avatar WHEN _verse_route_for called THEN non-None route returned."""

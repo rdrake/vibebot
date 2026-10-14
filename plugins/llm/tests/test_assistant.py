@@ -17,7 +17,7 @@ from llm.assistant import (
     get_tools_for_profile,
 )
 from llm.plugin import LLM, Identity
-from llm.profile import PROFILE_REMIND_ACTION
+from llm.profile import PROFILE_CHAT, PROFILE_REMIND_ACTION
 from llm.prompts import CHAT_SYSTEM_PROMPT, PENDING_TASKS_GUIDANCE
 from llm.service import (
     _REPEAT_RETRY_NUDGE,
@@ -59,6 +59,9 @@ def make_executor(*args, **kwargs) -> AssistantToolExecutor:
     keep whatever they pass.
     """
     kwargs.setdefault("route_profile", PROFILE_REMIND_ACTION)
+    # Personal-data tools refuse an accountless caller; that gate has its own
+    # tests (TestPersonalDataToolsNeedAccount).
+    kwargs.setdefault("account", "testuser")
     return AssistantToolExecutor(*args, **kwargs)
 
 
@@ -827,6 +830,7 @@ class TestMetaCompletion:
             route_profile=PROFILE_REMIND_ACTION,
             prompt="always respond in haiku",
             nick="testuser",
+            account="testuser",
             channel="#test",
             db=db,
             context=mocker.MagicMock(),
@@ -836,6 +840,38 @@ class TestMetaCompletion:
         assert result.content == "Done \u2014 I'll respond in haiku."
         db.save_instruction.assert_called_once_with("testuser", "respond in haiku")
         assert mock_completion.call_count == 2
+
+    def test_accountless_reminder_action_cannot_read_memories(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN an unattended remind_action turn for an accountless owner WHEN
+        the model calls list_memories THEN the tool refuses: the account
+        threads from the request into the executor's gate."""
+        tool_call = make_tool_call("list_memories", {}, call_id="call_1")
+        mock_completion = mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[
+                make_completion_response(None, tool_calls=[tool_call]),
+                make_completion_response("No can do."),
+            ],
+        )
+        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+        db = mocker.MagicMock()
+
+        service.assistant_completion(
+            route_profile=PROFILE_REMIND_ACTION,
+            prompt="what do you remember about me",
+            nick="rdrake",
+            account=None,
+            channel="#test",
+            db=db,
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+        )
+
+        db.get_memories.assert_not_called()
+        tool_reply = mock_completion.call_args_list[1].kwargs["messages"][-1]["content"]
+        assert "authenticated account" in tool_reply
 
     def test_max_steps_exceeded(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN LLM keeps calling tools WHEN max steps hit THEN error."""
@@ -854,6 +890,7 @@ class TestMetaCompletion:
             route_profile=PROFILE_REMIND_ACTION,
             prompt="do something",
             nick="testuser",
+            account="testuser",
             channel="#test",
             db=db,
             context=mocker.MagicMock(),
@@ -911,6 +948,7 @@ class TestMetaCompletion:
             route_profile=PROFILE_REMIND_ACTION,
             prompt="delete memories 14 and 27",
             nick="testuser",
+            account="testuser",
             channel="#test",
             db=db,
             context=mocker.MagicMock(),
@@ -4020,6 +4058,7 @@ class TestMetaIntegration:
             route_profile=PROFILE_REMIND_ACTION,
             prompt="always respond in haiku",
             nick="testuser",
+            account="testuser",
             channel="#test",
             db=db,
             context=context,
@@ -4069,6 +4108,7 @@ class TestMetaIntegration:
             route_profile=PROFILE_REMIND_ACTION,
             prompt="delete any memories about cats",
             nick="testuser",
+            account="testuser",
             channel="#test",
             db=db,
             context=context,
@@ -4163,6 +4203,7 @@ class TestMetaIntegration:
             route_profile=PROFILE_REMIND_ACTION,
             prompt="clean up my memories",
             nick="testuser",
+            account="testuser",
             channel="#test",
             db=mocker.MagicMock(),
             context=ConversationContext(
@@ -4626,6 +4667,84 @@ class TestScheduleLlmTaskFamily:
         out = ex.execute("cancel_pending_task", {"id": "llm_task_abc"})
         assert "ok" in out.content.lower()
         cancel_fn.assert_called_once_with("llm_task_abc")
+
+
+class TestPersonalDataToolsNeedAccount:
+    """Memory and instruction tools key on account-or-nick, so for an
+    unauthenticated caller the nick could be someone else's account. They
+    refuse with a tool error, matching @memories and @instruct."""
+
+    @pytest.mark.parametrize(
+        ("tool", "args", "db_call"),
+        [
+            ("save_memory", {"text": "likes tea"}, "save_memory"),
+            ("list_memories", {}, "get_memories"),
+            ("delete_memory", {"id": 1}, "delete_memory"),
+            ("update_memory", {"id": 1, "text": "x"}, "update_memory"),
+            ("clear_memories", {}, "delete_all_memories"),
+            ("set_instruction", {"text": "be brief"}, "save_instruction"),
+            ("clear_instruction", {}, "delete_instruction"),
+        ],
+    )
+    def test_accountless_reminder_action_is_refused(
+        self, mocker: MockerFixture, tool, args, db_call
+    ):
+        """GIVEN a reminder-action fire for an accountless owner (the route that
+        offers every one of these tools) WHEN a personal tool runs THEN it
+        refuses and touches no data."""
+        db = mocker.MagicMock()
+        executor = make_executor(
+            db=db,
+            context=mocker.MagicMock(),
+            nick="rdrake",
+            channel="#t",
+            account=None,
+            route_profile=PROFILE_REMIND_ACTION,
+        )
+        result = executor.execute(tool, args)
+        assert "authenticated account" in result.content
+        getattr(db, db_call).assert_not_called()
+
+    def test_accountless_chat_save_memory_is_refused(self, mocker: MockerFixture):
+        """save_memory is the one personal tool chat still offers."""
+        db = mocker.MagicMock()
+        executor = make_executor(
+            db=db,
+            context=mocker.MagicMock(),
+            nick="rdrake",
+            channel="#t",
+            account=None,
+            route_profile=PROFILE_CHAT,
+        )
+        assert "authenticated account" in executor.execute("save_memory", {"text": "x"}).content
+        db.save_memory.assert_not_called()
+
+    def test_cleanup_memories_refused_without_account(self, mocker: MockerFixture):
+        cleanup = mocker.MagicMock()
+        executor = make_executor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="rdrake",
+            channel="#t",
+            account=None,
+            cleanup_fn=cleanup,
+        )
+        assert "authenticated account" in executor.execute("cleanup_memories", {}).content
+        cleanup.assert_not_called()
+
+    def test_authenticated_caller_saves(self, mocker: MockerFixture):
+        db = mocker.MagicMock()
+        db.save_memory.return_value = 7
+        executor = make_executor(
+            db=db,
+            context=mocker.MagicMock(),
+            nick="rdrake",
+            channel="#t",
+            account="rdrake",
+            route_profile=PROFILE_CHAT,
+        )
+        assert '"ok"' in executor.execute("save_memory", {"text": "likes tea"}).content
+        db.save_memory.assert_called_once_with("rdrake", "likes tea", "#t")
 
 
 class TestExecutorCoverageGaps:

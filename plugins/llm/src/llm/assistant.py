@@ -703,6 +703,22 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
     "schedule_llm_task": {
         "require_account": True,
     },
+    # Memories and the instruction are stored under account-or-nick, so for an
+    # accountless caller (chat, or a reminder action fired for one) the nick
+    # could be someone else's account. Same rule as @memories / @instruct.
+    **{
+        name: {"require_account": True}
+        for name in (
+            "cleanup_memories",
+            "clear_instruction",
+            "clear_memories",
+            "delete_memory",
+            "list_memories",
+            "save_memory",
+            "set_instruction",
+            "update_memory",
+        )
+    },
     # Status is a chat-time question and a scheduled-task-time question; it has
     # no role in storytelling, and verse must stay a strict subset of chat.
     "check_service_status": {
