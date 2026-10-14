@@ -10178,7 +10178,12 @@ class LLM(callbacks.Plugin):
             else:
                 target = caller.key
             channel = (msg.channel or msg.args[0]) if msg.args else "#unknown"
-            summary = self._run_memory_cleanup(target, channel)
+            if self._run_preflight(irc, msg, text, "ask", require_account=False).blocked:
+                return
+            # The permit lives here, not in _run_memory_cleanup: that also runs
+            # as an assistant tool inside a turn that already holds one.
+            with self._allow_concurrent(), self._llm_executor.permit():
+                summary = self._run_memory_cleanup(target, channel)
             irc.reply(summary.message, prefixNick=False)
 
         elif len(parts) == 1:
