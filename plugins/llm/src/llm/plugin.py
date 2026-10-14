@@ -8830,18 +8830,24 @@ class LLM(callbacks.Plugin):
         assert template.image is not None
         base = meme_render.load_image(template.image)
         drawings = meme.slot_drawings(draw, len(template.slots))
+        # One generation per distinct description, reused for every slot
+        # that asks for it: "same" must show the same picture twice.
+        first_slot: dict[str, int] = {}
+        for index, drawing in enumerate(drawings):
+            first_slot.setdefault(drawing, index)
 
-        def one(index: int) -> MemePicture:
-            width, height = meme_render.slot_size(base, template.slots[index])
+        def one(drawing: str) -> MemePicture:
+            width, height = meme_render.slot_size(base, template.slots[first_slot[drawing]])
             ratio = meme.nearest_aspect_ratio(width, height)
-            return self.llm_service.image_generate(drawings[index], aspect_ratio=ratio)
+            return self.llm_service.image_generate(drawing, aspect_ratio=ratio)
 
-        workers = min(self._MEME_PICTURE_WORKERS, len(template.slots))
+        unique = list(first_slot)
+        workers = min(self._MEME_PICTURE_WORKERS, len(unique))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            results = list(pool.map(one, range(len(template.slots))))
-        pictures: list[Image.Image | None] = []
+            results = dict(zip(unique, pool.map(one, unique), strict=True))
+        made: dict[str, Image.Image | None] = {}
         errors: list[str] = []
-        for drawing, result in zip(drawings, results, strict=True):
+        for drawing, result in results.items():
             try:
                 self.db.log_usage(
                     ircutils.nickFromHostmask(msg.prefix),
@@ -8865,18 +8871,20 @@ class LLM(callbacks.Plugin):
                     self.log.exception("meme: generated picture unreadable")
             if picture is None:
                 errors.append(result.error or "no picture")
-            pictures.append(picture)
+            made[drawing] = picture
         self.log.info(
-            "meme_pictures: template=%s slots=%s failed=%s",
+            "meme_pictures: template=%s slots=%s generated=%s failed=%s",
             template.id,
             len(template.slots),
+            len(made),
             len(errors),
         )
+        pictures = [made[drawing] for drawing in drawings]
         if not errors:
             return pictures, ""
-        if len(errors) == len(pictures):
+        if len(errors) == len(made):
             return pictures, f"picture not added: {errors[0]}"
-        return pictures, f"{len(errors)} of {len(pictures)} pictures not added: {errors[0]}"
+        return pictures, f"{len(errors)} of {len(made)} pictures not added: {errors[0]}"
 
     def _render_meme(
         self,

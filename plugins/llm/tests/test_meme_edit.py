@@ -295,10 +295,12 @@ def slot_plugin(plugin_env, mocker, tmp_path):
     }
     mocker.patch.object(meme, "bundled_catalog", return_value=write_catalog([entry], images))
     plugin.llm_service._save_image_bytes.return_value = CAPTIONED
-    plugin.llm_service.image_generate.side_effect = [
-        MemePicture(_picture_png("red"), 0.02, "xai/grok-imagine-image"),
-        MemePicture(_picture_png("blue"), 0.02, "xai/grok-imagine-image"),
-    ]
+    # Keyed on the description, not call order: the slots generate on
+    # pool threads.
+    pictures = {"a cat": _picture_png("red"), "a dog": _picture_png("blue")}
+    plugin.llm_service.image_generate.side_effect = lambda draw, aspect_ratio: MemePicture(
+        pictures[draw], 0.02, "xai/grok-imagine-image"
+    )
     plugin.llm_service.meme_pick.return_value = MemePick(
         '{"template": "www", "lines": ["cat", "dog"], "draw": "a cat | a dog"}', "test-model"
     )
@@ -343,12 +345,13 @@ class TestSlotPictures:
         from llm.service import MemePicture
 
         plugin, mock_irc, mock_msg = slot_plugin
-        plugin.llm_service.image_generate.side_effect = [
-            MemePicture(_picture_png("red"), 0.02, "xai/grok-imagine-image"),
-            MemePicture(
+        plugin.llm_service.image_generate.side_effect = lambda draw, aspect_ratio: (
+            MemePicture(_picture_png("red"), 0.02, "xai/grok-imagine-image")
+            if draw == "a cat"
+            else MemePicture(
                 None, 0.02, "xai/grok-imagine-image", "The image model refused that picture."
-            ),
-        ]
+            )
+        )
 
         plugin.meme(mock_irc, mock_msg, ["a cat versus a dog"])
 
@@ -357,6 +360,23 @@ class TestSlotPictures:
         assert "1 of 2 pictures not added: The image model refused that picture." in reply
         statuses = [c.kwargs["status"] for c in plugin.db.log_usage.call_args_list[1:3]]
         assert sorted(statuses) == ["error", "success"]
+
+    def test_one_description_is_one_picture_reused_for_every_slot(self, slot_plugin) -> None:
+        """'They're the same picture' needs the same picture, generated once."""
+        from llm.service import MemePick
+
+        plugin, mock_irc, mock_msg = slot_plugin
+        plugin.llm_service.meme_pick.return_value = MemePick(
+            '{"template": "www", "lines": ["x", "y"], "draw": "a cat"}', "test-model"
+        )
+
+        plugin.meme(mock_irc, mock_msg, ["a cat twice"])
+
+        assert plugin.llm_service.image_generate.call_count == 1
+        saved = _saved_image(plugin).convert("RGB")
+        assert saved.getpixel((50, 75))[0] > 200 and saved.getpixel((150, 75))[0] > 200
+        models = [c.args[3] for c in plugin.db.log_usage.call_args_list]
+        assert models.count("xai/grok-imagine-image") == 1
 
     def test_no_draw_means_no_pictures(self, slot_plugin) -> None:
         plugin, mock_irc, mock_msg = slot_plugin
