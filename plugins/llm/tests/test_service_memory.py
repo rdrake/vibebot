@@ -884,6 +884,25 @@ class TestCleanupMemoriesValidation:
         assert result.error is not None
         assert "Invalid drop index" in result.error
 
+    def test_bool_drop_index_is_rejected(self) -> None:
+        """GIVEN drop [true] WHEN cleanup validates THEN it is an error, not memory #1.
+
+        ``True`` is an ``int`` in Python; accepting it would delete index 1.
+        """
+        self._mock_cleanup_response({"drop": [True], "merge": []})
+        result = self.service.cleanup_memories("u", "#c", self._make_rows(3))
+        assert result.error is not None
+        assert "Invalid drop index" in result.error
+
+    def test_bool_merge_index_is_rejected(self) -> None:
+        """GIVEN merge indices [false, true] WHEN cleanup validates THEN it is an error."""
+        self._mock_cleanup_response(
+            {"drop": [], "merge": [{"indices": [False, True], "text": "m"}]}
+        )
+        result = self.service.cleanup_memories("u", "#c", self._make_rows(3))
+        assert result.error is not None
+        assert "Merge index out of range" in result.error
+
     def test_non_dict_merge_entry(self) -> None:
         """GIVEN merge entry is a string WHEN cleanup validates THEN error contains 'Invalid merge entry'."""
         self._mock_cleanup_response({"drop": [], "merge": ["x"]})

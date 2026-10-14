@@ -1563,6 +1563,24 @@ class TestRetryCompletion:
         assert result.status == "failed_terminal"
         assert "XAI_API_KEY" in result.reason
 
+    @pytest.mark.parametrize("content", [None, "", "  \n "])
+    def test_retry_completion_empty_content_fails_terminally(
+        self, mocker: MockerFixture, content: str | None
+    ) -> None:
+        """GIVEN the retried model returns no text (thinking ate the budget)
+        WHEN the retry finishes THEN it fails terminally instead of delivering
+        a bare ``nick: ``, and the tokens it billed still ride along."""
+        mocker.patch.object(
+            self.service,
+            "_completion_with_tool_fallback",
+            return_value=make_completion_response(content, completion_tokens=4096),
+        )
+        task = self._make_task()
+        result = self.service._retry_completion(task, {"messages": [{"role": "u", "content": "x"}]})
+        assert result.status == "failed_terminal"
+        assert result.reason
+        assert result.completion_tokens == 4096
+
     def test_retry_completion_unmanaged_model_is_not_a_hard_failure(
         self, mocker: MockerFixture
     ) -> None:
