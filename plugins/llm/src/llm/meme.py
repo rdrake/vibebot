@@ -333,14 +333,48 @@ class MemeCatalog:
         return [s[4] for s in scored[:limit]]
 
 
-# One catalog line per template for the picker prompt. Eight tags is enough
-# to say what a template is for (the template's own keywords come first,
-# then the topic tags, so the "blank picture area" tag survives the cut).
-_BRIEF_TAGS = 8
+# One catalog line per template for the picker prompt. imgflip alt names
+# and drafted keywords run to whole sentences ("corporate needs you to find
+# the differences between this picture and this picture"); at eight of
+# those a row averaged 270 chars and the brief 63 KB. Short tags only, five
+# of them, and a clipped example keep it near 35 KB.
+_BRIEF_TAGS = 5
+_BRIEF_TAG_WORDS = 3
+_BRIEF_EXAMPLE_CHARS = 60
+
+
+def _brief_tags(keywords: Iterable[str], name: str = "") -> str:
+    """Up to five short, distinct tags that are not just the name; the
+    picture-slot tag always first."""
+    keywords = list(keywords)
+    in_name = _normalise(name)
+    ordered = ([PICTURE_SLOT] if PICTURE_SLOT in keywords else []) + [
+        k for k in keywords if k != PICTURE_SLOT
+    ]
+    seen: set[str] = set()
+    tags: list[str] = []
+    for k in ordered:
+        key = _normalise(k)
+        if not key or key in seen or len(k.split()) > _BRIEF_TAG_WORDS or key in in_name:
+            continue
+        seen.add(key)
+        tags.append(k)
+        if len(tags) == _BRIEF_TAGS:
+            break
+    return ", ".join(tags)
+
+
+def _brief_example(example: tuple[str, ...]) -> str:
+    text = " / ".join(x or "_" for x in example)
+    if len(text) <= _BRIEF_EXAMPLE_CHARS:
+        return text
+    return text[: _BRIEF_EXAMPLE_CHARS - 1].rstrip() + "…"
+
+
 # The whole catalog is over a thousand rows; the picker sees the most
 # popular templates plus the ones that share a word with the request, which
 # keeps the brief near the ~30 KB it was with memegen's two hundred.
-BRIEF_POPULAR = 180
+BRIEF_POPULAR = 150
 BRIEF_MATCHES = 60
 
 
@@ -363,13 +397,8 @@ def catalog_brief(catalog: MemeCatalog, request: str = "") -> str:
     """The shortlist as the picker sees it: ``id | name | N | example | tags``."""
     rows: list[str] = []
     for t in brief_templates(catalog, request):
-        example = " / ".join(x or "_" for x in t.example) if t.example else ""
-        # The picture-slot tag decides whether the picker adds a draw; a
-        # template with many alt names must not push it past the cut.
-        keywords = [k for k in t.keywords if k != PICTURE_SLOT]
-        if PICTURE_SLOT in t.keywords:
-            keywords.insert(0, PICTURE_SLOT)
-        tags = ", ".join(keywords[:_BRIEF_TAGS])
+        example = _brief_example(t.example) if t.example else ""
+        tags = _brief_tags(t.keywords, t.name)
         rows.append(f"{t.id} | {t.name} | {t.lines} | {example} | {tags}")
     return "\n".join(rows)
 

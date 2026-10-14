@@ -487,9 +487,30 @@ class TestCatalogBrief:
         )
         row = next(r for r in meme.catalog_brief(cat).splitlines() if r.startswith("fine |"))
         assert row.endswith(
-            f"| {meme_topics.PICTURE_SLOT}, alt name 0, alt name 1, "
-            "alt name 2, alt name 3, alt name 4, alt name 5, alt name 6"
+            f"| {meme_topics.PICTURE_SLOT}, alt name 0, alt name 1, alt name 2, alt name 3"
         )
+
+    def test_long_name_and_duplicate_tags_stay_out_of_the_brief(self, ranked):
+        """imgflip alt names run to sentences; at 8 of them the brief was 63 KB."""
+        cat = ranked.with_keywords(
+            {
+                "fine": (
+                    "dog sitting in a burning room drinking coffee",
+                    "This Is Fine",
+                    "fire",
+                    "Fire",
+                    "coping",
+                )
+            }
+        )
+        row = next(r for r in meme.catalog_brief(cat).splitlines() if r.startswith("fine |"))
+        assert row.endswith("| fire, coping")
+
+    def test_a_long_example_is_clipped(self):
+        long = ("a caption that goes on and on and on",) * 3
+        cat = meme.MemeCatalog(_parse([_entry("wordy", "Wordy", 3, example=long)]))
+        example = meme.catalog_brief(cat).split(" | ")[3]
+        assert len(example) <= 60 and example.endswith("…")
 
     def test_every_picture_slot_id_is_in_the_bundled_catalog(self):
         from llm import meme_topics
