@@ -206,6 +206,19 @@ PENDING_CLAIM_LIMIT = 8
 PENDING_LEASE_SECONDS = 120
 
 
+def _no_redirect_opener() -> Any:
+    """urllib opener that refuses every 3xx (fail closed): a redirect could
+    point at a host the original URL check never saw, or carry a bearer token
+    off-host."""
+    import urllib.request
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    return urllib.request.build_opener(_NoRedirect())
+
+
 def _has_tool(tools: list[dict[str, Any]], name: str) -> bool:
     return any(tool.get("function", {}).get("name") == name for tool in tools)
 
@@ -7457,11 +7470,7 @@ Examples (echo → action_prompt: ""):
             self.log.warning("Reference URL validation raised for: %s", url[:200])
             return None
 
-        class _NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, *_args: object, **_kwargs: object) -> None:
-                return None
-
-        opener = urllib.request.build_opener(_NoRedirect())
+        opener = _no_redirect_opener()
         timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
 
         try:
@@ -7603,11 +7612,7 @@ Examples (echo → action_prompt: ""):
         # Same fail-closed redirect policy as the image paths: a 3xx from a
         # media host could point anywhere, and this request carries a bearer
         # token in its headers.
-        class _NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, *_args: object, **_kwargs: object) -> None:
-                return None
-
-        opener = urllib.request.build_opener(_NoRedirect())
+        opener = _no_redirect_opener()
         if timeout is None:
             timeout = self.plugin.registryValue("animateTimeout")
         req = urllib.request.Request(f"{base}{path}", data=body, headers=headers, method=method)
@@ -8276,11 +8281,7 @@ Examples (echo → action_prompt: ""):
 
         # Same policy as provider-image downloads: a 3xx could point anywhere, so
         # fail closed rather than follow it.
-        class _NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, *_args: object, **_kwargs: object) -> None:
-                return None
-
-        opener = urllib.request.build_opener(_NoRedirect())
+        opener = _no_redirect_opener()
         timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
         req = urllib.request.Request(
             endpoint,
@@ -8475,11 +8476,7 @@ Examples (echo → action_prompt: ""):
 
         # Disable redirects: a 3xx Location could point at a private host that
         # validate_external_url rejected on the original URL. Fail closed.
-        class _NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, *_args: object, **_kwargs: object) -> None:
-                return None
-
-        opener = urllib.request.build_opener(_NoRedirect())
+        opener = _no_redirect_opener()
 
         # DNS-rebinding guard: resolve the hostname now and confirm every
         # returned IP is globally routable.  validate_external_url accepts
