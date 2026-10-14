@@ -58,6 +58,7 @@ from .profile import (
     PROFILES,
 )
 from .service import (
+    MIN_RECURRENCE_SECONDS,
     SILENT_TOOLS,
     AssistantRequestContext,
     AssistantResult,
@@ -10949,7 +10950,8 @@ class LLM(callbacks.Plugin):
             return None
         if next_dt is None:
             return None
-        return next_dt.timestamp()
+        # Parse-time checks see only the first gap; this holds for every fire.
+        return max(next_dt.timestamp(), now + MIN_RECURRENCE_SECONDS)
 
     def _mechanical_reschedule(
         self,
@@ -10990,7 +10992,7 @@ class LLM(callbacks.Plugin):
 
         next_fire: float | None = None
         if recurrence_seconds is not None:
-            next_fire = now + recurrence_seconds
+            next_fire = now + max(recurrence_seconds, MIN_RECURRENCE_SECONDS)
         elif recurrence_rrule is not None:
             next_fire = self._next_rrule_fire(recurrence_rrule, now, self._owner_tz(nick, account))
             if next_fire is None:

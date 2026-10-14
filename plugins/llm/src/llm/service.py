@@ -204,6 +204,8 @@ PENDING_MAX_BACKOFF_SECONDS = 300
 ANIMATE_POLL_INTERVAL_SECONDS = 10
 PENDING_CLAIM_LIMIT = 8
 PENDING_LEASE_SECONDS = 120
+# Floor between two fires of one recurring chain: each action fire bills an LLM turn.
+MIN_RECURRENCE_SECONDS = 60
 
 
 def _has_tool(tools: list[dict[str, Any]], name: str) -> bool:
@@ -5166,7 +5168,7 @@ Examples (echo → action_prompt: ""):
                 # Every fire of an action chain bills an LLM turn; this parser
                 # is the only way a cadence reaches storage (reminders and
                 # scheduled tasks alike), so the floor lives here.
-                if gap is not None and gap < 60:
+                if gap is not None and gap < MIN_RECURRENCE_SECONDS:
                     return ReminderParseResult(
                         action="clarify",
                         confirmation=_("The minimum repeat interval is one minute."),
@@ -9404,7 +9406,7 @@ Examples (echo → action_prompt: ""):
     def _compute_next_fire(self, row: ScheduledLlmTaskRow, now: float) -> float | None:
         """Next fire time for a recurring task; ``None`` exhausts the schedule."""
         if row.recurrence_seconds:
-            return now + row.recurrence_seconds
+            return now + max(row.recurrence_seconds, MIN_RECURRENCE_SECONDS)
         if row.recurrence_rrule:
             return self.plugin._next_rrule_fire(
                 row.recurrence_rrule,
