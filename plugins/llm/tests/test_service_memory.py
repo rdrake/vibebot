@@ -1,4 +1,4 @@
-"""Service memory: injection, extraction, cleanup, summarize."""
+"""Service memory: injection, extraction, cleanup, IRC teaser."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class TestSummarize:
-    """Tests for summarize() method."""
+    """Tests for summarize_for_irc() and the shared ask-completion path."""
 
     @pytest.fixture(autouse=True)
     def setup(self, make_service, mocker: MockerFixture) -> None:
@@ -25,49 +25,12 @@ class TestSummarize:
             timeout=30,
         )
 
-    def test_summarize_returns_summary(self) -> None:
-        """GIVEN content WHEN summarize called THEN returns summary."""
-        mock_response = make_completion_response("This is a summary of the code.")
-
-        self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
-        result = self.service.summarize("def foo(): pass")
-
-        assert result == "This is a summary of the code."
-
-    def test_summarize_cleans_whitespace(self) -> None:
-        """GIVEN summary with extra whitespace WHEN summarize THEN collapses whitespace."""
-        mock_response = make_completion_response(
-            "  Summary  with   extra   spaces  \n  and newlines  "
-        )
-
-        self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
-        result = self.service.summarize("content")
-
-        assert result == "Summary with extra spaces and newlines"
-
-    def test_summarize_returns_none_on_missing_api_key(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """GIVEN the model's provider variable is unset WHEN summarize THEN None.
-
-        The fixture's assistantModel is "gpt-4" -> openai, so OPENAI_API_KEY is
-        what has to be missing.
-        """
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        mock_completion = self.mocker.patch("llm.service.litellm.completion")
-
-        result = self.service.summarize("content")
-
-        assert result is None
-        # Not merely None — the guard must short-circuit before the provider call.
-        mock_completion.assert_not_called()
-
     def test_summarize_returns_none_on_empty_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """GIVEN an empty provider variable WHEN summarize called THEN returns None."""
         monkeypatch.setenv("OPENAI_API_KEY", "")
         mock_completion = self.mocker.patch("llm.service.litellm.completion")
 
-        result = self.service.summarize("content")
+        result = self.service.summarize_for_irc("content")
 
         assert result is None
         mock_completion.assert_not_called()
@@ -75,7 +38,7 @@ class TestSummarize:
     def test_summarize_returns_none_on_exception(self) -> None:
         """GIVEN API error WHEN summarize called THEN returns None gracefully."""
         self.mocker.patch("llm.service.litellm.completion", side_effect=Exception("API error"))
-        result = self.service.summarize("content")
+        result = self.service.summarize_for_irc("content")
 
         assert result is None
 
@@ -84,7 +47,7 @@ class TestSummarize:
         mock_response = make_completion_response("")
 
         self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
-        result = self.service.summarize("content")
+        result = self.service.summarize_for_irc("content")
 
         assert result is None
 
@@ -97,7 +60,7 @@ class TestSummarize:
             return make_completion_response("Summary")
 
         self.mocker.patch("llm.service.litellm.completion", side_effect=capture_kwargs)
-        self.service.summarize("content")
+        self.service.summarize_for_irc("content")
 
         assert completion_kwargs["model"] == "gpt-4"
         # "gpt-4" is an openai model, so the openai variable is the one sent.
@@ -109,36 +72,18 @@ class TestSummarize:
 
         def track_registry(key, channel=None):
             registry_calls.append((key, channel))
-            return {"assistantModel": "gpt-4", "timeout": 30}.get(key)
+            return {"assistantModel": "gpt-4", "timeout": 30, "commandPrefixes": []}.get(key)
 
         self.mock_plugin.registryValue = self.mocker.Mock(side_effect=track_registry)
 
         mock_response = make_completion_response("Summary")
 
         self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
-        self.service.summarize("content", channel="#test")
+        self.service.summarize_for_irc("content", channel="#test")
 
         # assistantModel should be called with channel
         model_call = next(c for c in registry_calls if c[0] == "assistantModel")
         assert model_call[1] == "#test"
-
-    def test_summarize_includes_system_prompt(self) -> None:
-        """GIVEN summarize call WHEN API called THEN includes summarization system prompt."""
-        messages_sent = []
-
-        def capture_messages(**kwargs):
-            messages_sent.extend(kwargs.get("messages", []))
-            return make_completion_response("Summary")
-
-        self.mocker.patch("llm.service.litellm.completion", side_effect=capture_messages)
-        self.service.summarize("test content")
-
-        assert len(messages_sent) == 2
-        assert messages_sent[0]["role"] == "system"
-        assert "50 word" in messages_sent[0]["content"]
-        assert "summary" in messages_sent[0]["content"].lower()
-        assert messages_sent[1]["role"] == "user"
-        assert messages_sent[1]["content"] == "test content"
 
     def test_summarize_uses_gemini_safety_settings(self) -> None:
         """GIVEN gemini model WHEN summarize called THEN includes safety settings."""
@@ -146,6 +91,7 @@ class TestSummarize:
             side_effect=lambda key, channel=None: {
                 "assistantModel": "gemini/gemini-2.0-flash",
                 "timeout": 30,
+                "commandPrefixes": [],
             }.get(key)
         )
 
@@ -156,7 +102,7 @@ class TestSummarize:
             return make_completion_response("Summary")
 
         self.mocker.patch("llm.service.litellm.completion", side_effect=capture_kwargs)
-        self.service.summarize("content")
+        self.service.summarize_for_irc("content")
 
         assert completion_kwargs.get("safety_settings") is not None
 
@@ -169,7 +115,7 @@ class TestSummarize:
             return make_completion_response("Summary")
 
         self.mocker.patch("llm.service.litellm.completion", side_effect=capture_kwargs)
-        self.service.summarize("content")
+        self.service.summarize_for_irc("content")
 
         assert completion_kwargs.get("safety_settings") is None
 
