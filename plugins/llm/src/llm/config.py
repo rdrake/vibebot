@@ -1299,8 +1299,8 @@ conf.registerChannelValue(
         "anthropic/claude-haiku-5-5",
         _("""Model that picks a template and writes captions when @meme (or
         make_meme's brief) does not name a template the catalog knows. One
-        JSON completion over a ~30 KB catalog shortlist per pick (12-15K tokens,
-        about $0.002 on Haiku, 2-3 s).
+        short opening list plus up to two search_templates calls per pick
+        (5-19K tokens, under $0.003 on Haiku, 2-6 s).
         Empty falls back to assistantModel — but grok-4-1-fast copies the
         template's example captions instead of writing its own (measured
         2026-09-18: non-reasoning 4/4, reasoning 2/4; gemini-flash 0/4)."""),

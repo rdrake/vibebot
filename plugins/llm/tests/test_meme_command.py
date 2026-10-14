@@ -212,6 +212,15 @@ class TestPickerInCommand:
         assert models == ["test-model", "meme-render"]
         assert plugin.db.log_usage.call_args_list[0].args[6] == 0.001
 
+    def test_the_picker_can_search_the_whole_catalog(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+
+        plugin.meme(mock_irc, mock_msg, ["something about girlfriends"])
+
+        search = plugin.llm_service.meme_pick.call_args.kwargs["search"]
+        assert search("boyfriend").startswith("db | Distracted Boyfriend | 3")
+        assert "No templates match" in search("zzzz")
+
     def test_miss_with_captions_hands_them_to_the_picker(self, meme_plugin) -> None:
         plugin, mock_irc, mock_msg = meme_plugin
 

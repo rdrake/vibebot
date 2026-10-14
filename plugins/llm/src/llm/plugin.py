@@ -8920,9 +8920,15 @@ class LLM(callbacks.Plugin):
         channel = self._get_channel(msg)
         pick = self.llm_service.meme_pick(
             request,
-            catalog_brief=meme.catalog_brief(catalog, request),
+            catalog_brief=meme.catalog_brief(
+                catalog,
+                request,
+                popular=meme.SEARCH_BRIEF_POPULAR,
+                matches=meme.SEARCH_BRIEF_MATCHES,
+            ),
             channel=channel,
             context=context,
+            search=lambda query: meme.search_brief(catalog, query),
         )
         try:
             self.db.log_usage(
