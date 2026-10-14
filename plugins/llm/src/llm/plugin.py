@@ -351,6 +351,16 @@ class Identity:
             return ircutils.toLower(self.account) == ircutils.toLower(other.account)
         return ircutils.toLower(self.raw_nick) == ircutils.toLower(other.raw_nick)
 
+    def owns(self, owner: Identity) -> bool:
+        """True when this caller may act on a row stored under ``owner``.
+
+        A row stored with an account belongs only to a caller authenticated
+        as that account; a nick-only row matches by nick. :meth:`matches`
+        alone would hand an account-owned row to whoever takes the nick
+        while its owner is offline.
+        """
+        return self.matches(owner) and (bool(self.account) or not owner.account)
+
 
 class ReminderScheduleResult(NamedTuple):
     """Result of scheduling a reminder."""
@@ -9876,15 +9886,7 @@ class LLM(callbacks.Plugin):
                 irc.reply(_("No pending clip #%d.") % task_id)
                 return
             caller = self._resolve_identity(irc, msg)
-            # Identity.matches falls back to raw nick when either side has no
-            # account, which on its own would let a nick-squatter cancel an
-            # identified user's clip while the owner is disconnected. So: a
-            # row that carries an account may only be cancelled by a caller
-            # who is identified and matches on that account. The nick
-            # fallback stands only for rows that never had one.
-            owns = caller.matches(Identity(raw_nick=row.nick, account=row.account)) and (
-                bool(caller.account) or not row.account
-            )
+            owns = caller.owns(Identity(raw_nick=row.nick, account=row.account))
             if not is_admin and not owns:
                 irc.reply(_("#%d isn't yours.") % task_id)
                 return
@@ -10683,11 +10685,10 @@ class LLM(callbacks.Plugin):
     def _get_user_reminders(self, caller: Identity) -> list[tuple[str, ReminderRow]]:
         """Get reminders belonging to a specific user.
 
-        Match policy: account-to-account when both the caller and the
-        stored row have an account; raw-nick comparison otherwise (see
-        :meth:`Identity.matches`).  This lets a user who scheduled a
-        reminder while identified still see it after a nick change, and
-        keeps unidentified users' reminders scoped to their nick.
+        Match policy (:meth:`Identity.owns`): a reminder stored with an
+        account belongs only to a caller authenticated as that account, so
+        its owner keeps it across a nick change and a nick squatter never
+        sees it; a reminder stored without one matches by nick.
 
         Args:
             caller: The requesting user's :class:`Identity`.
@@ -10699,7 +10700,7 @@ class LLM(callbacks.Plugin):
             return [
                 (name, data)
                 for name, data in self._reminders.items()
-                if Identity(raw_nick=data.nick, account=data.account).matches(caller)
+                if caller.owns(Identity(raw_nick=data.nick, account=data.account))
             ]
 
     def _format_reminders(
@@ -10740,15 +10741,16 @@ class LLM(callbacks.Plugin):
             for name, data in self._reminders.items():
                 if not name.endswith(f"_{reminder_id}"):
                     continue
-                if Identity(raw_nick=data.nick, account=data.account).matches(caller):
+                if caller.owns(Identity(raw_nick=data.nick, account=data.account)):
                     return name
             return None
 
     def _user_scheduled_tasks(self, caller: Identity) -> list[ScheduledLlmTaskRow]:
         """Scheduled LLM tasks owned by ``caller``.
 
-        Ownership here is account-scoped, NOT the account-then-nick policy
-        :meth:`_get_user_reminders` uses: scheduling refuses without an
+        Ownership here is account-only, stricter than
+        :meth:`_get_user_reminders`, which still matches nick-only reminders
+        by nick: scheduling refuses without an
         authenticated account, so an accountless caller owns no tasks and
         gets an empty list. :meth:`_cancel_user_scheduled_task` applies the
         same rule, so the two halves of ``@remind`` agree on who owns what.
