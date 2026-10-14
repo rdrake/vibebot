@@ -215,7 +215,7 @@ conf.registerChannelValue(
     LLM,
     "imageModel",
     ValidatedModelName(
-        "gemini/imagen-4.0-fast-generate-001",
+        "xai/grok-imagine-image",
         _("""Model for image generation"""),
     ),
 )

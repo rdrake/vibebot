@@ -37,7 +37,7 @@ API keys are **not** part of the Limnoria registry. They come from environment v
 | `OPENAI_API_KEY` | OpenAI |
 | `ANTHROPIC_API_KEY` | Anthropic (Claude) |
 
-Any other provider LiteLLM recognises — `vertex_ai`, `openrouter`, `azure`, `bedrock`, and so on — resolves to no key from this plugin, so LiteLLM falls back to that provider's own native credentials: Application Default Credentials, IAM, or its own environment variables. With the defaults, a fresh install needs `ANTHROPIC_API_KEY` for chat and `@code`, `XAI_API_KEY` for search, and `GEMINI_API_KEY` for `@draw` (the default `imageModel` is `gemini/imagen-4.0-fast-generate-001`).
+Any other provider LiteLLM recognises — `vertex_ai`, `openrouter`, `azure`, `bedrock`, and so on — resolves to no key from this plugin, so LiteLLM falls back to that provider's own native credentials: Application Default Credentials, IAM, or its own environment variables. With the defaults, a fresh install needs `ANTHROPIC_API_KEY` for chat and `@code`, `XAI_API_KEY` for search and `@draw` (the default `imageModel` is `xai/grok-imagine-image`).
 
 ### Running on local models
 
@@ -136,7 +136,7 @@ Models follow [LiteLLM's provider/model format](https://docs.litellm.ai/docs/pro
 | `assistantModel` | channel | `anthropic/claude-haiku-5-5` | All assistant text and tool work: chat, planner, memory, reminders, scheduled tasks. Needs vision support if users paste image URLs |
 | `refusalFallbackModel` | channel | `xai/grok-4-1-fast-non-reasoning` | Re-runs a chat turn once when its model refuses: a policy refusal that survives its one retry, or a provider refusal error. The fallback gets the original request without the refusal, and tools the turn already called run again. Empty turns it off. Skipped when the turn already runs on this model or its provider has no key. Its spend books at `xai/grok-4.3` rates, the model behind the alias |
 | `codeModel` | channel | `anthropic/claude-haiku-5-5` | The code-generation one-shot behind `@code` and the `generate_code` tool. The `@code` planner loop itself runs on `assistantModel` |
-| `imageModel` | channel | `gemini/imagen-4.0-fast-generate-001` | Model for `@draw` |
+| `imageModel` | channel | `xai/grok-imagine-image` | Model for `@draw` |
 | `imageApiBase` | channel | empty | Draw against an OpenAI-shaped endpoint of your own instead of the provider `imageModel` names — see [Drawing against a self-hosted endpoint](#drawing-against-a-self-hosted-endpoint) |
 | `imageSteps` | channel | `0` | Denoising steps for a self-hosted endpoint. `0` lets the server choose. Ignored unless `imageApiBase` is set |
 | `imageSize` | channel | empty | Output geometry as `WxH` for a self-hosted endpoint. Ignored unless `imageApiBase` is set |
