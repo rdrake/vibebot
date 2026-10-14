@@ -2504,7 +2504,8 @@ class LLM(callbacks.Plugin):
     def _irc_for_channel(self, channel: str):
         """Return the Irc whose state currently holds *channel*, else None."""
         for irc_conn in list(world.ircs):
-            if channel in list(irc_conn.state.channels):
+            # IrcDict's own lookup folds case; list() would yield lowered keys.
+            if channel in irc_conn.state.channels:
                 return irc_conn
         return None
 

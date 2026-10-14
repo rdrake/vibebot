@@ -666,6 +666,15 @@ class TestIrcForChannel:
         mocker.patch("llm.plugin.world").ircs = []
         assert LLM._irc_for_channel.__get__(announcing_plugin)("#nowhere") is None
 
+    def test_finds_a_mixed_case_channel(self, announcing_plugin, mocker):
+        from llm.plugin import LLM
+        from supybot import ircutils
+
+        conn = mocker.MagicMock()
+        conn.state.channels = ircutils.IrcDict({"#Linux": object()})
+        mocker.patch("llm.plugin.world").ircs = [conn]
+        assert LLM._irc_for_channel.__get__(announcing_plugin)("#Linux") is conn
+
 
 class TestStatusAnnounceCompletion:
     """LLMService.status_announce_completion: tool-less one-shot rewrite.
