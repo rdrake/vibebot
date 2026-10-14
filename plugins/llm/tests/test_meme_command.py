@@ -15,9 +15,9 @@ from typing import Any
 import pytest
 from llm import meme, meme_render
 from llm.service import MemePick
-from PIL import Image
+from PIL import Image, ImageFile
 
-from .conftest import make_registry_side_effect
+from .conftest import huge_png, make_registry_side_effect
 
 _HOSTED = "https://paste.boxlabs.uk/img/img_abc.png"
 _BG = "https://i.imgflip.com/1c1uej.jpg"
@@ -419,6 +419,29 @@ class TestCustomAndAliases:
         assert mock_irc.error.call_args.args[0] == "Could not fetch that image."
         plugin.llm_service._save_image_bytes.assert_not_called()
         assert plugin.db.log_usage.call_args.kwargs["status"] == "error"
+
+    @pytest.mark.parametrize(
+        "size",
+        [
+            pytest.param((13_000, 13_000), id="past-pillow-error"),
+            # Between 1x and 2x Pillow's limit it only warns; the cap must still hold.
+            pytest.param((5_000, 5_000), id="pillow-warns-only"),
+        ],
+    )
+    @pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")
+    def test_decompression_bomb_template_is_refused(self, meme_plugin, mocker, size) -> None:
+        """GIVEN a tiny PNG claiming huge dimensions WHEN used as a template
+        THEN it is refused before decoding, with the usual render error."""
+        plugin, mock_irc, mock_msg = meme_plugin
+        plugin.llm_service._download_image_bytes.return_value = (huge_png(*size), "png")
+        decode = mocker.spy(ImageFile.ImageFile, "load")
+
+        plugin.meme(mock_irc, mock_msg, [f"{_BG} | top | bottom"])
+
+        decode.assert_not_called()
+
+        assert mock_irc.error.call_args.args[0] == "Could not draw that meme."
+        plugin.llm_service._save_image_bytes.assert_not_called()
 
     def test_url_alias_downloads_its_image(self, meme_plugin) -> None:
         plugin, mock_irc, mock_msg = meme_plugin

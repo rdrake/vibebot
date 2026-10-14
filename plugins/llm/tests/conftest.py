@@ -628,6 +628,27 @@ def plugin_env(mocker: MockerFixture):
         plugin.die()
 
 
+def huge_png(width: int, height: int) -> bytes:
+    """A valid PNG header claiming ``width`` x ``height``, under 100 bytes.
+
+    The decompression-bomb shape: tiny on the wire, enormous once decoded.
+    Only the header is rewritten, so nothing in the test allocates the pixels.
+    """
+    import io
+    import struct
+    import zlib
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("L", (1, 1)).save(buf, "PNG")
+    data = bytearray(buf.getvalue())
+    ihdr = struct.pack(">II", width, height) + bytes(data[24:29])
+    data[16:29] = ihdr
+    data[29:33] = struct.pack(">I", zlib.crc32(b"IHDR" + ihdr))
+    return bytes(data)
+
+
 def make_registry_side_effect(overrides: dict[str, Any] | None = None):
     """Create a registryValue side_effect function with standard defaults.
 

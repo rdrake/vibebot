@@ -23,6 +23,8 @@ from unittest.mock import Mock
 import pytest
 from llm.service import split_reference_url
 
+from .conftest import huge_png
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -203,6 +205,28 @@ class TestReferenceImageFetch:
         with Image.open(io.BytesIO(ref.data)) as img:
             assert max(img.size) == service._REFERENCE_MAX_EDGE
             assert img.size[0] > img.size[1]
+
+    @pytest.mark.parametrize(
+        "size",
+        [
+            pytest.param((13_000, 13_000), id="past-pillow-error"),
+            # Between 1x and 2x Pillow's limit it only warns; the cap must still hold.
+            pytest.param((5_000, 5_000), id="pillow-warns-only"),
+        ],
+    )
+    @pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")
+    def test_decompression_bomb_is_refused(self, make_service, animate_env, mocker, size) -> None:
+        """GIVEN a tiny PNG claiming huge dimensions WHEN fetched THEN it is
+        refused before its pixels are decoded."""
+        service, _ = _service(make_service)
+        mocker.patch.object(service, "validate_image_url", return_value=True)
+        mocker.patch("urllib.request.OpenerDirector.open", return_value=_Resp(huge_png(*size)))
+        from PIL import ImageFile
+
+        decode = mocker.spy(ImageFile.ImageFile, "load")
+
+        assert service.fetch_reference_image(_IMG) is None
+        decode.assert_not_called()
 
     def test_network_failure_returns_none(self, make_service, animate_env, mocker) -> None:
         """GIVEN the host is down WHEN fetched THEN it returns None rather than raising."""

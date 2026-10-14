@@ -32,6 +32,25 @@ MINIMUM_FONT_SIZE = 7
 # A custom image larger than this is shrunk before drawing; nobody reads a
 # 4000-px meme in an IRC client, and it bounds the render's memory.
 MAX_EDGE = 1200
+# Pixels any untrusted image may decode to. A 13000x13000 one-colour PNG is
+# ~200 KB on the wire and >850 MB decoded; prod has 961 MB. 4096x4096 still
+# takes a 12 MP phone photo and every provider output (2k at most).
+MAX_PIXELS = 4096 * 4096
+# Backstop for any other Image.open: Pillow warns past this and raises past 2x.
+Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+
+
+def open_image(source: Path | bytes) -> Image.Image:
+    """``Image.open`` that refuses more than ``MAX_PIXELS`` before decoding.
+
+    Pillow only raises at twice its limit, so the size is checked here,
+    from the header, before anything calls ``load()``.
+    """
+    image = Image.open(io.BytesIO(source) if isinstance(source, bytes) else source)
+    if image.width * image.height > MAX_PIXELS:
+        image.close()
+        raise ValueError(f"image too large: {image.width}x{image.height}")
+    return image
 
 
 @dataclass(frozen=True)
@@ -294,7 +313,7 @@ def _warp(
 
 def load_image(source: Path | bytes) -> Image.Image:
     """The first frame as RGB, transparency flattened onto white."""
-    image = Image.open(io.BytesIO(source) if isinstance(source, bytes) else source)
+    image = open_image(source)
     image.seek(0)
     if image.mode in ("RGBA", "LA", "P"):
         rgba = image.convert("RGBA")
