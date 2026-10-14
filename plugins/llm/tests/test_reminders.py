@@ -1597,6 +1597,40 @@ class TestReminderActionDelivery:
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
         return plugin
 
+    def test_accountless_action_reminder_gets_no_memories_or_instruction(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN an action reminder set without an account WHEN it fires THEN
+        the nick-keyed memories and @instruct are not loaded: the nick may be
+        someone else's account."""
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        mock_world.ircs = [active_irc]
+        mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
+        mocker.patch.object(plugin, "_gather_history", return_value=([], []))
+        memories = mocker.patch.object(plugin, "_get_user_memories", return_value=["secret"])
+        plugin.db.get_instruction.return_value = "secret instruction"
+        plugin.llm_service.assistant_request.return_value = AssistantResult(content="ok")
+
+        event_name = "llm_remind_action_1"
+        plugin._reminders[event_name] = make_reminder_row(
+            event_name=event_name,
+            nick="alice",
+            channel="#ops",
+            message="check build",
+            action_prompt="check build",
+        )
+        plugin._make_reminder_delivery_closure(
+            "alice", "#ops", "check build", event_name, action_prompt="check build"
+        )()
+
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        assert kwargs["memories"] == []
+        assert kwargs["user_instruction"] is None
+        memories.assert_not_called()
+        plugin.db.get_instruction.assert_not_called()
+
     def test_action_delivery_invokes_assistant_with_full_callbacks(
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
