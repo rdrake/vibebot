@@ -6516,19 +6516,6 @@ class LLM(callbacks.Plugin):
             self.log.exception("ambient inline-story check failed channel=%s", channel)
             return False
 
-    def _ambient_story_max_images(self, channel: str, text: str) -> int:
-        """Image budget for an ambient illustrated storybook.
-
-        Only an explicit "illustrate"/comic request reaches the storybook now
-        (a plain narrative mention is a prose-first INLINE tale with no image —
-        see ``_ambient_inline_story``), so this returns the full storybook
-        budget (``verseStorybookMaxImages``). The ``verseStoryAmbientMaxImages``
-        fallback stays for any non-illustrate brief that still reaches here.
-        """
-        if self._ambient_verse_intent(text) == "illustrate":
-            return int(self.registryValue("verseStorybookMaxImages", channel) or 3)
-        return int(self.registryValue("verseStoryAmbientMaxImages", channel) or 1)
-
     def _verse_chat_record_handler(
         self, preflight: PreflightResult
     ) -> Callable[[dict], _VerseToolResult] | None:
@@ -8144,7 +8131,10 @@ class LLM(callbacks.Plugin):
                             persona=persona,
                             brief=brief,
                             account=preflight.account,
-                            max_images=self._ambient_story_max_images(preflight.channel, text),
+                            max_images=int(
+                                self.registryValue("verseStorybookMaxImages", preflight.channel)
+                                or 3
+                            ),
                         )
                         return
                 # Verse-enabled channel + non-opted-in speaker: advertise the

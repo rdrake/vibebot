@@ -16,12 +16,6 @@ def test_storybook_config_defaults():
     assert int(group.verseStorybookImageTimeout()) == 45
 
 
-def test_story_ambient_max_images_config_default():
-    import llm.config as cfg
-
-    assert int(cfg.LLM.verseStoryAmbientMaxImages()) == 1
-
-
 def test_storybook_illustration_rules_scale_with_budget():
     from llm.service import _storybook_illustration_rules as rules
 
