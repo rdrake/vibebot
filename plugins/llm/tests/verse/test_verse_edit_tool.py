@@ -242,3 +242,75 @@ def test_verse_denial_message_names_both_reasons(tmp_path):
     assert "@verse opt-in" in payload["error"]
     assert "@rp" in payload["error"]
     assert "@versedit" in payload["error"]
+
+
+@pytest.mark.parametrize("kind", ["avatar", "dragon"])
+def test_verse_edit_add_entity_rejects_non_canon_kind(tmp_path, kind):
+    """kind='avatar' would mint a ghost avatar; an unknown kind would hit the
+    schema CHECK as an opaque IntegrityError. Both are rejected up front."""
+    store = VerseStore(tmp_path, "#chan")
+    result = dispatch_verse_edit(
+        store,
+        op="add_entity",
+        payload={"kind": kind, "name": "Smaug"},
+        authorized=True,
+        account="gm!acct",
+    )
+    assert result["status"] == "error"
+    assert "kind" in result["detail"]
+    assert store.find_entity_by_name("Smaug") is None
+
+
+def test_verse_edit_update_rename_onto_existing_name_rejected(tmp_path):
+    """Renaming an entity onto another active entity's name would create the
+    duplicate the add path already refuses."""
+    store = VerseStore(tmp_path, "#chan")
+    store.add_entity("npc", "Archie")
+    bob = store.add_entity("npc", "Bob")
+    result = dispatch_verse_edit(
+        store,
+        op="update_entity",
+        payload={"entity_id": bob, "name": "archie"},
+        authorized=True,
+        account="gm!acct",
+    )
+    assert result["status"] == "error"
+    assert "already exists" in result["detail"]
+    entity = store.get_entity(bob)
+    assert entity is not None and entity.name == "Bob"
+
+
+def test_verse_edit_update_recasing_own_name_allowed(tmp_path):
+    store = VerseStore(tmp_path, "#chan")
+    bob = store.add_entity("npc", "bob")
+    result = dispatch_verse_edit(
+        store,
+        op="update_entity",
+        payload={"entity_id": bob, "name": "Bob"},
+        authorized=True,
+        account="gm!acct",
+    )
+    assert result["status"] == "ok"
+    entity = store.get_entity(bob)
+    assert entity is not None and entity.name == "Bob"
+
+
+def test_verse_edit_integrity_error_is_reported(tmp_path, monkeypatch):
+    """A schema-constraint failure surfaces as status=error, not an opaque
+    'Tool execution failed.'"""
+    import sqlite3
+
+    store = VerseStore(tmp_path, "#chan")
+
+    def boom(**_kw):
+        raise sqlite3.IntegrityError("CHECK constraint failed: kind")
+
+    monkeypatch.setattr(store, "apply_direct", boom)
+    result = dispatch_verse_edit(
+        store,
+        op="add_entity",
+        payload={"kind": "npc", "name": "X"},
+        authorized=True,
+        account="gm!acct",
+    )
+    assert result == {"status": "error", "detail": "CHECK constraint failed: kind"}
