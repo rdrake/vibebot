@@ -3869,16 +3869,16 @@ class LLM(callbacks.Plugin):
             # Same per-feature caps as @ask/@draw/@code; owner/admin excluded.
             capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
         )
-        history, channel_history = self._gather_history(nick, channel)
-        memories = self._get_user_memories(nick)
-        user_instruction = self.db.get_instruction(nick)
+        caller = Identity(raw_nick=nick, account=account)
+        history, channel_history = self._gather_history(caller.key, channel)
+        memories = self._get_user_memories(caller.key)
+        user_instruction = self.db.get_instruction(caller.key)
         ask_prompt = self.registryValue(PROFILES[PROFILE_REMIND_ACTION].overlay_setting, channel)
         if fold_instruction_into_prompt:
             system_prompt = f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
             user_instruction = None
         else:
             system_prompt = ask_prompt
-        caller = Identity(raw_nick=nick, account=account)
         return self.llm_service.assistant_request(
             prompt=prompt,
             request_context=request_context,
