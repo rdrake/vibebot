@@ -90,8 +90,8 @@ with the verse storybook tool.
 | Command | Arguments | Description |
 |---------|-----------|-------------|
 | `@forget` | `[<channel>]` | Clear volatile conversation context: your own thread, plus the channel's shared recent history when run in that channel. Naming another channel clears only your own thread there. Requires `llm.ask`. |
-| `@memories` | `[<nick> \| del <id> [<id>...] \| edit <id> <text> \| clear \| cleanup [<nick>]]` | Manage stored facts. `del` takes several ids at once. The `<nick>` forms — viewing and cleaning up another user's memories — are owner-only. |
-| `@instruct` | `[<instruction> \| clear]` | Set a persistent instruction that rides `@ask`, plain mentions, `@rp` and verse turns, `@code`, and reminder fires. `@draw` ignores it. Empty shows the current one. |
+| `@memories` | `[<nick> \| del <id> [<id>...] \| edit <id> <text> \| clear \| cleanup [<nick>]]` | Manage stored facts. `del` takes several ids at once. The `<nick>` forms — viewing and cleaning up another user's memories — are owner-only. Needs an authenticated account. |
+| `@instruct` | `[<instruction> \| clear]` | Set a persistent instruction that rides `@ask`, plain mentions, `@rp` and verse turns, `@code`, and reminder fires. `@draw` ignores it. Empty shows the current one. Needs an authenticated account. |
 
 ```
 @memories
@@ -109,7 +109,7 @@ See [memory and instructions](../user/memory.md) for full details.
 | Command | Arguments | Description |
 |---------|-----------|-------------|
 | `@remind` | `[<text> \| list \| del <id> [<id>...] \| clear \| admin <list\|del\|clear> <nick> [<id>...]]` | Natural-language reminders, plus your scheduled tasks in `list`, `del` and `clear`. `del` takes several ids at once. Requires `llm.ask`; the `admin` subcommands are owner-only. |
-| `@tz` | `[<zone> \| clear]` | Set the IANA time zone reminders read absolute times in, such as `America/Toronto`. Unset, the bot uses your client's CTCP TIME clock, else UTC. Empty shows the current zone. |
+| `@tz` | `[<zone> \| clear]` | Set the IANA time zone reminders read absolute times in, such as `America/Toronto`. Unset, the bot uses your client's CTCP TIME clock, else UTC. Empty shows the current zone. Needs an authenticated account. |
 
 Reminders that ask the bot to *do* something (look up, check, fetch,
 summarise) run as an LLM query at fire time and appear as `[auto]` in
@@ -170,8 +170,8 @@ in conversation, "who is eck?" reaches the same `WHOIS` through the
 `@verseopt`, `@verse`, `@look` and `@who` must be typed in a
 verse-enabled channel and need the `llm.verse` capability. `@rp` needs
 `llm.verse` too, but answers as ordinary chat when the channel has no
-verse or you have no avatar. `@avatar` needs neither and works
-anywhere, including PM.
+verse or you have no avatar. `@avatar` needs neither capability and works
+anywhere, including PM, but needs an authenticated account.
 
 | Command | Arguments | Description |
 |---------|-----------|-------------|
@@ -180,7 +180,7 @@ anywhere, including PM.
 | `@verse` | | Show your current scene in one line. |
 | `@look` | `[<target>]` | Describe your scene or a named entity. |
 | `@who` | | List active avatars and their locations. |
-| `@avatar` | `[<persona> \| clear]` | Set the persona that shapes your verse avatar. Independent of `@instruct`. |
+| `@avatar` | `[<persona> \| clear]` | Set the persona that shapes your verse avatar. Independent of `@instruct`. Needs an authenticated account. |
 
 ### rp
 

@@ -3954,6 +3954,30 @@ class TestInvalidCommandRouting:
         captured["target"]()  # run the worker
         plugin._dispatch_with_verse_routing.assert_not_called()
 
+    def test_pm_duplicate_filter_is_per_sender(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """GIVEN alice and bob both PM "hi" within the dedup window THEN both
+        get a dispatch. In a PM the preflight channel is the bot's own nick, so
+        keying the filter on it put every PM sender in one bucket."""
+        started: list[str] = []
+
+        class _FakeThread:
+            def __init__(self, target, name=None, daemon=None):  # type: ignore[no-untyped-def]
+                pass
+
+            def start(self) -> None:
+                started.append("x")
+
+        mocker.patch("llm.plugin.world.SupyThread", _FakeThread)
+        for nick in ("alice", "bob", "alice"):
+            msg = mocker.MagicMock(nick=nick)
+            preflight = mocker.MagicMock(blocked=False, nick=nick, channel="testbot", account=None)
+            plugin._dispatch_addressed_async(mock_irc, msg, "hi", preflight, entry_route="pm")
+
+        # alice, bob; alice's repeat is the duplicate.
+        assert len(started) == 2
+
 
 # =========================================================================
 # Integration tests (real DB + context)

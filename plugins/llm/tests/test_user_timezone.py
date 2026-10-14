@@ -33,6 +33,10 @@ def _replies(mock_irc: MagicMock) -> list[str]:
 
 
 class TestTzCommand:
+    @pytest.fixture(autouse=True)
+    def _authenticated(self, plugin_env) -> None:
+        plugin_env[1].state.nickToAccount.return_value = "testnick"
+
     def test_sets_valid_zone(self, plugin_env) -> None:
         plugin, mock_irc, mock_msg = plugin_env
 

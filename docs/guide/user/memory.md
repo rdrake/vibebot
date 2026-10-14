@@ -65,7 +65,9 @@ Your memories are filed under your account once you authenticate, and under your
 Two consequences:
 
 - Memories and candidates merge. An instruction or a persona already set on the account wins, and the nick's copy is dropped.
-- Facts saved under a nick you never authenticate with stay attached to the nick. Anyone using that nick later inherits them, so treat an unauthenticated session as shared.
+- Facts saved under a nick you never authenticate with stay attached to the nick until you authenticate on it.
+
+`@memories`, `@instruct`, and `@avatar` need an authenticated account, and the bot reads neither your memories nor your instruction while you aren't authenticated. Holding someone's nick doesn't give you their data.
 
 ## Custom instructions
 
