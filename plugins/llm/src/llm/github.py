@@ -27,6 +27,10 @@ MAX_CHARS = 12_000
 # Per-file patch excerpt: enough to show what changed, not the whole diff.
 MAX_PATCH_CHARS = 1_500
 TIMEOUT_SECONDS = 10
+# Bytes read from one response. A PR's file list with patches runs to a few
+# hundred KB; an 80 MB raw file must not cost 160 MB of RAM to clip to 12 KB.
+# JSON cut off here fails to parse, and the digest falls back to urlContext.
+MAX_FETCH_BYTES = 2_000_000
 
 Fetch = Callable[[str, bool], str]
 
@@ -40,7 +44,7 @@ def http_fetch(url: str, raw: bool = False) -> str:
     accept = "application/vnd.github.raw" if raw else "application/vnd.github+json"
     req = urllib.request.Request(url, headers={"User-Agent": "VibeBot/8", "Accept": accept})
     with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:  # noqa: S310 — fixed hosts
-        return resp.read().decode("utf-8", errors="replace")
+        return resp.read(MAX_FETCH_BYTES).decode("utf-8", errors="replace")
 
 
 _REPO = r"/(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+)"
