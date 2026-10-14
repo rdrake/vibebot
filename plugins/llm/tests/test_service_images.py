@@ -581,6 +581,7 @@ class TestCleanupWithImages:
         (Path(str(tmp_path)) / "img_ghi.jpg").write_bytes(b"jpg")
         (Path(str(tmp_path)) / "img_jkl.jpeg").write_bytes(b"jpeg")
         (Path(str(tmp_path)) / "img_mno.webp").write_bytes(b"webp")
+        (Path(str(tmp_path)) / "img_pqr.gif").write_bytes(b"gif")
         (Path(str(tmp_path)) / "other.txt").write_text("ignored")
 
         # Set max_files to 0 to force cleanup of all
@@ -592,6 +593,7 @@ class TestCleanupWithImages:
         assert not (Path(str(tmp_path)) / "img_ghi.jpg").exists()
         assert not (Path(str(tmp_path)) / "img_jkl.jpeg").exists()
         assert not (Path(str(tmp_path)) / "img_mno.webp").exists()
+        assert not (Path(str(tmp_path)) / "img_pqr.gif").exists()
         assert (Path(str(tmp_path)) / "other.txt").exists()
 
 
@@ -1263,7 +1265,8 @@ class TestImageGenerationPaths:
         assert attempt.call_args.kwargs["aspect"] == "portrait"
 
     def test_b64_json_save_failure(self) -> None:
-        """GIVEN b64_json data but save fails WHEN _attempt_image_generation called THEN returns error."""
+        """GIVEN b64_json data but save fails WHEN _attempt_image_generation called
+        THEN returns error, still carrying the generation the provider billed."""
         image_data = self.mocker.Mock()
         image_data.url = None
         image_data.b64_json = "base64data"
@@ -1272,13 +1275,16 @@ class TestImageGenerationPaths:
         mock_response.data = [image_data]
 
         self.mocker.patch("llm.service.litellm.image_generation", return_value=mock_response)
-        self.mocker.patch.object(self.service, "_extract_usage", return_value=(0, 0, 0.0))
+        self.mocker.patch.object(self.service, "_extract_usage", return_value=(3, 4, 0.07))
         self.mocker.patch.object(self.service, "save_image_to_http", return_value=None)
 
         result = self.service._attempt_image_generation("cat", "dall-e-3", 30)
 
         assert result is not None
         assert result.error is not None
+        assert result.cost == pytest.approx(0.07)
+        assert (result.prompt_tokens, result.completion_tokens) == (3, 4)
+        assert result.model == "dall-e-3"
 
     def test_timeout_not_stashed(self) -> None:
         """GIVEN image_generation times out and stashing fails WHEN called THEN returns error."""

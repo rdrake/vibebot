@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import litellm
 import pytest
 from llm.assistant import (
     _BOOKKEEPING_TOOLS,
@@ -1796,6 +1797,50 @@ class TestMetaCompletion:
         assert result.prompt_tokens == 220
         assert result.completion_tokens == 110
         assert result.cost == pytest.approx(0.052)
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(
+                litellm.Timeout(message="slow", model="m", llm_provider="xai"), id="timeout"
+            ),
+            pytest.param(RuntimeError("boom"), id="other"),
+        ],
+    )
+    @pytest.mark.parametrize("stashed", [True, False])
+    def test_failed_turn_keeps_the_spend_before_the_failure(
+        self, service: LLMService, mocker: MockerFixture, error: Exception, stashed: bool
+    ) -> None:
+        """GIVEN a step and a tool already billed WHEN the next step fails
+        THEN the result still carries that cost, tokens and model."""
+        tool_call = make_tool_call("web_search", {"query": "test"}, call_id="call_1")
+        mocker.patch(
+            "llm.service.litellm.completion",
+            side_effect=[make_completion_response(None, tool_calls=[tool_call]), error],
+        )
+        mock_executor = mocker.MagicMock()
+        mock_executor.grounding_used = False
+        mock_executor.accumulated_prompt_tokens = 200
+        mock_executor.accumulated_completion_tokens = 100
+        mock_executor.accumulated_cost = 0.05
+        mock_executor.execute.return_value = ToolResult(content='{"results": []}')
+        mocker.patch("llm.assistant.AssistantToolExecutor", return_value=mock_executor)
+        mocker.patch.object(service, "_extract_usage", return_value=(10, 5, 0.001))
+        mocker.patch.object(service, "_stash_timeout", return_value=stashed)
+
+        result = service.assistant_completion(
+            prompt="search for test",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+        )
+
+        assert result.cost == pytest.approx(0.051)
+        assert result.prompt_tokens == 210
+        assert result.completion_tokens == 105
+        assert result.model
 
     @pytest.mark.parametrize(
         ("route_profile", "expected_task_type"),

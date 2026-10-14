@@ -206,6 +206,44 @@ class TestDigest:
         assert github.digest("https://github.com/o/r/pull/1", fetch=fetch) is None
 
 
+class _Body:
+    """urlopen stand-in that serves ``data`` and records each read size."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.reads: list[int | None] = []
+
+    def read(self, amount: int | None = None) -> bytes:
+        self.reads.append(amount)
+        return self.data if amount is None else self.data[:amount]
+
+    def __enter__(self) -> _Body:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
+class TestHttpFetchIsBounded:
+    def test_huge_raw_file_is_read_only_up_to_the_cap(self, mocker) -> None:
+        """GIVEN an 80 MB raw file WHEN fetched THEN only the cap is read, not the body."""
+        body = _Body(b"x" * (github.MAX_FETCH_BYTES * 4))
+        mocker.patch("urllib.request.urlopen", return_value=body)
+
+        text = github.http_fetch("https://raw.githubusercontent.com/o/r/main/big.txt", True)
+
+        assert body.reads == [github.MAX_FETCH_BYTES]
+        assert len(text) == github.MAX_FETCH_BYTES
+
+    def test_oversized_json_falls_back_with_none(self, mocker) -> None:
+        """GIVEN JSON past the cap WHEN digested THEN the truncated text fails
+        to parse and the caller keeps its urlContext path."""
+        huge = json.dumps({"title": "t", "body": "b" * github.MAX_FETCH_BYTES}).encode()
+        mocker.patch("urllib.request.urlopen", return_value=_Body(huge))
+
+        assert github.digest("https://github.com/o/r/pull/1") is None
+
+
 class TestUrlCompletionUsesDigest:
     def test_github_link_skips_the_model(self, make_service, mocker) -> None:
         service, _ = make_service()
