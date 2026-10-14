@@ -4544,7 +4544,9 @@ class LLM(callbacks.Plugin):
         """
         # Suppress a duplicate of the same addressed line (relay echo / double
         # entry-point) before spending an LLM turn or spawning a second story.
-        if self._is_duplicate_dispatch(preflight.channel, text):
+        # A PM's "channel" is the bot's own nick; bucket by sender instead.
+        bucket = preflight.channel if ircutils.isChannel(preflight.channel) else msg.nick
+        if self._is_duplicate_dispatch(bucket, text):
             return
 
         def _work() -> None:
