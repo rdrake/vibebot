@@ -4007,19 +4007,6 @@ class TestVerseStorybook:
         draw = plugin._verse_context_for(pf, "who is Archie?")
         assert _VERSE_CHAT_FLAVOUR_NUDGE not in draw
 
-    def test_ambient_story_max_images_by_intent(self, plugin_env, mocker):
-        """A plain/recount story uses the small ambient cap; an explicit
-        'illustrate' request opens the full storybook budget."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect(
-                {"verseStoryAmbientMaxImages": 1, "verseStorybookMaxImages": 5}
-            )
-        )
-        assert plugin._ambient_story_max_images("#c", "what have the lads done today") == 1
-        assert plugin._ambient_story_max_images("#c", "the lads stormed the chippy") == 1
-        assert plugin._ambient_story_max_images("#c", "illustrate the lads' saga") == 5
-
     def test_duplicate_dispatch_suppressed_within_window(self, plugin_env, mocker):
         """First identical line passes; an immediate echo is dropped; a fresh
         line and a different channel both pass."""

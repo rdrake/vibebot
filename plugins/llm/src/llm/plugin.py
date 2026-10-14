@@ -6544,19 +6544,6 @@ class LLM(callbacks.Plugin):
             self.log.exception("ambient inline-story check failed channel=%s", channel)
             return False
 
-    def _ambient_story_max_images(self, channel: str, text: str) -> int:
-        """Image budget for an ambient illustrated storybook.
-
-        Only an explicit "illustrate"/comic request reaches the storybook now
-        (a plain narrative mention is a prose-first INLINE tale with no image —
-        see ``_ambient_inline_story``), so this returns the full storybook
-        budget (``verseStorybookMaxImages``). The ``verseStoryAmbientMaxImages``
-        fallback stays for any non-illustrate brief that still reaches here.
-        """
-        if self._ambient_verse_intent(text) == "illustrate":
-            return int(self.registryValue("verseStorybookMaxImages", channel) or 3)
-        return int(self.registryValue("verseStoryAmbientMaxImages", channel) or 1)
-
     def _verse_chat_record_handler(
         self, preflight: PreflightResult
     ) -> Callable[[dict], _VerseToolResult] | None:
@@ -6630,30 +6617,6 @@ class LLM(callbacks.Plugin):
             ttl = int(self.registryValue("verseRoleplayStickyTtlSeconds", preflight.channel) or 0)
             self._roleplay_sticky[key] = (now + ttl) if ttl > 0 else float("inf")
             return True
-
-    def _build_verse_handlers_for(self, channel: str) -> dict | None:
-        """Build the verse extra-handlers dict for ``channel``, plumbing
-        the per-channel ``verseAutoEntityMaxNamesPerCall`` into the
-        dispatch closure.
-
-        Looks up the channel's verse store + most-recent active avatar
-        and binds handlers to that pair. Returns None if there is no
-        verse store or no active avatar in the channel.
-
-        The dispatch call site (which already has a full ``VerseRoute``
-        from ``_verse_route_for``) prefers
-        ``_build_verse_handlers_for_route`` so its avatar binding stays
-        caller-specific; this helper is the seam that the registry-
-        plumbing test relies on.
-        """
-        store = self._get_or_create_verse_store(channel)
-        if store is None:
-            return None
-        avatars = store.list_entities_by_kind("avatar", status="active")
-        if not avatars:
-            return None
-        max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
-        return make_verse_extra_handlers(store, avatars[0].id, max_actors=max_actors)
 
     def _build_verse_handlers_for_route(self, channel: str, route: VerseRoute) -> dict:
         """Build verse handlers for an existing ``VerseRoute``.
@@ -8196,7 +8159,10 @@ class LLM(callbacks.Plugin):
                             persona=persona,
                             brief=brief,
                             account=preflight.account,
-                            max_images=self._ambient_story_max_images(preflight.channel, text),
+                            max_images=int(
+                                self.registryValue("verseStorybookMaxImages", preflight.channel)
+                                or 3
+                            ),
                         )
                         return
                 # Verse-enabled channel + non-opted-in speaker: advertise the

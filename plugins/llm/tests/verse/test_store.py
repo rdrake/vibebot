@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import sqlite3
 import threading
 import time
 from pathlib import Path
 
 import pytest
 from llm.verse.store import db_path_for_channel
+
+from .conftest import add_alias, link_avatar
 
 
 class TestDbPathForChannel:
@@ -517,32 +520,14 @@ class TestEventsCrud:
 
 
 class TestAvatarLinkCrud:
-    def test_link_inserts_row(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        eid = store.add_entity("avatar", "Alice", "")
-        store.link_avatar(eid, nick="Alice", account=None)
-        assert store.find_avatar_by_nick("alice") == eid
-
     def test_link_with_account(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
         store = VerseStore(verse_db_dir, "#afnet")
         eid = store.add_entity("avatar", "Alice", "")
-        store.link_avatar(eid, nick="Alice", account="alice@network")
+        link_avatar(store, eid, nick="Alice", account="alice@network")
         assert store.find_avatar_by_account("alice@network") == eid
         assert store.find_avatar_by_account("Alice@Network") is None  # case-sensitive
-
-    def test_link_upserts_existing_row(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        eid = store.add_entity("avatar", "Alice", "")
-        store.link_avatar(eid, nick="Alice", account=None)
-        store.link_avatar(eid, nick="Bob", account=None)
-        assert store.find_avatar_by_nick("alice") is None
-        assert store.find_avatar_by_nick("bob") == eid
 
     def test_find_unknown_nick_returns_none(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
@@ -561,7 +546,7 @@ class TestAvatarLinkCrud:
 
         store = VerseStore(verse_db_dir, "#afnet")
         eid = store.add_entity("avatar", "Alice", "")
-        store.link_avatar(eid, nick="Alice")
+        link_avatar(store, eid, nick="Alice")
         for variant in ("ALICE", "alice", "aLiCe"):
             assert store.find_avatar_by_nick(variant) == eid
 
@@ -570,7 +555,7 @@ class TestAvatarLinkCrud:
 
         store = VerseStore(verse_db_dir, "#afnet")
         eid = store.add_entity("avatar", "Alice", "")
-        store.link_avatar(eid, nick="Alice")
+        link_avatar(store, eid, nick="Alice")
         store.unlink_avatar(eid)
         assert store.find_avatar_by_nick("Alice") is None
         entity = store.get_entity(eid)
@@ -582,7 +567,7 @@ class TestAvatarLinkCrud:
 
         store = VerseStore(verse_db_dir, "#afnet")
         eid = store.add_entity("avatar", "Bob", "")
-        store.link_avatar(eid, nick="Bob", account="bob@net")
+        link_avatar(store, eid, nick="Bob", account="bob@net")
         store.unlink_avatar(eid)
         # Both effects visible after single call
         assert store.find_avatar_by_nick("Bob") is None
@@ -603,8 +588,8 @@ class TestAvatarLinkCrud:
         store = VerseStore(verse_db_dir, "#afnet")
         eid_a = store.add_entity("avatar", "Alice", "")
         eid_b = store.add_entity("avatar", "Bob", "")
-        store.link_avatar(eid_a, nick="Alice")
-        store.link_avatar(eid_b, nick="Bob")
+        link_avatar(store, eid_a, nick="Alice")
+        link_avatar(store, eid_b, nick="Bob")
         assert store.find_avatar_by_nick("alice") == eid_a
         assert store.find_avatar_by_nick("bob") == eid_b
         store.unlink_avatar(eid_a)
@@ -930,89 +915,6 @@ class TestProposalsCRUD:
         assert [r.id for r in store.list_proposals(status="pending")] == [p2, p1]
         assert [r.id for r in store.list_proposals(cycle_id="c-1")] == [p1]
 
-    def test_get_proposal_unknown_returns_none(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        assert store.get_proposal("nope") is None
-
-    def test_get_proposal_known_returns_proposal(self, verse_db_dir: Path) -> None:
-        import json as _json
-        import time as _time
-        import uuid as _uuid
-
-        from llm.verse.store import Proposal, VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        pid = _uuid.uuid4().hex
-        with store.write_transaction() as conn:
-            conn.execute(
-                "INSERT INTO proposals (id, created_at, cycle_id, op, payload, confidence, "
-                "provenance, status, reviewer, reviewed_at) VALUES (?,?,?,?,?,?,?,'pending',NULL,NULL)",
-                (
-                    pid,
-                    _time.time(),
-                    "c-1",
-                    "add_event",
-                    _json.dumps({"summary": "x", "entity_ids": [1]}),
-                    0.4,
-                    "line-2",
-                ),
-            )
-        p = store.get_proposal(pid)
-        assert isinstance(p, Proposal)
-        assert p.id == pid
-        assert p.payload == {"summary": "x", "entity_ids": [1]}
-        assert p.confidence == 0.4
-        assert p.status == "pending"
-
-    def test_update_proposal_status_records_reviewer(self, verse_db_dir: Path) -> None:
-        import json as _json
-        import time as _time
-        import uuid as _uuid
-
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        pid = _uuid.uuid4().hex
-        with store.write_transaction() as conn:
-            conn.execute(
-                "INSERT INTO proposals (id, created_at, cycle_id, op, payload, confidence, "
-                "provenance, status, reviewer, reviewed_at) VALUES (?,?,?,?,?,?,?,'pending',NULL,NULL)",
-                (pid, _time.time(), "c-1", "add_event", _json.dumps({"summary": "x"}), 0.9, ""),
-            )
-        store.update_proposal_status(pid, status="approved", reviewer="alice")
-        p = store.get_proposal(pid)
-        assert p is not None
-        assert p.status == "approved"
-        assert p.reviewer == "alice"
-        assert p.reviewed_at is not None and p.reviewed_at > 0
-
-    def test_update_proposal_status_rejects_invalid(self, verse_db_dir: Path) -> None:
-        import json as _json
-        import time as _time
-        import uuid as _uuid
-
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        pid = _uuid.uuid4().hex
-        with store.write_transaction() as conn:
-            conn.execute(
-                "INSERT INTO proposals (id, created_at, cycle_id, op, payload, confidence, "
-                "provenance, status, reviewer, reviewed_at) VALUES (?,?,?,?,?,?,?,'pending',NULL,NULL)",
-                (pid, _time.time(), "c-1", "add_event", _json.dumps({"summary": "x"}), 0.9, ""),
-            )
-        with pytest.raises(ValueError):
-            store.update_proposal_status(pid, status="weird", reviewer="alice")
-
-    def test_update_proposal_status_unknown_id_raises(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        with pytest.raises(LookupError):
-            store.update_proposal_status("nope", status="approved", reviewer="alice")
-
     def test_list_proposals_status_approved_filter(self, verse_db_dir: Path) -> None:
         import json as _json
         import time as _time
@@ -1045,29 +947,6 @@ class TestProposalsCRUD:
             )
         rows = store.list_proposals(status="approved")
         assert [r.id for r in rows] == [approved]
-
-
-class TestListActiveVerses:
-    def test_returns_paths_for_existing_dbs(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore, list_active_verses
-
-        VerseStore(verse_db_dir, "#afnet")
-        VerseStore(verse_db_dir, "#forest")
-        result = list_active_verses(verse_db_dir)
-        assert len(result) == 2
-        for path in result:
-            assert path.suffix == ".db"
-            assert path.exists()
-
-    def test_empty_dir_returns_empty_list(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import list_active_verses
-
-        assert list_active_verses(verse_db_dir) == []
-
-    def test_missing_dir_returns_empty_list(self, tmp_path: Path) -> None:
-        from llm.verse.store import list_active_verses
-
-        assert list_active_verses(tmp_path / "nope") == []
 
 
 class TestWriteLockConcurrency:
@@ -1194,22 +1073,24 @@ class TestReplaceEventsWithLoreDigest:
         assert rows[0][1] == "A digest of five small events."
         assert rows[0][2] == "llm"
 
-    def test_rolls_back_on_invalid_source(self, verse_db_dir: Path) -> None:
+    def test_rolls_back_when_digest_insert_fails(
+        self, verse_db_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from llm.verse.store import VerseStore
 
         from .conftest import insert_event_at
 
         store = VerseStore(verse_db_dir, "#afnet")
         oid = insert_event_at(store, summary="e", entity_ids=[], source="avatar", ts=1.0)
-        # Force a CHECK violation by exercising the inner helper with a
-        # source not in the events.source CHECK list.
-        with pytest.raises(Exception):  # noqa: B017,PT011
-            store._replace_events_with_source(  # type: ignore[attr-defined]
-                delete_ids=[oid],
-                summary="x",
-                entity_ids=(),
-                ts=2.0,
-                source="not_a_real_source",
+
+        def boom(*_a, **_k):
+            raise sqlite3.IntegrityError("forced")
+
+        # The DELETE has already run inside the transaction when the insert fails.
+        monkeypatch.setattr(store, "add_event", boom)
+        with pytest.raises(sqlite3.IntegrityError):
+            store.replace_events_with_lore_digest(
+                delete_ids=[oid], summary="x", entity_ids=(), ts=2.0
             )
         # original event still present, no digest row created
         with store.read_connection() as conn:
@@ -1434,27 +1315,21 @@ class TestEventActorAllSites:
 class TestAliases:
     def test_resolve_alias_case_insensitive(self, store):
         t = store.add_entity("npc", "Toby")
-        store.add_alias(t, "Tobes")
+        add_alias(store, t, "Tobes")
         assert store.find_entity_by_name_or_alias("tobes").id == t
 
     def test_exact_active_name_beats_alias(self, store):
         real = store.add_entity("npc", "Tobes")
         other = store.add_entity("npc", "Toby")
-        store.add_alias(other, "Tobes")
+        add_alias(store, other, "Tobes")
         assert store.find_entity_by_name_or_alias("Tobes").id == real
-
-    def test_alias_pk_dedups_case_variants(self, store):
-        t = store.add_entity("npc", "Toby")
-        store.add_alias(t, "Tobes")
-        store.add_alias(t, "tobes")  # COLLATE NOCASE PK -> same row
-        assert store.list_aliases(t) == ["Tobes"]
 
 
 class TestSceneRetrieval:
     def test_match_word_boundary_and_alias(self, store):
         h = store.add_entity("npc", "Harry")
         t = store.add_entity("npc", "Toby")
-        store.add_alias(t, "Tobes")
+        add_alias(store, t, "Tobes")
         store.add_entity("npc", "Di")  # 2 chars -> skipped (too short)
         got = {e.id for e in store.match_entities_in_text("did Harry and Tobes fight? ask Di.")}
         assert got == {h, t}
