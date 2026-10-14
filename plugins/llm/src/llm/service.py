@@ -8963,7 +8963,7 @@ Examples (echo → action_prompt: ""):
         # Validate drop indices
         all_indices: list[int] = []
         for idx in drop:
-            if not isinstance(idx, int) or idx < 0 or idx >= num_memories:
+            if not isinstance(idx, int) or isinstance(idx, bool) or not 0 <= idx < num_memories:
                 return CleanupResult(error=f"Invalid drop index: {idx}")
             all_indices.append(idx)
 
@@ -8977,7 +8977,7 @@ Examples (echo → action_prompt: ""):
             if not isinstance(indices, list) or len(indices) < 2:
                 return CleanupResult(error=f"Merge needs at least 2 indices: {entry}")
             for idx in indices:
-                if not isinstance(idx, int) or idx < 0 or idx >= num_memories:
+                if not isinstance(idx, int) or isinstance(idx, bool) or not 0 <= idx < num_memories:
                     return CleanupResult(error=f"Merge index out of range: {entry}")
                 all_indices.append(idx)
             if not isinstance(text, str) or not text.strip():
