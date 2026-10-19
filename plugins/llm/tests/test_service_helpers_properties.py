@@ -17,6 +17,7 @@ from llm.service import (
     PENDING_INITIAL_BACKOFF_SECONDS,
     PENDING_MAX_BACKOFF_SECONDS,
     LLMService,
+    exponential_backoff,
     truncate_to_byte_budget,
     truncate_to_word_boundary,
 )
@@ -163,3 +164,24 @@ def test_cjk_teaser_keeps_the_url_on_the_line() -> None:
 def test_label_fallback_respects_a_tiny_budget() -> None:
     """A teaser that trims to nothing no longer returns the 11-char label into 2 chars."""
     assert LLM._trim_long_reply_teaser("--- x", 2) == ""
+
+
+@given(
+    n=_attempts, base=integers(min_value=1, max_value=60), cap=integers(min_value=60, max_value=600)
+)
+def test_shared_ladder_doubles_until_the_cap(n: int, base: int, cap: int) -> None:
+    """The one ladder both queue retries climb: doubling from ``base``, held at ``cap``."""
+    delay = exponential_backoff(n, base=base, cap=cap)
+    assert delay == min(base * 2**n, cap)
+    assert exponential_backoff(n + 1, base=base, cap=cap) >= delay
+
+
+def test_delivery_retry_ladder_is_unchanged() -> None:
+    """IRC delivery retries wait 15, 30, 60, then 120 seconds."""
+    from llm.plugin import LLM
+
+    ladder = [
+        exponential_backoff(n, base=LLM._DELIVERY_BASE_BACKOFF, cap=LLM._DELIVERY_MAX_BACKOFF)
+        for n in range(5)
+    ]
+    assert ladder == [15, 30, 60, 120, 120]

@@ -206,6 +206,16 @@ PENDING_CLAIM_LIMIT = 8
 PENDING_LEASE_SECONDS = 120
 
 
+def exponential_backoff(attempt: int, *, base: float, cap: float) -> float:
+    """``base`` doubled once per earlier attempt, never more than ``cap``.
+
+    The one retry ladder for the pending-tasks queue: the completion retries
+    (``LLMService._compute_backoff``) and the IRC delivery retries
+    (``LLM._deliver_pending_result``) climb it with their own base and cap.
+    """
+    return min(base * (2**attempt), cap)
+
+
 def _no_redirect_opener() -> Any:
     """urllib opener that refuses every 3xx (fail closed): a redirect could
     point at a host the original URL check never saw, or carry a bearer token
@@ -3697,9 +3707,8 @@ class LLMService:
         """
         if task_type == "animate":
             return ANIMATE_POLL_INTERVAL_SECONDS
-        return min(
-            PENDING_INITIAL_BACKOFF_SECONDS * (2**attempt_count),
-            PENDING_MAX_BACKOFF_SECONDS,
+        return exponential_backoff(
+            attempt_count, base=PENDING_INITIAL_BACKOFF_SECONDS, cap=PENDING_MAX_BACKOFF_SECONDS
         )
 
     def _retry_completion(self, task, request_data: dict) -> PendingTaskResult:
