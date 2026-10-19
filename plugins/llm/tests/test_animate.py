@@ -602,11 +602,11 @@ class TestAnimatePlanner:
         )
 
     def _wire(self, plugin, mocker, *, canon: str | None = None):
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._result(mocker)
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._result(mocker)
         mocker.patch.object(plugin, "_verse_context_for", return_value=canon)
 
-    def test_animate_routes_through_assistant_request(self, plugin_env, mocker) -> None:
+    def test_animate_routes_through_assistant_completion(self, plugin_env, mocker) -> None:
         """GIVEN @animate WHEN it runs THEN it dispatches on the animate profile."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
@@ -614,9 +614,9 @@ class TestAnimatePlanner:
 
         plugin.animate(mock_irc, mock_msg, ["a", "pine", "forest"])
 
-        ctx = plugin.llm_service.assistant_request.call_args.kwargs["request_context"]
-        assert ctx.profile == "animate"
-        assert ctx.entry_route == "animate"
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
+        assert kwargs["route_profile"] == "animate"
+        assert kwargs["entry_route"] == "animate"
 
     def test_canon_reference_layers_the_lore_block(self, plugin_env, mocker) -> None:
         """@animate of canon puts the lore in the overlay slot, like @draw."""
@@ -626,7 +626,7 @@ class TestAnimatePlanner:
 
         plugin.animate(mock_irc, mock_msg, ["the", "stinky", "lads"])
 
-        sp = plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"]
+        sp = plugin.llm_service.assistant_completion.call_args.kwargs["system_prompt"]
         assert sp is not None and "Archie: windbag" in sp
 
     def test_no_grounding_without_canon(self, plugin_env, mocker) -> None:
@@ -637,7 +637,7 @@ class TestAnimatePlanner:
 
         plugin.animate(mock_irc, mock_msg, ["a", "pine", "forest"])
 
-        assert plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"] is None
+        assert plugin.llm_service.assistant_completion.call_args.kwargs["system_prompt"] is None
 
     def test_video_tool_is_wired_to_the_requester(self, plugin_env, mocker) -> None:
         """The planner's only generator is generate_video, bound to this caller.
@@ -653,7 +653,7 @@ class TestAnimatePlanner:
 
         plugin.animate(mock_irc, mock_msg, ["a", "pine", "forest"])
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert kwargs.get("draw_fn") is None
         kwargs["animate_fn"]("three men wade into grey surf")
         # The resolved Caller: the stashed job is keyed on the account and
@@ -694,7 +694,7 @@ class TestAnimatePlanner:
             kwargs["animate_fn"]("Three men wade into grey surf at dawn, handheld.")
             return self._result(mocker)
 
-        plugin.llm_service.assistant_request.side_effect = _plan
+        plugin.llm_service.assistant_completion.side_effect = _plan
 
         plugin.animate(mock_irc, mock_msg, ["a", "pine", "forest"])
 
@@ -717,7 +717,7 @@ class TestAnimatePlanner:
             kwargs["animate_fn"]("second script")
             return self._result(mocker)
 
-        plugin.llm_service.assistant_request.side_effect = _plan
+        plugin.llm_service.assistant_completion.side_effect = _plan
 
         plugin.animate(mock_irc, mock_msg, ["a", "pine", "forest"])
 
@@ -742,7 +742,7 @@ class TestAnimatePlanner:
         plugin.animate(mock_irc, mock_msg, ["a", "pine", "forest"])
 
         mock_irc.error.assert_called_once()
-        plugin.llm_service.assistant_request.assert_not_called()
+        plugin.llm_service.assistant_completion.assert_not_called()
 
 
 class TestJobMarkerPoisoning:

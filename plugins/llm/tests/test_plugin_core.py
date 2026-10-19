@@ -2735,7 +2735,7 @@ class TestPreflightOptionalAccountTag:
 
 
 class TestChatProfileBridgeWiring:
-    """Tests that _ask_impl passes extra_tools/extra_handlers to assistant_request."""
+    """Tests that _ask_impl passes extra_tools/extra_handlers to assistant_completion."""
 
     def _make_assistant_result(self) -> AssistantResult:
         return AssistantResult(
@@ -2747,7 +2747,7 @@ class TestChatProfileBridgeWiring:
 
     def test_passes_bridge_extras_when_enabled(self, plugin_env, mocker: MockerFixture):
         """GIVEN bridgeEnabled=True with allowed plugins WHEN ask is called
-        THEN assistant_request receives extra_tools (list) and extra_handlers (dict)."""
+        THEN assistant_completion receives extra_tools (list) and extra_handlers (dict)."""
         plugin, mock_irc, mock_msg = plugin_env
 
         # Override registry: enable bridge with one allowed plugin.
@@ -2764,13 +2764,13 @@ class TestChatProfileBridgeWiring:
         mocker.patch("llm.limnoria_bridge.enumerate_commands", return_value=[fake_cmd])
 
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_assistant_result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_assistant_result()
 
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
-        plugin.llm_service.assistant_request.assert_called_once()
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        plugin.llm_service.assistant_completion.assert_called_once()
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         extra_tools = kwargs.get("extra_tools")
         extra_handlers = kwargs.get("extra_handlers")
         assert extra_tools is not None and len(extra_tools) == 2
@@ -2783,20 +2783,20 @@ class TestChatProfileBridgeWiring:
 
     def test_omits_bridge_extras_when_disabled(self, plugin_env, mocker: MockerFixture):
         """GIVEN bridgeEnabled=False (default) WHEN ask is called
-        THEN assistant_request receives extra_tools=None and extra_handlers=None."""
+        THEN assistant_completion receives extra_tools=None and extra_handlers=None."""
         plugin, mock_irc, mock_msg = plugin_env
 
         # Default conftest registry has bridgeEnabled=False. The aurora tool is
         # on by default, so turn it off to see the bridge's absence alone.
         plugin.registryValue.side_effect = make_registry_side_effect({"auroraEnabled": False})
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_assistant_result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_assistant_result()
 
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
-        plugin.llm_service.assistant_request.assert_called_once()
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        plugin.llm_service.assistant_completion.assert_called_once()
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert kwargs.get("extra_tools") is None
         assert kwargs.get("extra_handlers") is None
 
@@ -2813,8 +2813,8 @@ class TestChatProfileBridgeWiring:
 
         plugin.llm_service._begin_typing.side_effect = begin_typing
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_assistant_result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_assistant_result()
         mocker.patch.object(
             plugin,
             "_send_long_reply",
@@ -2824,7 +2824,7 @@ class TestChatProfileBridgeWiring:
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         assert events == ["typing_active", "reply", "typing_done"]
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert kwargs["manage_typing"] is False
 
 

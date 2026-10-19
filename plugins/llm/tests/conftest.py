@@ -581,14 +581,20 @@ def plugin_env(mocker: MockerFixture):
     plugin.llm_service.list_scheduled_llm_tasks.return_value = []
 
     # During the unified-assistant transition, ask-style command tests still
-    # exercise the existing completion bridge through assistant_request().
+    # exercise the existing completion bridge through assistant_completion().
     # The bridge wraps CompletionResult into AssistantResult so the chat
     # impl's structured-signal suppression check (last_successful_tool /
     # final_text_after_tools) sees defaults rather than AttributeError.
-    def _assistant_request_bridge(
+    def _assistant_completion_bridge(
         prompt: str,
         *,
-        request_context,
+        nick=None,
+        channel=None,
+        account=None,
+        is_owner=False,
+        capabilities=None,
+        route_profile=None,
+        entry_route="",
         db=None,
         context=None,
         bot_nick=None,
@@ -644,7 +650,7 @@ def plugin_env(mocker: MockerFixture):
             error=completion_result.error,
         )
 
-    plugin.llm_service.assistant_request.side_effect = _assistant_request_bridge
+    plugin.llm_service.assistant_completion.side_effect = _assistant_completion_bridge
 
     try:
         yield plugin, mock_irc, mock_msg

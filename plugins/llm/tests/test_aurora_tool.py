@@ -391,15 +391,15 @@ def _ask_tools(plugin_env, enabled: bool):
         {"auroraEnabled": enabled, "ircLookupEnabled": False}
     )
     plugin.llm_service.detect_images.return_value = []
-    plugin.llm_service.assistant_request.side_effect = None
-    plugin.llm_service.assistant_request.return_value = AssistantResult(
+    plugin.llm_service.assistant_completion.side_effect = None
+    plugin.llm_service.assistant_completion.return_value = AssistantResult(
         content="ok",
         grounding_used=False,
         spend=Spend(prompt_tokens=1, completion_tokens=1, cost=0.0),
         model="m",
     )
     plugin.ask(irc, msg, ["any aurora tonight in Oshawa"])
-    return plugin.llm_service.assistant_request.call_args.kwargs
+    return plugin.llm_service.assistant_completion.call_args.kwargs
 
 
 def test_tool_advertised_when_enabled(plugin_env) -> None:

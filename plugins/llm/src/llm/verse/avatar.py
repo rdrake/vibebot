@@ -821,7 +821,7 @@ def dispatch_verse_edit(store, *, op, payload, authorized, account):
 
 
 #: ToolResult-like namedtuple for verse handlers returning to assistant loop.
-#: Mirrors the shape expected by assistant_request's extra_handlers callables.
+#: Mirrors the shape expected by assistant_completion's extra_handlers callables.
 class _VerseToolResult(NamedTuple):
     content: str
 
@@ -980,7 +980,7 @@ def make_verse_extra_handlers(
 
     Each handler calls ``dispatch_verse_tool_call`` (which swallows failures)
     then returns a JSON-encoded ToolResult-compatible object so the
-    assistant_request loop can continue normally.  The return value uses
+    assistant_completion loop can continue normally.  The return value uses
     ``_VerseToolResult`` which has a ``content`` attribute matching the
     ``ToolResult`` duck-type expected by the loop.
 

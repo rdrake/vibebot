@@ -3815,7 +3815,7 @@ class LLM(callbacks.Plugin):
 
         Shared plumbing for reminder action fires (``_fire_reminder_action``)
         and scheduled LLM tasks (``service._dispatch_scheduled_task``): both
-        dispatch ``assistant_request`` from a worker thread with no live
+        dispatch ``assistant_completion`` from a worker thread with no live
         command context, so the synthetic request context, the
         history/memory/instruction gathering, and the standard tool-callback
         wiring live here. Callers keep their own rate-limit/capability
@@ -3825,7 +3825,7 @@ class LLM(callbacks.Plugin):
         variant, which folds the user's @instruct into the system prompt
         (and passes no channel overlay when there is no instruction). The
         reminder path instead rides the @instruct as user-role data (see
-        assistant_request ``user_instruction``) and always passes the overlay.
+        assistant_completion ``user_instruction``) and always passes the overlay.
         """
         request_context = AssistantRequestContext(
             entry_route=entry_route,
@@ -3846,9 +3846,9 @@ class LLM(callbacks.Plugin):
             user_instruction = None
         else:
             system_prompt = ask_prompt
-        return self.llm_service.assistant_request(
+        return self.llm_service.assistant_completion(
             prompt=prompt,
-            request_context=request_context,
+            **request_context.completion_kwargs(),
             db=self.db,
             context=self.context,
             bot_nick=bot_nick,
@@ -3972,7 +3972,7 @@ class LLM(callbacks.Plugin):
                 msg_kwargs["server_tags"] = {"account": account}
             synthetic_msg = ircmsgs.IrcMsg(**msg_kwargs)
 
-            # The user's @instruct rides as user-role data (see assistant_request
+            # The user's @instruct rides as user-role data (see assistant_completion
             # user_instruction), not prepended to the system overlay.
             result = self._run_unattended_assistant(
                 irc=active_irc,
@@ -4324,7 +4324,7 @@ class LLM(callbacks.Plugin):
         When someone says "vibebot draw a cat" or "vibebot what time is it"
         without a command prefix, the chat profile handles everything — general
         questions AND tool-based operations — via ``_ask_impl`` with the
-        ``assistant_request`` facade.
+        ``assistant_completion`` tool loop.
         """
         if not tokens:
             return
@@ -6243,7 +6243,7 @@ class LLM(callbacks.Plugin):
     def _verse_grounded_overlay(self, profile: str, channel: str, verse_context: str) -> str:
         """Lore block layered onto a profile's channel overlay, for the overlay slot.
 
-        ``system_prompt=`` on an assistant_request is the personality-overlay
+        ``system_prompt=`` on an assistant_completion is the personality-overlay
         slot; the profile's framework prompt and tools are still added
         downstream by assistant_completion. So a media planner that wants its
         request grounded in canon puts the facts-only block here, on top of
@@ -6783,7 +6783,7 @@ class LLM(callbacks.Plugin):
         whatever chat model happened to answer.
 
         That is not hypothetical. Since 2026-04-11, when @draw was converted to
-        run through assistant_request like everything else, EVERY path to an
+        run through assistant_completion like everything else, EVERY path to an
         image has gone through this callback — so from that date no row in the
         usage table attributed image spend correctly, and `GROUP BY model` read
         as if the bot had stopped generating images. Storybook already solved it
@@ -8266,7 +8266,7 @@ class LLM(callbacks.Plugin):
                 extra_tools = (bridge_list + verse_list) or None
 
                 # C7d: merge verse handlers into extra_handlers so the
-                # assistant_request loop can dispatch verse tool calls
+                # assistant_completion loop can dispatch verse tool calls
                 # in-flight rather than passing them to the generic executor.
                 #
                 # When verse tool *schemas* are advertised on a verse-enabled
@@ -8330,9 +8330,9 @@ class LLM(callbacks.Plugin):
                 # route lookup and history/memory fetches that run before
                 # this point. ``manage_typing=False`` keeps the
                 # service-level layer from clobbering it.
-                result = self.llm_service.assistant_request(
+                result = self.llm_service.assistant_completion(
                     request_text,
-                    request_context=request_context,
+                    **request_context.completion_kwargs(),
                     db=self.db,
                     context=self.context,
                     bot_nick=irc.nick,
@@ -8443,9 +8443,9 @@ class LLM(callbacks.Plugin):
                 effective_prompt = CODE_SYSTEM_PROMPT if user_instruction else None
 
                 with self._allow_concurrent(), self._llm_executor.permit():
-                    result = self.llm_service.assistant_request(
+                    result = self.llm_service.assistant_completion(
                         text,
-                        request_context=request_context,
+                        **request_context.completion_kwargs(),
                         db=self.db,
                         context=self.context,
                         bot_nick=irc.nick,
@@ -8558,9 +8558,9 @@ class LLM(callbacks.Plugin):
                 )
 
                 with self._allow_concurrent(), self._llm_executor.permit():
-                    result = self.llm_service.assistant_request(
+                    result = self.llm_service.assistant_completion(
                         text,
-                        request_context=request_context,
+                        **request_context.completion_kwargs(),
                         db=self.db,
                         context=self.context,
                         bot_nick=irc.nick,
@@ -9556,9 +9556,9 @@ class LLM(callbacks.Plugin):
                 )
 
                 with self._allow_concurrent(), self._llm_executor.permit():
-                    result = self.llm_service.assistant_request(
+                    result = self.llm_service.assistant_completion(
                         text,
-                        request_context=request_context,
+                        **request_context.completion_kwargs(),
                         db=self.db,
                         context=self.context,
                         bot_nick=irc.nick,

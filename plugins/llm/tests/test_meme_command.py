@@ -371,12 +371,12 @@ class TestChatWiring:
             {"memeEnabled": True, "ircLookupEnabled": False, "auroraEnabled": False}
         )
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._result()
 
         plugin.ask(irc, msg, ["make a drake meme"])
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         names = [t["function"]["name"] for t in kwargs["extra_tools"]]
         assert names == ["make_meme"]
         assert "make_meme" in kwargs["extra_handlers"]
@@ -387,12 +387,12 @@ class TestChatWiring:
             {"memeEnabled": False, "ircLookupEnabled": False, "auroraEnabled": False}
         )
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._result()
 
         plugin.ask(irc, msg, ["hello"])
 
-        assert plugin.llm_service.assistant_request.call_args.kwargs["extra_tools"] is None
+        assert plugin.llm_service.assistant_completion.call_args.kwargs["extra_tools"] is None
 
 
 class TestCustomAndAliases:

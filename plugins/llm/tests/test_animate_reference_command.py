@@ -45,8 +45,8 @@ def animate_plugin(plugin_env, mocker):
 
     plugin, mock_irc, mock_msg = plugin_env
     mock_irc.state.nickToAccount.return_value = "test_account"
-    plugin.llm_service.assistant_request.side_effect = None
-    plugin.llm_service.assistant_request.return_value = _assistant_result()
+    plugin.llm_service.assistant_completion.side_effect = None
+    plugin.llm_service.assistant_completion.return_value = _assistant_result()
     plugin.llm_service.video_generation.return_value = _video_result()
     # No split_reference_url stub: the plugin calls the real module-level
     # parser, so these tests exercise the same URL handling production does.
@@ -70,9 +70,9 @@ class TestAnimateCommandWithReference:
 
         plugin.animate(mock_irc, mock_msg, [_IMG, "make", "the", "cat", "dance"])
 
-        plugin.llm_service.assistant_request.assert_called_once()
-        ctx = plugin.llm_service.assistant_request.call_args.kwargs["request_context"]
-        assert ctx.profile == "animate"
+        plugin.llm_service.assistant_completion.assert_called_once()
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
+        assert kwargs["route_profile"] == "animate"
 
     def test_planner_sees_the_picture(self, animate_plugin) -> None:
         """GIVEN a reference WHEN the planner runs THEN the image rides the request.
@@ -85,7 +85,7 @@ class TestAnimateCommandWithReference:
 
         plugin.animate(mock_irc, mock_msg, [_IMG, "make", "the", "cat", "dance"])
 
-        images = plugin.llm_service.assistant_request.call_args.kwargs["images"]
+        images = plugin.llm_service.assistant_completion.call_args.kwargs["images"]
         assert images == ["data:image/jpeg;base64,Y2F0"]
 
     def test_planner_is_told_the_first_frame_is_fixed(self, animate_plugin) -> None:
@@ -94,7 +94,7 @@ class TestAnimateCommandWithReference:
 
         plugin.animate(mock_irc, mock_msg, [_IMG, "make", "the", "cat", "dance"])
 
-        overlay = plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"]
+        overlay = plugin.llm_service.assistant_completion.call_args.kwargs["system_prompt"]
         assert overlay and "first frame" in overlay.lower()
 
     def test_url_is_not_in_the_planners_prompt(self, animate_plugin) -> None:
@@ -103,7 +103,7 @@ class TestAnimateCommandWithReference:
 
         plugin.animate(mock_irc, mock_msg, [_IMG, "make", "the", "cat", "dance"])
 
-        assert plugin.llm_service.assistant_request.call_args.args[0] == "make the cat dance"
+        assert plugin.llm_service.assistant_completion.call_args.args[0] == "make the cat dance"
 
     def test_submission_carries_the_reference(self, animate_plugin) -> None:
         """GIVEN a reference WHEN the planner calls the tool THEN the file is attached."""
@@ -111,7 +111,7 @@ class TestAnimateCommandWithReference:
 
         plugin.animate(mock_irc, mock_msg, [_IMG, "make", "the", "cat", "dance"])
 
-        animate_fn = plugin.llm_service.assistant_request.call_args.kwargs["animate_fn"]
+        animate_fn = plugin.llm_service.assistant_completion.call_args.kwargs["animate_fn"]
         animate_fn("A ginger cat on a kitchen counter rises onto its hind legs...")
 
         call = plugin.llm_service.video_generation.call_args
@@ -127,7 +127,7 @@ class TestAnimateCommandWithReference:
 
         plugin.animate(mock_irc, mock_msg, [_IMG, "the", "stinky", "lads", "run"])
 
-        overlay = plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"]
+        overlay = plugin.llm_service.assistant_completion.call_args.kwargs["system_prompt"]
         assert "Archie: windbag" in overlay
         assert "first frame" in overlay.lower()
 
@@ -143,7 +143,7 @@ class TestAnimateCommandWithReference:
         plugin.animate(mock_irc, mock_msg, [_IMG, "make", "it", "dance"])
 
         plugin.llm_service.video_generation.assert_not_called()
-        plugin.llm_service.assistant_request.assert_not_called()
+        plugin.llm_service.assistant_completion.assert_not_called()
         said = " ".join(
             str(c) for c in mock_irc.error.call_args_list + mock_irc.reply.call_args_list
         )
@@ -155,7 +155,7 @@ class TestAnimateCommandWithReference:
 
         plugin.animate(mock_irc, mock_msg, ["a", "pine", "forest"])
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert not kwargs.get("images")
         assert kwargs.get("system_prompt") is None
         plugin.llm_service.fetch_reference_image.assert_not_called()
@@ -231,7 +231,7 @@ class TestDeliveryNick:
         mock_irc.state.nickToAccount.return_value = "lstrong2k"
 
         plugin.animate(mock_irc, mock_msg, ["teletubbies", "on", "a", "smoke", "break"])
-        animate_fn = plugin.llm_service.assistant_request.call_args.kwargs["animate_fn"]
+        animate_fn = plugin.llm_service.assistant_completion.call_args.kwargs["animate_fn"]
         animate_fn("Four costumed figures loiter behind a studio wall...")
 
         kwargs = plugin.llm_service.video_generation.call_args.kwargs
@@ -249,7 +249,7 @@ class TestDeliveryNick:
         mock_irc.state.nickToAccount.return_value = "lstrong2k"
 
         plugin.animate(mock_irc, mock_msg, ["teletubbies", "on", "a", "smoke", "break"])
-        animate_fn = plugin.llm_service.assistant_request.call_args.kwargs["animate_fn"]
+        animate_fn = plugin.llm_service.assistant_completion.call_args.kwargs["animate_fn"]
         animate_fn("Four costumed figures loiter behind a studio wall...")
 
         assert plugin.llm_service.video_generation.call_args.kwargs["account"] == "lstrong2k"

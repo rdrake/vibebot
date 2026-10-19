@@ -320,8 +320,8 @@ class TestRateLimitFullFlow:
             side_effect=lambda prefix, cap: cap.startswith("llm."),
         )
 
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
             spend=Spend(prompt_tokens=5, completion_tokens=0, cost=0.02),
@@ -336,12 +336,12 @@ class TestRateLimitFullFlow:
 
         # Step 2: 3rd draw is rate limited
         mock_irc.reset_mock()
-        plugin.llm_service.assistant_request.reset_mock()
+        plugin.llm_service.assistant_completion.reset_mock()
         plugin.draw(mock_irc, mock_msg, ["one too many"])
 
         mock_irc.error.assert_called_once()
         assert "Rate limit" in mock_irc.error.call_args[0][0]
-        plugin.llm_service.assistant_request.assert_not_called()
+        plugin.llm_service.assistant_completion.assert_not_called()
 
         # Verify rate_limited was logged in the real database
         conn = plugin.db._connect()
@@ -353,7 +353,7 @@ class TestRateLimitFullFlow:
         # Step 3: Simulate window expiration by clearing buckets
         plugin._rate_buckets.clear()
         mock_irc.reset_mock()
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen2.png",
             grounding_used=False,
             spend=Spend(prompt_tokens=5, completion_tokens=0, cost=0.02),
@@ -389,12 +389,12 @@ class TestMemoryIntegration:
         plugin.llm_service.draw_unavailable_reason.return_value = None
         plugin.llm_service.video_available.return_value = True
 
-        # Bridge assistant_request to completion so integration tests that
+        # Bridge assistant_completion to completion so integration tests that
         # mock completion continue to work through the unified facade.
         # Wrap the CompletionResult into AssistantResult so the chat impl's
         # structured-signal suppression check sees the new fields' defaults
         # rather than AttributeError.
-        def _assistant_request_bridge(prompt, *, request_context, **kwargs):
+        def _assistant_completion_bridge(prompt, *, route_profile=None, entry_route="", **kwargs):
             from llm.service import AssistantResult as _AssistantResult
             from llm.service import Spend
 
@@ -411,7 +411,7 @@ class TestMemoryIntegration:
                 error=completion_result.error,
             )
 
-        plugin.llm_service.assistant_request.side_effect = _assistant_request_bridge
+        plugin.llm_service.assistant_completion.side_effect = _assistant_completion_bridge
 
         return plugin, mock_irc
 
@@ -521,7 +521,7 @@ class TestMemoryIntegration:
         plugin.llm_service.draw_unavailable_reason.return_value = None
         plugin.llm_service.video_available.return_value = True
 
-        def _assistant_request_bridge(prompt, *, request_context, **kwargs):
+        def _assistant_completion_bridge(prompt, *, route_profile=None, entry_route="", **kwargs):
             from llm.service import AssistantResult as _AssistantResult
             from llm.service import Spend
 
@@ -538,7 +538,7 @@ class TestMemoryIntegration:
                 error=completion_result.error,
             )
 
-        plugin.llm_service.assistant_request.side_effect = _assistant_request_bridge
+        plugin.llm_service.assistant_completion.side_effect = _assistant_completion_bridge
 
         from llm.service import CompletionResult
 

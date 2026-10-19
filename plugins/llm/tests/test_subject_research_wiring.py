@@ -48,8 +48,8 @@ def researching_plugin(plugin_env, mocker):
     plugin.registryValue.side_effect = make_registry_side_effect(
         {"subjectResearchEnabled": True, "animateApiUrl": "http://video.example.com:14205"}
     )
-    plugin.llm_service.assistant_request.side_effect = None
-    plugin.llm_service.assistant_request.return_value = _assistant_result()
+    plugin.llm_service.assistant_completion.side_effect = None
+    plugin.llm_service.assistant_completion.return_value = _assistant_result()
     plugin.llm_service.subject_dossier.return_value = _dossier(_FACTS)
     mocker.patch.object(plugin, "_verse_context_for", return_value=None)
     mocker.patch.object(
@@ -59,7 +59,7 @@ def researching_plugin(plugin_env, mocker):
 
 
 def _system_prompt(plugin) -> str | None:
-    return plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"]
+    return plugin.llm_service.assistant_completion.call_args.kwargs["system_prompt"]
 
 
 class TestAnimateResearch:
@@ -121,7 +121,7 @@ class TestAnimateResearch:
 
         plugin.animate(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
 
-        plugin.llm_service.assistant_request.assert_called_once()
+        plugin.llm_service.assistant_completion.assert_called_once()
         assert _system_prompt(plugin) is None
 
     def test_canon_and_dossier_coexist(self, researching_plugin, mocker) -> None:
@@ -182,7 +182,7 @@ class TestDrawResearch:
 
         plugin.draw(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
 
-        prompt = plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"]
+        prompt = plugin.llm_service.assistant_completion.call_args.kwargs["system_prompt"]
         assert prompt is not None
         assert _FACTS in prompt
 
@@ -219,7 +219,7 @@ class TestDrawResearch:
         plugin.draw(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
 
         plugin.llm_service.subject_dossier.assert_not_called()
-        assert plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"] is None
+        assert plugin.llm_service.assistant_completion.call_args.kwargs["system_prompt"] is None
 
     def test_research_failure_still_draws(self, researching_plugin) -> None:
         """GIVEN the research raises WHEN @draw runs THEN the image is still planned."""
@@ -228,5 +228,5 @@ class TestDrawResearch:
 
         plugin.draw(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
 
-        plugin.llm_service.assistant_request.assert_called_once()
-        assert plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"] is None
+        plugin.llm_service.assistant_completion.assert_called_once()
+        assert plugin.llm_service.assistant_completion.call_args.kwargs["system_prompt"] is None

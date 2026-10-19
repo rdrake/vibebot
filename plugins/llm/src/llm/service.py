@@ -1911,6 +1911,18 @@ class AssistantRequestContext:
     is_owner: bool
     capabilities: frozenset[str]
 
+    def completion_kwargs(self) -> dict[str, Any]:
+        """The ``assistant_completion`` keywords this request decides."""
+        return {
+            "nick": self.caller.identity.key,
+            "channel": self.caller.reply_target,
+            "account": self.caller.identity.account,
+            "is_owner": self.is_owner,
+            "capabilities": self.capabilities,
+            "route_profile": self.profile,
+            "entry_route": self.entry_route,
+        }
+
 
 class PendingTaskResult(NamedTuple):
     """Result from checking a single pending task."""
@@ -4962,97 +4974,6 @@ class LLMService:
 
         return prompt_tokens, completion_tokens, cached_tokens, cost
 
-    def assistant_request(
-        self,
-        prompt: str,
-        *,
-        request_context: AssistantRequestContext,
-        db: LLMDatabase,
-        context: ConversationContext,
-        bot_nick: str,
-        images: list[str] | None = None,
-        history: list[dict[str, str]] | None = None,
-        channel_history: list[dict[str, str]] | None = None,
-        irc: Irc | None = None,
-        msg: IrcMsg | None = None,
-        system_prompt: str | None = None,
-        memories: list[str] | None = None,
-        user_instruction: str | None = None,
-        model_override: str | None = None,
-        cleanup_fn: Callable[[str], ToolCallbackResult] | None = None,
-        set_reminder_fn: Callable[[str], ToolCallbackResult] | None = None,
-        list_pending_tasks_fn: Callable[[], list[dict[str, Any]]] | None = None,
-        cancel_pending_task_fn: Callable[[str], dict[str, Any]] | None = None,
-        cancel_all_pending_tasks_fn: Callable[[], dict[str, Any]] | None = None,
-        draw_fn: Callable[[str], ToolCallbackResult] | None = None,
-        animate_fn: Callable[[str], ToolCallbackResult] | None = None,
-        search_fn: Callable[..., Any] | None = None,
-        fetch_fn: Callable[..., Any] | None = None,
-        code_fn: Callable[..., Any] | None = None,
-        schedule_llm_task_fn: Callable[..., dict[str, Any]] | None = None,
-        extra_tools: list[dict[str, Any]] | None = None,
-        extra_handlers: dict[str, Callable[[dict[str, Any]], ToolResult]] | None = None,
-        exclude_tools: frozenset[str] = frozenset(),
-        manage_typing: bool = True,
-    ) -> AssistantResult:
-        """Unified assistant facade that dispatches to assistant_completion.
-
-        Selects the per-profile system prompt (chat, code, draw) and
-        delegates to the planner loop so that all assistant routes share
-        a single entry point with full tool access.
-        """
-        caller = request_context.caller
-        self.log.info(
-            "assistant_request route=%s profile=%s channel=%s nick=%s",
-            request_context.entry_route,
-            request_context.profile,
-            caller.reply_target,
-            caller.identity.key,
-        )
-
-        profile = request_context.profile
-        # ``system_prompt`` is forwarded as personality overlay only;
-        # ``assistant_completion`` selects the route_profile's structural
-        # framework and layers the overlay on top so the IRC output rules and
-        # tool-behavior constraints survive a per-channel personality.
-
-        return self.assistant_completion(
-            prompt,
-            nick=caller.identity.key,
-            channel=caller.reply_target,
-            db=db,
-            context=context,
-            bot_nick=bot_nick,
-            model_override=model_override,
-            route_profile=profile,
-            capabilities=request_context.capabilities,
-            account=caller.identity.account,
-            is_owner=request_context.is_owner,
-            images=images,
-            system_prompt=system_prompt,
-            history=history,
-            channel_history=channel_history,
-            memories=memories,
-            user_instruction=user_instruction,
-            irc=irc,
-            msg=msg,
-            cleanup_fn=cleanup_fn,
-            set_reminder_fn=set_reminder_fn,
-            list_pending_tasks_fn=list_pending_tasks_fn,
-            cancel_pending_task_fn=cancel_pending_task_fn,
-            cancel_all_pending_tasks_fn=cancel_all_pending_tasks_fn,
-            draw_fn=draw_fn,
-            animate_fn=animate_fn,
-            search_fn=search_fn,
-            fetch_fn=fetch_fn,
-            code_fn=code_fn,
-            schedule_llm_task_fn=schedule_llm_task_fn,
-            extra_tools=extra_tools,
-            extra_handlers=extra_handlers,
-            exclude_tools=exclude_tools,
-            manage_typing=manage_typing,
-        )
-
     def parse_reminder(
         self,
         text: str,
@@ -6160,6 +6081,7 @@ Examples (echo → action_prompt: ""):
         model_override: str | None = None,
         is_owner: bool = False,
         route_profile: str = PROFILE_CHAT,
+        entry_route: str = "",
         capabilities: frozenset[str] | None = None,
         account: str | None = None,
         images: list[str] | None = None,
@@ -6202,6 +6124,8 @@ Examples (echo → action_prompt: ""):
             context: Conversation context instance
             bot_nick: Bot's IRC nick for system prompt personalization
             model_override: Optional model override
+            entry_route: The command or fire that started the turn, for the
+                log line only (``AssistantRequestContext.completion_kwargs``)
             cleanup_fn: Optional callable that runs memory cleanup
             set_reminder_fn: Optional callable that sets a reminder
             list_pending_tasks_fn: Optional callable returning a unified list of
@@ -6217,6 +6141,13 @@ Examples (echo → action_prompt: ""):
         # The call as made, before anything below rebinds a parameter: a
         # refusal fallback re-runs the whole turn from exactly these.
         turn_args = {k: v for k, v in locals().items() if k != "self"}
+        self.log.info(
+            "assistant_completion route=%s profile=%s channel=%s nick=%s",
+            entry_route,
+            route_profile,
+            channel,
+            nick,
+        )
         from .assistant import (
             AssistantToolExecutor,
             ToolResult,
@@ -9306,7 +9237,7 @@ Examples (echo → action_prompt: ""):
         """Build the no-arg fire closure for ``schedule.addEvent``.
 
         Rebuilds a fresh ``IrcMsg`` from the persisted wire string, tags it with
-        ``llm_schedule_depth=1``, and dispatches via ``assistant_request``
+        ``llm_schedule_depth=1``, and dispatches via ``assistant_completion``
         directly (not via the wrapped ``ask`` command, which would bypass normal
         Limnoria dispatch from the scheduler thread).
         """
@@ -9355,7 +9286,7 @@ Examples (echo → action_prompt: ""):
         msg: IrcMsg,
         row: ScheduledLlmTaskRow,
     ) -> None:
-        """Run the fired prompt through ``assistant_request`` directly.
+        """Run the fired prompt through ``assistant_completion`` directly.
 
         Shares ``plugin._run_unattended_assistant`` with the reminder
         action-fire path: the scheduler thread bypasses the normal

@@ -1277,13 +1277,9 @@ def test_search_and_url_completion_use_same_provider_kwargs_base(
 # =============================================================================
 
 
-class TestAssistantRequestFacade:
-    """Tests for the assistant_request planner facade."""
-
-    @pytest.fixture(autouse=True)
-    def setup(self, make_service, mocker: MockerFixture) -> None:
-        self.mocker = mocker
-        self.service, self.mock_plugin = make_service()
+class TestCompletionKwargs:
+    """AssistantRequestContext.completion_kwargs: what a request decides about
+    the assistant_completion call."""
 
     def _make_ctx(
         self,
@@ -1304,205 +1300,42 @@ class TestAssistantRequestFacade:
             capabilities=capabilities,
         )
 
-    def test_chat_profile_forwards_route_profile(self) -> None:
-        """Chat profile forwards route_profile=chat. ``assistant_completion``
-        selects CHAT_SYSTEM_PROMPT from the route_profile, not from
-        system_prompt — the latter is reserved for personality overlays."""
-        ctx = self._make_ctx(profile="chat")
-        self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="answer", spend=Spend.ZERO),
-        )
-
-        self.service.assistant_request(
-            "hello",
-            request_context=ctx,
-            db=self.mocker.Mock(),
-            context=self.mocker.Mock(),
-            bot_nick="Bot",
-        )
-
-        call_kwargs = self.service.assistant_completion.call_args.kwargs
-        assert call_kwargs["route_profile"] == "chat"
-        assert call_kwargs["system_prompt"] is None
-
-    def test_code_profile_forwards_route_profile(self) -> None:
-        """Code profile forwards route_profile=code so the planner picks
-        CODE_SYSTEM_PROMPT as the structural framework."""
-        ctx = self._make_ctx(
-            entry_route="code",
-            profile="code",
-            capabilities=frozenset({"llm.code"}),
-        )
-        self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="code link", spend=Spend.ZERO),
-        )
-
-        self.service.assistant_request(
-            "write fibonacci",
-            request_context=ctx,
-            db=self.mocker.Mock(),
-            context=self.mocker.Mock(),
-            bot_nick="Bot",
-        )
-
-        call_kwargs = self.service.assistant_completion.call_args.kwargs
-        assert call_kwargs["route_profile"] == "code"
-        assert call_kwargs["system_prompt"] is None
-
-    def test_verse_profile_forwards_route_profile(self) -> None:
-        """Verse profile forwards route_profile=verse so the planner treats it
-        as an unknown profile (falls back to CHAT_SYSTEM_PROMPT framework) while
-        still bypassing the token cap (PROFILE_VERSE not in profile_max_output)."""
-        ctx = self._make_ctx(profile="verse")
-        self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="verse answer", spend=Spend.ZERO),
-        )
-
-        self.service.assistant_request(
-            "tell me a long story",
-            request_context=ctx,
-            db=self.mocker.Mock(),
-            context=self.mocker.Mock(),
-            bot_nick="Bot",
-        )
-
-        call_kwargs = self.service.assistant_completion.call_args.kwargs
-        assert call_kwargs["route_profile"] == "verse"
-        assert call_kwargs["system_prompt"] is None
-
-    def test_draw_profile_forwards_route_profile(self) -> None:
-        """Draw profile forwards route_profile=draw so the planner picks
-        DRAW_SYSTEM_PROMPT as the structural framework."""
-        ctx = self._make_ctx(
-            entry_route="draw",
-            profile="draw",
-            capabilities=frozenset({"llm.draw"}),
-        )
-        self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="image link", spend=Spend.ZERO),
-        )
-
-        self.service.assistant_request(
-            "draw a cat",
-            request_context=ctx,
-            db=self.mocker.Mock(),
-            context=self.mocker.Mock(),
-            bot_nick="Bot",
-        )
-
-        call_kwargs = self.service.assistant_completion.call_args.kwargs
-        assert call_kwargs["route_profile"] == "draw"
-        assert call_kwargs["system_prompt"] is None
-
-    def test_returns_meta_result(self) -> None:
-        """assistant_request returns AssistantResult with all fields preserved."""
-        ctx = self._make_ctx()
-        self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="answer", spend=Spend.ZERO, grounding_used=True),
-        )
-
-        result = self.service.assistant_request(
-            "hello",
-            request_context=ctx,
-            db=self.mocker.Mock(),
-            context=self.mocker.Mock(),
-            bot_nick="Bot",
-        )
-
-        assert isinstance(result, AssistantResult)
-        assert result.grounding_used is True
-
-    def test_passes_callables_through(self) -> None:
-        """Callable handlers are forwarded to assistant_completion."""
-        ctx = self._make_ctx()
-        search_fn = self.mocker.Mock()
-        draw_fn = self.mocker.Mock()
-        self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="answer", spend=Spend.ZERO),
-        )
-
-        self.service.assistant_request(
-            "hello",
-            request_context=ctx,
-            db=self.mocker.Mock(),
-            context=self.mocker.Mock(),
-            bot_nick="Bot",
-            search_fn=search_fn,
-            draw_fn=draw_fn,
-        )
-
-        call_kwargs = self.service.assistant_completion.call_args.kwargs
-        assert call_kwargs["search_fn"] is search_fn
-        assert call_kwargs["draw_fn"] is draw_fn
-
-    def test_explicit_system_prompt_overrides_profile(self) -> None:
-        """An explicit system_prompt kwarg takes priority over the profile default."""
-        ctx = self._make_ctx(profile="chat")
-        self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="ok", spend=Spend.ZERO),
-        )
-
-        self.service.assistant_request(
-            "hello",
-            request_context=ctx,
-            db=self.mocker.Mock(),
-            context=self.mocker.Mock(),
-            bot_nick="Bot",
-            system_prompt="Custom prompt override",
-        )
-
-        assert (
-            self.service.assistant_completion.call_args.kwargs["system_prompt"]
-            == "Custom prompt override"
-        )
+    @pytest.mark.parametrize("profile", ["chat", "code", "verse", "draw", "remind_action"])
+    def test_profile_becomes_route_profile(self, profile: str) -> None:
+        """The profile picks the structural framework downstream; the
+        personality overlay (system_prompt) is not this value's to set."""
+        kw = self._make_ctx(profile=profile, entry_route=profile).completion_kwargs()
+        assert kw["route_profile"] == profile
+        assert kw["entry_route"] == profile
+        assert "system_prompt" not in kw
 
     def test_forwards_context_fields(self) -> None:
         """The caller's storage key, reply target and account, plus is_owner and
         capabilities, are forwarded."""
-        ctx = self._make_ctx(
+        kw = self._make_ctx(
             nick="alice",
             channel="#dev",
             account="alice_acct",
             is_owner=True,
             capabilities=frozenset({"llm.ask", "llm.code"}),
-        )
-        self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="ok", spend=Spend.ZERO),
-        )
-
-        self.service.assistant_request(
-            "hello",
-            request_context=ctx,
-            db=self.mocker.Mock(),
-            context=self.mocker.Mock(),
-            bot_nick="TestBot",
-        )
-
-        kw = self.service.assistant_completion.call_args.kwargs
+        ).completion_kwargs()
         assert kw["nick"] == "alice_acct"
         assert kw["channel"] == "#dev"
         assert kw["account"] == "alice_acct"
         assert kw["is_owner"] is True
         assert kw["capabilities"] == frozenset({"llm.ask", "llm.code"})
-        assert kw["bot_nick"] == "TestBot"
 
     def test_private_message_passes_the_senders_nick(self) -> None:
         """Private messages (channel=None) pass the sender's nick, the reply
         target, to assistant_completion: never the bot's own nick."""
-        ctx = self._make_ctx(nick="user", channel=None)
-        self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="ok", spend=Spend.ZERO),
-        )
+        kw = self._make_ctx(nick="user", channel=None).completion_kwargs()
+        assert kw["channel"] == "user"
 
-        self.service.assistant_request(
-            "hello",
-            request_context=ctx,
-            db=self.mocker.Mock(),
-            context=self.mocker.Mock(),
-            bot_nick="Bot",
-        )
+    def test_every_key_is_an_assistant_completion_parameter(self) -> None:
+        import inspect
 
-        assert self.service.assistant_completion.call_args.kwargs["channel"] == "user"
+        params = inspect.signature(LLMService.assistant_completion).parameters
+        assert set(self._make_ctx().completion_kwargs()) <= set(params)
 
 
 # =============================================================================

@@ -3,7 +3,7 @@
 This module owns:
 
 - Five **framework prompts** — the structural system prompts that wrap every
-  LLM call routed through ``service.assistant_request``: chat, code, draw,
+  LLM call routed through ``service.assistant_completion``: chat, code, draw,
   verse, and remind_action. Each is formatted with ``.format(bot_nick=...)``.
 - Two **internal prompts** — used by the memory pipeline in
   ``service.extract_memories`` and ``service.cleanup_memories``. These are

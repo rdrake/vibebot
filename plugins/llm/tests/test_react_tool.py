@@ -169,12 +169,12 @@ class TestReactWiringAndDispatch:
     def test_ask_advertises_react_when_enabled(self, react_env) -> None:
         plugin, irc, msg = react_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._result()
 
         plugin.ask(irc, msg, ["react to bob"])
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert "react" in [t["function"]["name"] for t in kwargs["extra_tools"]]
         assert "react" in kwargs["extra_handlers"]
 

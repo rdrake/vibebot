@@ -39,8 +39,8 @@ class TestCommandPathPermit:
     def test_ask_acquires_permit(self, plugin_env, mocker: MockerFixture):
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="ok",
             grounding_used=False,
             spend=Spend(prompt_tokens=1, completion_tokens=1, cost=0.0),
@@ -54,12 +54,12 @@ class TestCommandPathPermit:
 class TestAskCommand:
     """Tests for the real LLM.ask method."""
 
-    def test_ask_routes_through_assistant_request(self, plugin_env):
-        """GIVEN ask WHEN executed THEN it uses the shared assistant_request facade."""
+    def test_ask_routes_through_assistant_completion(self, plugin_env):
+        """GIVEN ask WHEN executed THEN it uses the shared assistant_completion facade."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="Hello from unified assistant",
             grounding_used=False,
             spend=Spend(prompt_tokens=10, completion_tokens=5, cost=0.001),
@@ -68,10 +68,10 @@ class TestAskCommand:
 
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
-        plugin.llm_service.assistant_request.assert_called_once()
-        request_context = plugin.llm_service.assistant_request.call_args.kwargs["request_context"]
-        assert request_context.profile == "chat"
-        assert request_context.entry_route == "ask"
+        plugin.llm_service.assistant_completion.assert_called_once()
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
+        assert kwargs["route_profile"] == "chat"
+        assert kwargs["entry_route"] == "ask"
         mock_irc.reply.assert_called_once_with("Hello from unified assistant", prefixNick=False)
 
     def test_ask_replies_with_completion_content(self, plugin_env, mocker: MockerFixture):
@@ -249,8 +249,8 @@ class TestAskCommand:
         """GIVEN successful set_reminder + empty post-tool text WHEN ask called THEN no irc.reply, but usage logged."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="",
             grounding_used=False,
             spend=Spend(prompt_tokens=20, completion_tokens=2, cost=0.0002),
@@ -279,12 +279,12 @@ class TestAskCommand:
         """
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
+        plugin.llm_service.assistant_completion.side_effect = None
         follow_up = (
             "An empty response is submitted to stay quiet, as the user is "
             "acknowledged via reaction."
         )
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content=follow_up,
             grounding_used=False,
             spend=Spend(prompt_tokens=20, completion_tokens=12, cost=0.0003),
@@ -304,8 +304,8 @@ class TestAskCommand:
         """GIVEN non-mutation tool + empty text WHEN ask called THEN falls through to empty-response error."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="",
             grounding_used=False,
             spend=Spend(prompt_tokens=15, completion_tokens=0, cost=0.0001),
@@ -325,8 +325,8 @@ class TestAskCommand:
         """GIVEN no tool call + empty text WHEN ask called THEN empty-response error fires."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="",
             grounding_used=False,
             spend=Spend(prompt_tokens=10, completion_tokens=0, cost=0.0001),
@@ -438,24 +438,24 @@ class TestCodeCommand:
         defaults["spend"] = Spend(**spend)
         return AssistantResult(**defaults)  # ty: ignore[invalid-argument-type]
 
-    def test_code_routes_through_assistant_request(self, plugin_env, mocker: MockerFixture):
-        """GIVEN code WHEN executed THEN it uses assistant_request with code profile."""
+    def test_code_routes_through_assistant_completion(self, plugin_env, mocker: MockerFixture):
+        """GIVEN code WHEN executed THEN it uses assistant_completion with code profile."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_code_result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_code_result()
 
         plugin.code(mock_irc, mock_msg, ["Python", "hello"])
 
-        plugin.llm_service.assistant_request.assert_called_once()
-        ctx = plugin.llm_service.assistant_request.call_args.kwargs["request_context"]
-        assert ctx.profile == "code"
-        assert ctx.entry_route == "code"
+        plugin.llm_service.assistant_completion.assert_called_once()
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
+        assert kwargs["route_profile"] == "code"
+        assert kwargs["entry_route"] == "code"
 
     def test_code_replies_with_planner_content(self, plugin_env, mocker: MockerFixture):
         """GIVEN planner returns summary with URL WHEN code called THEN reply contains it."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_code_result(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_code_result(
             content="Fibonacci function — http://localhost:8080/llm/code_abc.html",
         )
 
@@ -468,8 +468,8 @@ class TestCodeCommand:
     def test_code_stores_context(self, plugin_env, mocker: MockerFixture):
         """GIVEN code command succeeds WHEN executed THEN conversation context is stored."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_code_result(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_code_result(
             content="code output",
         )
 
@@ -483,8 +483,8 @@ class TestCodeCommand:
     def test_code_logs_usage(self, plugin_env, mocker: MockerFixture):
         """GIVEN code completion with cost WHEN code completes THEN usage is logged."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_code_result(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_code_result(
             content="x = 1",
             prompt_tokens=50,
             completion_tokens=20,
@@ -519,8 +519,8 @@ class TestCodeCommand:
     def test_code_grounding_icon_in_reply(self, plugin_env, mocker: MockerFixture):
         """GIVEN grounding_used is True WHEN code response returned THEN reply has globe icon."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_code_result(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_code_result(
             content="summary — http://x/c.html",
             grounding_used=True,
         )
@@ -533,8 +533,8 @@ class TestCodeCommand:
     def test_code_action_with_grounding_icon(self, plugin_env, mocker: MockerFixture):
         """GIVEN /me-style code response with grounding WHEN code called THEN action carries globe icon."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_code_result(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_code_result(
             content="/me runs the unit tests",
             grounding_used=True,
         )
@@ -556,7 +556,7 @@ class TestCodeCommand:
 
         plugin.code(mock_irc, mock_msg, ["test"])
 
-        plugin.llm_service.assistant_request.assert_not_called()
+        plugin.llm_service.assistant_completion.assert_not_called()
         mock_irc.reply.assert_not_called()
 
     def test_code_user_instruction_layers_on_facade_prompt(self, plugin_env):
@@ -571,12 +571,12 @@ class TestCodeCommand:
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "testnick"
         plugin.db.get_instruction.return_value = "You are Captain Picard."
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_code_result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_code_result()
 
         plugin.code(mock_irc, mock_msg, ["fibonacci"])
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         system_prompt = kwargs["system_prompt"]
         # Facade preserved (planner still told to call generate_code)...
         assert "generate_code" in system_prompt
@@ -603,8 +603,8 @@ class TestPendingTaskGate:
         plugin.registryValue = mocker.MagicMock(side_effect=registry)
         assert plugin._pending_task_excludes("#test") == frozenset()
 
-    def test_ask_passes_exclusion_to_assistant_request(self, plugin_env):
-        """The chat entry route threads the gate into assistant_request."""
+    def test_ask_passes_exclusion_to_assistant_completion(self, plugin_env):
+        """The chat entry route threads the gate into assistant_completion."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
         plugin.llm_service.completion.return_value = CompletionResult(
@@ -617,7 +617,7 @@ class TestPendingTaskGate:
 
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert kwargs["exclude_tools"] == PENDING_TASK_TOOLS
 
 
@@ -914,47 +914,47 @@ class TestDrawCommand:
         defaults["spend"] = Spend(**spend)
         return AssistantResult(**defaults)  # ty: ignore[invalid-argument-type]
 
-    def test_draw_routes_through_assistant_request(self, plugin_env, mocker: MockerFixture):
-        """@draw calls assistant_request with draw profile."""
+    def test_draw_routes_through_assistant_completion(self, plugin_env, mocker: MockerFixture):
+        """@draw calls assistant_completion with draw profile."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_draw_result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_draw_result()
 
         plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
 
-        plugin.llm_service.assistant_request.assert_called_once()
-        ctx = plugin.llm_service.assistant_request.call_args.kwargs["request_context"]
-        assert ctx.profile == "draw"
-        assert ctx.entry_route == "draw"
+        plugin.llm_service.assistant_completion.assert_called_once()
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
+        assert kwargs["route_profile"] == "draw"
+        assert kwargs["entry_route"] == "draw"
 
     def test_draw_grounds_in_canon_when_referenced(self, plugin_env, mocker: MockerFixture):
         """@draw of canon layers the lore block onto the draw overlay so the
         image depicts the real cast."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_draw_result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_draw_result()
         mocker.patch.object(
             plugin, "_verse_context_for", return_value="Established characters:\n- Archie: windbag"
         )
 
         plugin.draw(mock_irc, mock_msg, ["the", "stinky", "lads"])
 
-        sp = plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"]
+        sp = plugin.llm_service.assistant_completion.call_args.kwargs["system_prompt"]
         assert sp is not None and "Archie: windbag" in sp
 
     def test_draw_no_grounding_without_canon(self, plugin_env, mocker: MockerFixture):
         """No canon reference → system_prompt stays None (default draw prompt)."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_draw_result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_draw_result()
         mocker.patch.object(plugin, "_verse_context_for", return_value=None)
 
         plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
 
-        assert plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"] is None
+        assert plugin.llm_service.assistant_completion.call_args.kwargs["system_prompt"] is None
 
     def test_canon_grounding_survives_a_profile_with_no_overlay_key(
         self, plugin_env, mocker: MockerFixture
@@ -992,14 +992,14 @@ class TestDrawCommand:
         plugin.draw(mock_irc, mock_msg, ["a", "cat"])
 
         mock_irc.error.assert_called_once()
-        plugin.llm_service.assistant_request.assert_not_called()
+        plugin.llm_service.assistant_completion.assert_not_called()
 
     def test_draw_passes_recent_context(self, plugin_env, mocker: MockerFixture):
         """@draw fetches history with the max-age window set on the context calls."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_draw_result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_draw_result()
 
         plugin.context = mocker.MagicMock()
         plugin.context.get_messages.return_value = [{"role": "user", "content": "hi"}]
@@ -1012,7 +1012,7 @@ class TestDrawCommand:
         get_ch_kwargs = plugin.context.get_channel_messages.call_args.kwargs
         assert get_ch_kwargs["max_age_seconds"] == 60
 
-        assistant_kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        assistant_kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert assistant_kwargs["history"] == [{"role": "user", "content": "hi"}]
         assert assistant_kwargs["memories"] == []
 
@@ -1020,8 +1020,8 @@ class TestDrawCommand:
         """@draw with drawContextMaxAgeSeconds=0 skips context entirely."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_draw_result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_draw_result()
 
         original = plugin.registryValue.side_effect
 
@@ -1037,7 +1037,7 @@ class TestDrawCommand:
 
         plugin.context.get_messages.assert_not_called()
         plugin.context.get_channel_messages.assert_not_called()
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert kwargs["history"] == []
         assert kwargs["channel_history"] == []
 
@@ -1045,8 +1045,8 @@ class TestDrawCommand:
         """GIVEN planner returns image URL WHEN draw called THEN reply contains it."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_draw_result(
             content="Here is your image: http://img.example/gen.png",
         )
 
@@ -1059,8 +1059,8 @@ class TestDrawCommand:
         """GIVEN draw with cost WHEN draw completes THEN usage is logged."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_draw_result(
             prompt_tokens=10,
             completion_tokens=0,
             cost=0.04,
@@ -1087,8 +1087,8 @@ class TestDrawCommand:
         """GIVEN draw with zero cost/tokens WHEN draw succeeds THEN usage is still logged."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_draw_result(
             prompt_tokens=0,
             completion_tokens=0,
             cost=0.0,
@@ -1115,8 +1115,8 @@ class TestDrawCommand:
         """GIVEN draw content blocked WHEN draw completes THEN usage logged with status=content_blocked."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_draw_result(
             content="Error: content blocked",
             error="Error: content blocked",
             prompt_tokens=0,
@@ -1144,8 +1144,8 @@ class TestDrawCommand:
         """GIVEN draw that errors (non-content) WHEN draw completes THEN usage logged with status=error."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_draw_result(
             content="Error: timeout exceeded",
             error="Error: timeout exceeded",
             prompt_tokens=0,
@@ -1182,8 +1182,8 @@ class TestDrawCommand:
         """GIVEN draw succeeds WHEN executed THEN personal and channel context stored."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_draw_result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_draw_result()
 
         plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
 
@@ -1197,8 +1197,8 @@ class TestDrawCommand:
         """GIVEN draw returns error WHEN executed THEN no context stored."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_draw_result(
             content="Error: something went wrong",
             error="Error: something went wrong",
         )
@@ -1212,8 +1212,8 @@ class TestDrawCommand:
         """GIVEN context disabled WHEN draw succeeds THEN no context stored."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_draw_result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_draw_result()
 
         plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect({"contextEnabled": False})
@@ -1228,8 +1228,8 @@ class TestDrawCommand:
         """GIVEN grounding_used is True WHEN draw response returned THEN reply has globe icon."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_draw_result(
             content="image — http://x/img.png",
             grounding_used=True,
         )
@@ -1243,8 +1243,8 @@ class TestDrawCommand:
         """GIVEN /me-style draw response with grounding WHEN draw called THEN action carries globe icon."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_draw_result(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_draw_result(
             content="/me sketches a sunset",
             grounding_used=True,
         )
@@ -1255,7 +1255,7 @@ class TestDrawCommand:
         mock_action.assert_called_once_with("#test", "\U0001f310 sketches a sunset")
 
     def test_draw_preserves_preflight(self, plugin_env, mocker: MockerFixture):
-        """GIVEN draw WHEN preflight blocks THEN assistant_request is not called."""
+        """GIVEN draw WHEN preflight blocks THEN assistant_completion is not called."""
         plugin, mock_irc, mock_msg = plugin_env
         mocker.patch.object(
             plugin,
@@ -1265,7 +1265,7 @@ class TestDrawCommand:
 
         plugin.draw(mock_irc, mock_msg, ["test"])
 
-        plugin.llm_service.assistant_request.assert_not_called()
+        plugin.llm_service.assistant_completion.assert_not_called()
         mock_irc.reply.assert_not_called()
 
 
@@ -1294,8 +1294,8 @@ class TestDispatchAssistantReply:
         mock_irc.state.nickToAccount.return_value = "test_account"
         plugin.llm_service.detect_images.return_value = []
 
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="some reply",
             grounding_used=True,
             spend=Spend(prompt_tokens=5, completion_tokens=3, cost=0.001),
@@ -1323,8 +1323,8 @@ class TestDispatchAssistantReply:
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="https://img.example/cat.png",
             spend=Spend.ZERO,
             image_reworded=True,
@@ -1344,8 +1344,8 @@ class TestDispatchAssistantReply:
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="https://img.example/cat.png",
             spend=Spend.ZERO,
             model="xai/grok-imagine-image",
@@ -1360,8 +1360,8 @@ class TestDispatchAssistantReply:
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="https://img.example/cat.png",
             spend=Spend.ZERO,
             grounding_used=True,
@@ -1384,8 +1384,8 @@ class TestDispatchAssistantReply:
         """GIVEN last_successful_tool ∈ _REMINDER_MUTATION_TOOLS and final_text_after_tools is empty WHEN ask called THEN no reply or error but usage IS recorded."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="",
             grounding_used=False,
             spend=Spend(prompt_tokens=20, completion_tokens=2, cost=0.0002),
@@ -1409,8 +1409,8 @@ class TestDispatchAssistantReply:
         """GIVEN a suppressed set_reminder ack WHEN ask called THEN the stored assistant turn is the context note, not an empty string."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="",
             spend=Spend.ZERO,
             model="gpt-4",
@@ -1434,8 +1434,8 @@ class TestDispatchAssistantReply:
         """GIVEN the set_reminder tool reported what is pending WHEN ask called THEN the stored note repeats it, so a later revision has an antecedent."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="",
             spend=Spend.ZERO,
             model="gpt-4",
@@ -1495,8 +1495,8 @@ class TestDispatchAssistantReply:
         """GIVEN _extract_action returns a non-empty action text WHEN ask called THEN the rebound response stored in context starts with '* botnick'."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="/me ponders the question",
             grounding_used=False,
             spend=Spend(prompt_tokens=10, completion_tokens=5, cost=0.001),
@@ -2889,8 +2889,8 @@ class TestAccountBasedIdentity:
     def test_code_logs_usage_under_account(self, account_env, mocker: MockerFixture):
         """GIVEN user with NickServ account WHEN code completes THEN usage logged under account."""
         plugin, mock_irc, mock_msg = account_env
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="x = 1",
             spend=Spend(prompt_tokens=50, completion_tokens=20, cost=0.003),
             model="gpt-4",
@@ -2915,8 +2915,8 @@ class TestAccountBasedIdentity:
     def test_draw_logs_usage_under_account(self, account_env, mocker: MockerFixture):
         """GIVEN user with NickServ account WHEN draw completes THEN usage logged under account."""
         plugin, mock_irc, mock_msg = account_env
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
             spend=Spend(prompt_tokens=10, completion_tokens=0, cost=0.04),
@@ -2967,8 +2967,8 @@ class TestAccountBasedIdentity:
     def test_draw_stores_context_under_account(self, account_env, mocker: MockerFixture):
         """GIVEN user with NickServ account WHEN draw completes THEN context stored under account."""
         plugin, mock_irc, mock_msg = account_env
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
             spend=Spend(prompt_tokens=5, completion_tokens=0, cost=0.02),
@@ -3310,8 +3310,8 @@ class TestCodeEdgeCases:
     def test_code_skips_context_when_disabled(self, plugin_env, mocker: MockerFixture):
         """GIVEN context disabled WHEN code called THEN no context stored."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="print('hi')",
             spend=Spend(prompt_tokens=10, completion_tokens=5, cost=0.001),
             model="gpt-4",
@@ -3330,8 +3330,8 @@ class TestCodeEdgeCases:
     def test_code_empty_response_triggers_error(self, plugin_env, mocker: MockerFixture):
         """GIVEN planner returns empty content WHEN code called THEN irc.error is sent."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="",
             spend=Spend(prompt_tokens=10, completion_tokens=0, cost=0.0),
             model="gpt-4",
@@ -3401,7 +3401,7 @@ class TestRateLimitIntegration:
 
         mock_irc.error.assert_called_once()
         assert "Rate limit" in mock_irc.error.call_args[0][0]
-        plugin.llm_service.assistant_request.assert_not_called()
+        plugin.llm_service.assistant_completion.assert_not_called()
 
     def test_draw_over_threshold_logs_shadow_when_not_enforced(
         self, plugin_env, mocker: MockerFixture
@@ -3409,8 +3409,8 @@ class TestRateLimitIntegration:
         """GIVEN enforce=False and over limit WHEN draw called THEN request runs and shadow log is emitted."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
             spend=Spend(prompt_tokens=5, completion_tokens=0, cost=0.02),
@@ -3430,7 +3430,7 @@ class TestRateLimitIntegration:
         plugin.draw(mock_irc, mock_msg, ["test prompt"])
 
         mock_irc.error.assert_not_called()
-        plugin.llm_service.assistant_request.assert_called_once()
+        plugin.llm_service.assistant_completion.assert_called_once()
         assert any(
             "rate_limit_shadow" in c.args[0] for c in plugin.log.info.call_args_list if c.args
         )
@@ -3454,8 +3454,8 @@ class TestRateLimitIntegration:
     def test_code_succeeds_under_limit(self, plugin_env, mocker: MockerFixture):
         """GIVEN user under code rate limit WHEN code called THEN request succeeds."""
         plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="print('hi') — http://x/code.html",
             spend=Spend(prompt_tokens=5, completion_tokens=10, cost=0.001),
             model="gpt-4",
@@ -3469,8 +3469,8 @@ class TestRateLimitIntegration:
         """GIVEN owner user over limit WHEN draw called THEN not blocked."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "owner_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
             spend=Spend(prompt_tokens=5, completion_tokens=0, cost=0.02),
@@ -3499,14 +3499,14 @@ class TestRateLimitIntegration:
         plugin.draw(mock_irc, mock_msg, ["test prompt"])
 
         mock_irc.error.assert_not_called()
-        plugin.llm_service.assistant_request.assert_called_once()
+        plugin.llm_service.assistant_completion.assert_called_once()
 
     def test_trusted_gets_relaxed_limits(self, plugin_env, mocker: MockerFixture):
         """GIVEN trusted user within trusted limit but over registered limit WHEN draw called THEN allowed."""
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "trusted_account"
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
             spend=Spend(prompt_tokens=5, completion_tokens=0, cost=0.02),
@@ -3536,7 +3536,7 @@ class TestRateLimitIntegration:
         plugin.draw(mock_irc, mock_msg, ["test prompt"])
 
         mock_irc.error.assert_not_called()
-        plugin.llm_service.assistant_request.assert_called_once()
+        plugin.llm_service.assistant_completion.assert_called_once()
 
     def test_ask_rate_limited_for_unregistered(self, plugin_env, mocker: MockerFixture):
         """GIVEN unregistered user over unreg limit WHEN ask called THEN blocked."""
@@ -3714,8 +3714,8 @@ class TestAskWithInstruction:
         plugin.db.get_instruction.return_value = "secret instruction"
         plugin.db.get_memories.return_value = [SimpleNamespace(id=1, fact="secret fact")]
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="hi",
             grounding_used=False,
             spend=Spend(prompt_tokens=1, completion_tokens=1, cost=0.0),
@@ -3723,7 +3723,7 @@ class TestAskWithInstruction:
         )  # ty: ignore[invalid-argument-type]
         getattr(plugin, command)(mock_irc, mock_msg, ["hello"])
         plugin.db.get_instruction.assert_not_called()
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert kwargs["memories"] == []
         assert kwargs["user_instruction"] is None
 
@@ -3742,7 +3742,7 @@ class TestAskWithInstruction:
             model="gpt-4",
         )
         plugin.ask(mock_irc, mock_msg, ["hello"])
-        call_kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        call_kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert call_kwargs["user_instruction"] == "You are Captain Picard."
         assert "Picard" not in (call_kwargs.get("system_prompt") or "")
 
@@ -3763,7 +3763,7 @@ class TestAskWithInstruction:
             model="gpt-4",
         )
         plugin.ask(mock_irc, mock_msg, ["hello"])
-        call_kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        call_kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         # assistantSystemPrompt is "You are helpful." in the test registry —
         # the overlay must reach the lower layer regardless of user instruction.
         assert call_kwargs.get("system_prompt") == "You are helpful."
