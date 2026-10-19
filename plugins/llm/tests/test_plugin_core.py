@@ -1423,6 +1423,81 @@ class TestWatchModeReminderMigration:
         plugin._llm_executor.submit.assert_not_called()
 
 
+class TestUsageBooking:
+    """Spend is booked whether or not a reply was delivered; history is not."""
+
+    SPEND = Spend(prompt_tokens=30, completion_tokens=7, cost=0.002)
+
+    def _book(self, plugin_env, mocker, result: AssistantResult, *, delivered: bool):
+        plugin, irc, msg = plugin_env
+        caller = make_caller(irc, msg, "testnick", account="acct", channel="#test")
+        add_message = mocker.patch.object(plugin.context, "add_message")
+        plugin._store_context_and_log_usage(
+            caller, "ask", "hi", result.content, result, irc, delivered=delivered
+        )
+        plugin.db.log_usage.assert_called_once()
+        args, kwargs = plugin.db.log_usage.call_args
+        assert args[4:7] == (30, 7, 0.002)
+        return kwargs, add_message
+
+    def test_delivered_success_is_booked_and_stored(self, plugin_env, mocker) -> None:
+        result = AssistantResult(content="reply", spend=self.SPEND, model="m")
+        kwargs, add_message = self._book(plugin_env, mocker, result, delivered=True)
+        assert kwargs["status"] == "success"
+        assert add_message.called
+
+    def test_echo_after_retry_is_booked_as_error_not_stored(self, plugin_env, mocker) -> None:
+        """GIVEN the echo exit (empty content, error set) WHEN nothing was
+        delivered THEN the spend still lands, as ``error``, and no history."""
+        result = AssistantResult(
+            content="",
+            spend=self.SPEND,
+            model="m",
+            error="Model echoed the prompt instead of replying.",
+        )
+        kwargs, add_message = self._book(plugin_env, mocker, result, delivered=False)
+        assert kwargs["status"] == "error"
+        assert "echoed" in kwargs["error_detail"]
+        add_message.assert_not_called()
+
+    def test_undelivered_without_error_is_booked_as_error(self, plugin_env, mocker) -> None:
+        """GIVEN a clean result that never reached IRC (fake react note, failed
+        send) THEN it books as ``error`` with a reason, and stores nothing."""
+        result = AssistantResult(content="[reacted 🫡]", spend=self.SPEND, model="m")
+        kwargs, add_message = self._book(plugin_env, mocker, result, delivered=False)
+        assert (kwargs["status"], kwargs["error_detail"]) == ("error", "not delivered")
+        add_message.assert_not_called()
+
+    def test_stashed_timeout_is_booked_as_timeout_not_stored(self, plugin_env, mocker) -> None:
+        placeholder = "Timed out, but I'll keep trying and deliver the answer when ready."
+        result = AssistantResult(
+            content=placeholder, spend=self.SPEND, model="m", error=placeholder, timed_out=True
+        )
+        kwargs, add_message = self._book(plugin_env, mocker, result, delivered=True)
+        assert kwargs["status"] == "timeout"
+        add_message.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("content", "silent", "status"),
+        [("ok", False, "success"), ("", False, "error"), ("[silent]", True, "silent")],
+    )
+    def test_unattended_status(self, plugin_env, content, silent, status) -> None:
+        """Reminder and scheduled-task fires share the command path's statuses."""
+        plugin, _irc, _msg = plugin_env
+        result = AssistantResult(content=content, spend=self.SPEND, model="m")
+        plugin._log_unattended_usage(
+            nick="n",
+            account=None,
+            channel="#c",
+            command="remind_action",
+            prompt="p",
+            result=result,
+            silent=silent,
+            log_context="t",
+        )
+        assert plugin.db.log_usage.call_args.kwargs["status"] == status
+
+
 class TestMemoryExtractionMigration:
     @pytest.mark.parametrize(("account", "scheduled"), [(None, False), ("acct", True)])
     def test_extraction_needs_an_account(self, plugin_env, mocker, account, scheduled) -> None:
