@@ -130,7 +130,7 @@ The five default labels are used as-is: `needs-triage`, `needs-info`, `ready-for
 
 ### Domain docs
 
-Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. Neither exists yet; they're created as needed. See `docs/agents/domain.md`.
+Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root (`docs/adr/` is created when the first decision is recorded). See `docs/agents/domain.md`.
 
 ## Go rewrite (v9)
 
