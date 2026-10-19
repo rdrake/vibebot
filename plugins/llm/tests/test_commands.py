@@ -3100,7 +3100,7 @@ class TestAccountBasedIdentity:
         plugin, mock_irc, _ = plugin_env
         owner = Caller(Identity("alice", "alice"), channel)
         squatter = Caller(Identity("alice", None), channel)
-        result = CompletionResult(content="ok", model="m")
+        result = AssistantResult(content="ok", spend=Spend.ZERO, model="m")
 
         plugin._store_context_and_log_usage(owner, "ask", "my secret", "ok", result, mock_irc)
 
@@ -3113,7 +3113,7 @@ class TestAccountBasedIdentity:
         excluded from their channel history."""
         plugin, mock_irc, _ = plugin_env
         caller = Caller(Identity("alice", None), "#test")
-        result = CompletionResult(content="ok", model="m")
+        result = AssistantResult(content="ok", spend=Spend.ZERO, model="m")
 
         plugin._store_context_and_log_usage(caller, "ask", "hello", "ok", result, mock_irc)
 
