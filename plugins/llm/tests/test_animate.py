@@ -592,14 +592,12 @@ class TestAnimatePlanner:
     """
 
     def _result(self, mocker, content: str = "Rendering your clip."):
-        from llm.service import AssistantResult
+        from llm.service import AssistantResult, Spend
 
         return AssistantResult(
             content=content,
             grounding_used=False,
-            prompt_tokens=120,
-            completion_tokens=40,
-            cost=0.0012,
+            spend=Spend(prompt_tokens=120, completion_tokens=40, cost=0.0012),
             model="gpt-4",
         )
 

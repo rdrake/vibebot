@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 from llm import ircquery
 from llm.identity import Caller, Identity
-from llm.service import AssistantResult
+from llm.service import AssistantResult, Spend
 
 from .conftest import make_caller, make_registry_side_effect, make_reminder_row
 
@@ -2666,9 +2666,7 @@ class TestChatProfileBridgeWiring:
         return AssistantResult(
             content="bridge wiring reply",
             grounding_used=False,
-            prompt_tokens=10,
-            completion_tokens=5,
-            cost=0.001,
+            spend=Spend(prompt_tokens=10, completion_tokens=5, cost=0.001),
             model="gpt-4",
         )
 

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from llm.identity import Caller, Identity
-from llm.service import AssistantResult
+from llm.service import AssistantResult, Spend
 
 from .conftest import make_registry_side_effect
 from .verse.conftest import link_avatar
@@ -1717,7 +1717,7 @@ class TestVerseRouteForGating:
         Regression guard: the dispatch hook must be a no-op — assistant_request
         must still be called exactly once (verseEnabled=False in plugin_env default).
         """
-        from llm.service import AssistantResult
+        from llm.service import AssistantResult, Spend
 
         plugin, mock_irc, mock_msg = plugin_env
 
@@ -1726,9 +1726,7 @@ class TestVerseRouteForGating:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="normal reply",
             grounding_used=False,
-            prompt_tokens=5,
-            completion_tokens=3,
-            cost=0.0,
+            spend=Spend(prompt_tokens=5, completion_tokens=3, cost=0.0),
             model="test-model",
         )
 
@@ -1888,9 +1886,7 @@ class TestAskWithVerseRoute:
         return AssistantResult(
             content=content,
             grounding_used=False,
-            prompt_tokens=10,
-            completion_tokens=5,
-            cost=0.001,
+            spend=Spend(prompt_tokens=10, completion_tokens=5, cost=0.001),
             model="gpt-4",
         )
 
@@ -2104,9 +2100,7 @@ class TestAskOnVerseChannelWithoutOptIn:
         return AssistantResult(
             content="reply",
             grounding_used=False,
-            prompt_tokens=10,
-            completion_tokens=5,
-            cost=0.001,
+            spend=Spend(prompt_tokens=10, completion_tokens=5, cost=0.001),
             model="gpt-4",
         )
 
@@ -3260,7 +3254,7 @@ class TestVersePasteStyle:
         plugin.llm_service.save_markdown_to_http.return_value = "https://e.co/s.html"
         plugin.llm_service.summarize_for_irc.return_value = "A tale."
         scene = "beat one\nbeat two"
-        result = AssistantResult(content=scene, was_verse=True)
+        result = AssistantResult(content=scene, spend=Spend.ZERO, was_verse=True)
 
         plugin._dispatch_assistant_reply(
             irc, msg, result, caller=Caller(Identity("fc42", None), "#test"), response=scene
@@ -3274,7 +3268,7 @@ class TestVersePasteStyle:
         plugin.llm_service.save_markdown_to_http.return_value = "https://e.co/a.html"
         plugin.llm_service.summarize_for_irc.return_value = "An answer."
         answer = "line one\nline two"
-        result = AssistantResult(content=answer, was_verse=False)
+        result = AssistantResult(content=answer, spend=Spend.ZERO, was_verse=False)
 
         plugin._dispatch_assistant_reply(
             irc, msg, result, caller=Caller(Identity("alice", None), "#test"), response=answer
@@ -3287,7 +3281,7 @@ class TestVerseReactionSendHook:
     def test_verse_reply_records_last_bot_line(self, plugin_env):
         plugin, irc, msg = plugin_env
         irc.network = "testnet"
-        result = AssistantResult(content="A tale of Methane Max", was_verse=True)
+        result = AssistantResult(content="A tale of Methane Max", spend=Spend.ZERO, was_verse=True)
         plugin._dispatch_assistant_reply(
             irc,
             msg,
@@ -3303,7 +3297,7 @@ class TestVerseReactionSendHook:
     def test_non_verse_reply_does_not_record(self, plugin_env):
         plugin, irc, msg = plugin_env
         irc.network = "testnet"
-        result = AssistantResult(content="just chatting", was_verse=False)
+        result = AssistantResult(content="just chatting", spend=Spend.ZERO, was_verse=False)
         plugin._dispatch_assistant_reply(
             irc,
             msg,
@@ -3318,7 +3312,9 @@ class TestVerseReactionSendHook:
         # branch (before the long-reply send) and must still be recorded.
         plugin, irc, msg = plugin_env
         irc.network = "testnet"
-        result = AssistantResult(content="/me summons Methane Max", was_verse=True)
+        result = AssistantResult(
+            content="/me summons Methane Max", spend=Spend.ZERO, was_verse=True
+        )
         plugin._dispatch_assistant_reply(
             irc,
             msg,
@@ -3442,7 +3438,7 @@ class TestDoTagmsgReactionCapture:
             irc,
             "#Test",
             "Methane Max hacked the tannoy",
-            AssistantResult(content="x", was_verse=True),
+            AssistantResult(content="x", spend=Spend.ZERO, was_verse=True),
         )
         msg.server_tags = {"+draft/react": "\U0001f44d"}
         msg.channel = "#test"

@@ -300,7 +300,7 @@ class TestRateLimitFullFlow:
         3. After window expires, user can draw again
         4. Unflag flow works independently of rate limiting
         """
-        from llm.service import AssistantResult
+        from llm.service import AssistantResult, Spend
 
         plugin, mock_irc = plugin_with_real_db
 
@@ -324,9 +324,7 @@ class TestRateLimitFullFlow:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
-            prompt_tokens=5,
-            completion_tokens=0,
-            cost=0.02,
+            spend=Spend(prompt_tokens=5, completion_tokens=0, cost=0.02),
             model="dall-e-3",
         )
 
@@ -358,9 +356,7 @@ class TestRateLimitFullFlow:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen2.png",
             grounding_used=False,
-            prompt_tokens=5,
-            completion_tokens=0,
-            cost=0.02,
+            spend=Spend(prompt_tokens=5, completion_tokens=0, cost=0.02),
             model="dall-e-3",
         )
         plugin.draw(mock_irc, mock_msg, ["fresh prompt"])
@@ -400,13 +396,16 @@ class TestMemoryIntegration:
         # rather than AttributeError.
         def _assistant_request_bridge(prompt, *, request_context, **kwargs):
             from llm.service import AssistantResult as _AssistantResult
+            from llm.service import Spend
 
             completion_result = plugin.llm_service.completion(prompt, command="ask", **kwargs)
             return _AssistantResult(
                 content=completion_result.content,
-                prompt_tokens=completion_result.prompt_tokens,
-                completion_tokens=completion_result.completion_tokens,
-                cost=completion_result.cost,
+                spend=Spend(
+                    prompt_tokens=completion_result.prompt_tokens,
+                    completion_tokens=completion_result.completion_tokens,
+                    cost=completion_result.cost,
+                ),
                 model=completion_result.model,
                 grounding_used=completion_result.grounding_used,
                 error=completion_result.error,
@@ -524,13 +523,16 @@ class TestMemoryIntegration:
 
         def _assistant_request_bridge(prompt, *, request_context, **kwargs):
             from llm.service import AssistantResult as _AssistantResult
+            from llm.service import Spend
 
             completion_result = plugin.llm_service.completion(prompt, command="ask", **kwargs)
             return _AssistantResult(
                 content=completion_result.content,
-                prompt_tokens=completion_result.prompt_tokens,
-                completion_tokens=completion_result.completion_tokens,
-                cost=completion_result.cost,
+                spend=Spend(
+                    prompt_tokens=completion_result.prompt_tokens,
+                    completion_tokens=completion_result.completion_tokens,
+                    cost=completion_result.cost,
+                ),
                 model=completion_result.model,
                 grounding_used=completion_result.grounding_used,
                 error=completion_result.error,

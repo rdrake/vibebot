@@ -618,6 +618,7 @@ def plugin_env(mocker: MockerFixture):
         exclude_tools=frozenset(),
     ):
         from llm.service import AssistantResult as _AssistantResult
+        from llm.service import Spend
 
         completion_result = plugin.llm_service.completion(
             prompt,
@@ -633,9 +634,11 @@ def plugin_env(mocker: MockerFixture):
         )
         return _AssistantResult(
             content=completion_result.content,
-            prompt_tokens=completion_result.prompt_tokens,
-            completion_tokens=completion_result.completion_tokens,
-            cost=completion_result.cost,
+            spend=Spend(
+                prompt_tokens=completion_result.prompt_tokens,
+                completion_tokens=completion_result.completion_tokens,
+                cost=completion_result.cost,
+            ),
             model=completion_result.model,
             grounding_used=completion_result.grounding_used,
             error=completion_result.error,

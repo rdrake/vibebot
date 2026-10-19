@@ -21,7 +21,7 @@ from llm.context import Role
 from llm.identity import Caller, Identity
 from llm.persistence import UsageBreakdown, UsageRank, UsageSummary
 from llm.plugin import LLM, PreflightResult
-from llm.service import AssistantResult, CompletionResult, ReminderParseResult
+from llm.service import AssistantResult, CompletionResult, ReminderParseResult, Spend
 
 from .conftest import make_registry_side_effect, make_reminder_row
 
@@ -43,9 +43,7 @@ class TestCommandPathPermit:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="ok",
             grounding_used=False,
-            prompt_tokens=1,
-            completion_tokens=1,
-            cost=0.0,
+            spend=Spend(prompt_tokens=1, completion_tokens=1, cost=0.0),
             model="m",
         )
         spy = mocker.spy(plugin._llm_executor, "permit")
@@ -64,9 +62,7 @@ class TestAskCommand:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Hello from unified assistant",
             grounding_used=False,
-            prompt_tokens=10,
-            completion_tokens=5,
-            cost=0.001,
+            spend=Spend(prompt_tokens=10, completion_tokens=5, cost=0.001),
             model="gpt-4",
         )
 
@@ -257,9 +253,7 @@ class TestAskCommand:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="",
             grounding_used=False,
-            prompt_tokens=20,
-            completion_tokens=2,
-            cost=0.0002,
+            spend=Spend(prompt_tokens=20, completion_tokens=2, cost=0.0002),
             model="gpt-4",
             last_successful_tool="set_reminder",
             final_text_after_tools="",
@@ -293,9 +287,7 @@ class TestAskCommand:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content=follow_up,
             grounding_used=False,
-            prompt_tokens=20,
-            completion_tokens=12,
-            cost=0.0003,
+            spend=Spend(prompt_tokens=20, completion_tokens=12, cost=0.0003),
             model="gpt-4",
             last_successful_tool="set_reminder",
             final_text_after_tools=follow_up,
@@ -316,9 +308,7 @@ class TestAskCommand:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="",
             grounding_used=False,
-            prompt_tokens=15,
-            completion_tokens=0,
-            cost=0.0001,
+            spend=Spend(prompt_tokens=15, completion_tokens=0, cost=0.0001),
             model="gpt-4",
             last_successful_tool="search_web",
             final_text_after_tools="",
@@ -339,9 +329,7 @@ class TestAskCommand:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="",
             grounding_used=False,
-            prompt_tokens=10,
-            completion_tokens=0,
-            cost=0.0001,
+            spend=Spend(prompt_tokens=10, completion_tokens=0, cost=0.0001),
             model="gpt-4",
             last_successful_tool=None,
             final_text_after_tools="",
@@ -440,12 +428,14 @@ class TestCodeCommand:
         defaults = {
             "content": "Here is your code — http://x/code.html",
             "grounding_used": False,
-            "prompt_tokens": 10,
-            "completion_tokens": 5,
-            "cost": 0.001,
             "model": "gpt-4",
         }
+        spend = {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.001}
+        for key in spend:
+            if key in overrides:
+                spend[key] = overrides.pop(key)
         defaults.update(overrides)
+        defaults["spend"] = Spend(**spend)
         return AssistantResult(**defaults)  # ty: ignore[invalid-argument-type]
 
     def test_code_routes_through_assistant_request(self, plugin_env, mocker: MockerFixture):
@@ -914,12 +904,14 @@ class TestDrawCommand:
         defaults = {
             "content": "Here is your image: http://img.example/gen.png",
             "grounding_used": False,
-            "prompt_tokens": 5,
-            "completion_tokens": 0,
-            "cost": 0.02,
             "model": "dall-e-3",
         }
+        spend = {"prompt_tokens": 5, "completion_tokens": 0, "cost": 0.02}
+        for key in spend:
+            if key in overrides:
+                spend[key] = overrides.pop(key)
         defaults.update(overrides)
+        defaults["spend"] = Spend(**spend)
         return AssistantResult(**defaults)  # ty: ignore[invalid-argument-type]
 
     def test_draw_routes_through_assistant_request(self, plugin_env, mocker: MockerFixture):
@@ -1306,9 +1298,7 @@ class TestDispatchAssistantReply:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="some reply",
             grounding_used=True,
-            prompt_tokens=5,
-            completion_tokens=3,
-            cost=0.001,
+            spend=Spend(prompt_tokens=5, completion_tokens=3, cost=0.001),
             model="gpt-4",
         )
 
@@ -1336,6 +1326,7 @@ class TestDispatchAssistantReply:
         plugin.llm_service.assistant_request.side_effect = None
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="https://img.example/cat.png",
+            spend=Spend.ZERO,
             image_reworded=True,
             model="xai/grok-imagine-image",
         )
@@ -1356,6 +1347,7 @@ class TestDispatchAssistantReply:
         plugin.llm_service.assistant_request.side_effect = None
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="https://img.example/cat.png",
+            spend=Spend.ZERO,
             model="xai/grok-imagine-image",
         )
 
@@ -1371,6 +1363,7 @@ class TestDispatchAssistantReply:
         plugin.llm_service.assistant_request.side_effect = None
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="https://img.example/cat.png",
+            spend=Spend.ZERO,
             grounding_used=True,
             image_reworded=True,
             model="xai/grok-imagine-image",
@@ -1395,9 +1388,7 @@ class TestDispatchAssistantReply:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="",
             grounding_used=False,
-            prompt_tokens=20,
-            completion_tokens=2,
-            cost=0.0002,
+            spend=Spend(prompt_tokens=20, completion_tokens=2, cost=0.0002),
             model="gpt-4",
             last_successful_tool="set_reminder",
             final_text_after_tools="",
@@ -1421,6 +1412,7 @@ class TestDispatchAssistantReply:
         plugin.llm_service.assistant_request.side_effect = None
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="",
+            spend=Spend.ZERO,
             model="gpt-4",
             last_successful_tool="set_reminder",
             final_text_after_tools="",
@@ -1445,6 +1437,7 @@ class TestDispatchAssistantReply:
         plugin.llm_service.assistant_request.side_effect = None
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="",
+            spend=Spend.ZERO,
             model="gpt-4",
             last_successful_tool="set_reminder",
             last_tool_message="Righto. (now pending: smell cheese in 60s)",
@@ -1474,9 +1467,7 @@ class TestDispatchAssistantReply:
         result = AssistantResult(
             content="",
             grounding_used=False,
-            prompt_tokens=12,
-            completion_tokens=0,
-            cost=0.0,
+            spend=Spend(prompt_tokens=12, completion_tokens=0, cost=0.0),
             model="gpt-4",
             last_successful_tool="verse_storybook",
             final_text_after_tools="",
@@ -1508,9 +1499,7 @@ class TestDispatchAssistantReply:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="/me ponders the question",
             grounding_used=False,
-            prompt_tokens=10,
-            completion_tokens=5,
-            cost=0.001,
+            spend=Spend(prompt_tokens=10, completion_tokens=5, cost=0.001),
             model="gpt-4",
         )
 
@@ -1538,9 +1527,7 @@ class TestDispatchAssistantReply:
         result = AssistantResult(
             content="/me waves",
             grounding_used=False,
-            prompt_tokens=1,
-            completion_tokens=1,
-            cost=0.0,
+            spend=Spend(prompt_tokens=1, completion_tokens=1, cost=0.0),
             model="gpt-4",
         )
 
@@ -2905,9 +2892,7 @@ class TestAccountBasedIdentity:
         plugin.llm_service.assistant_request.side_effect = None
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="x = 1",
-            prompt_tokens=50,
-            completion_tokens=20,
-            cost=0.003,
+            spend=Spend(prompt_tokens=50, completion_tokens=20, cost=0.003),
             model="gpt-4",
         )
 
@@ -2934,9 +2919,7 @@ class TestAccountBasedIdentity:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
-            prompt_tokens=10,
-            completion_tokens=0,
-            cost=0.04,
+            spend=Spend(prompt_tokens=10, completion_tokens=0, cost=0.04),
             model="dall-e-3",
         )
 
@@ -2988,9 +2971,7 @@ class TestAccountBasedIdentity:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
-            prompt_tokens=5,
-            completion_tokens=0,
-            cost=0.02,
+            spend=Spend(prompt_tokens=5, completion_tokens=0, cost=0.02),
             model="dall-e-3",
         )
 
@@ -3332,9 +3313,7 @@ class TestCodeEdgeCases:
         plugin.llm_service.assistant_request.side_effect = None
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="print('hi')",
-            prompt_tokens=10,
-            completion_tokens=5,
-            cost=0.001,
+            spend=Spend(prompt_tokens=10, completion_tokens=5, cost=0.001),
             model="gpt-4",
         )
 
@@ -3354,9 +3333,7 @@ class TestCodeEdgeCases:
         plugin.llm_service.assistant_request.side_effect = None
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="",
-            prompt_tokens=10,
-            completion_tokens=0,
-            cost=0.0,
+            spend=Spend(prompt_tokens=10, completion_tokens=0, cost=0.0),
             model="gpt-4",
         )
 
@@ -3436,9 +3413,7 @@ class TestRateLimitIntegration:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
-            prompt_tokens=5,
-            completion_tokens=0,
-            cost=0.02,
+            spend=Spend(prompt_tokens=5, completion_tokens=0, cost=0.02),
             model="dall-e-3",
         )
 
@@ -3482,9 +3457,7 @@ class TestRateLimitIntegration:
         plugin.llm_service.assistant_request.side_effect = None
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="print('hi') — http://x/code.html",
-            prompt_tokens=5,
-            completion_tokens=10,
-            cost=0.001,
+            spend=Spend(prompt_tokens=5, completion_tokens=10, cost=0.001),
             model="gpt-4",
         )
 
@@ -3500,9 +3473,7 @@ class TestRateLimitIntegration:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
-            prompt_tokens=5,
-            completion_tokens=0,
-            cost=0.02,
+            spend=Spend(prompt_tokens=5, completion_tokens=0, cost=0.02),
             model="dall-e-3",
         )
 
@@ -3538,9 +3509,7 @@ class TestRateLimitIntegration:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="Here is your image: http://img.example/gen.png",
             grounding_used=False,
-            prompt_tokens=5,
-            completion_tokens=0,
-            cost=0.02,
+            spend=Spend(prompt_tokens=5, completion_tokens=0, cost=0.02),
             model="dall-e-3",
         )
 
@@ -3749,9 +3718,7 @@ class TestAskWithInstruction:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="hi",
             grounding_used=False,
-            prompt_tokens=1,
-            completion_tokens=1,
-            cost=0.0,
+            spend=Spend(prompt_tokens=1, completion_tokens=1, cost=0.0),
             model="m",
         )  # ty: ignore[invalid-argument-type]
         getattr(plugin, command)(mock_irc, mock_msg, ["hello"])

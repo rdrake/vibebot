@@ -22,14 +22,12 @@ _IMG = "https://pics.example.com/cat.png"
 
 
 def _assistant_result(content: str = "Queued that up, it is rendering now."):
-    from llm.service import AssistantResult
+    from llm.service import AssistantResult, Spend
 
     return AssistantResult(
         content=content,
         grounding_used=False,
-        prompt_tokens=120,
-        completion_tokens=40,
-        cost=0.0012,
+        spend=Spend(prompt_tokens=120, completion_tokens=40, cost=0.0012),
         model="gemini/gemini-flash-latest",
     )
 

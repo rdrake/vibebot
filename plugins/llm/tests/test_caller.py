@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from llm.identity import Caller, Identity
-from llm.service import AssistantResult, CompletionResult, StorybookResult, VideoResult
+from llm.service import AssistantResult, CompletionResult, Spend, StorybookResult, VideoResult
 
 from .conftest import make_caller, make_registry_side_effect
 
@@ -25,7 +25,7 @@ NICK, ACCOUNT = "alice", "alice_acct"
 
 
 def _result(content: str) -> AssistantResult:
-    return AssistantResult(content=content, model="gpt-4")
+    return AssistantResult(content=content, spend=Spend.ZERO, model="gpt-4")
 
 
 class TestPreflightResolvesTheCaller:

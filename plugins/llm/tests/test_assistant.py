@@ -1924,7 +1924,10 @@ class TestMetaCompletion:
         assert call_kwargs["task_type"] == expected_task_type
         assert call_kwargs["prompt"] == "hello"
         assert "messages" in call_kwargs["request_data"]
-        assert result.error is None
+        # Shown to the channel, but an error so the placeholder never lands in
+        # history; timed_out books it as ``timeout``.
+        assert result.error == result.content
+        assert result.timed_out is True
         assert "deliver the answer when ready" in result.content
 
     def test_timeout_without_expiry_returns_error(
@@ -5235,7 +5238,7 @@ class TestOverlayReadsViaProfiles:
         hardcoded ``"assistantSystemPrompt"``.
         """
         from llm.profile import PROFILE_REMIND_ACTION, PROFILES, Profile
-        from llm.service import AssistantResult
+        from llm.service import AssistantResult, Spend
 
         sentinel = Profile(
             id=PROFILE_REMIND_ACTION,
@@ -5274,7 +5277,9 @@ class TestOverlayReadsViaProfiles:
         mocker.patch.object(plugin, "_gather_history", return_value=([], []))
         mocker.patch.object(plugin, "_get_user_memories", return_value=[])
         plugin.db.get_instruction.return_value = ""
-        plugin.llm_service.assistant_request.return_value = AssistantResult(content="done")
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="done", spend=Spend.ZERO
+        )
 
         event_name = "llm_remind_action_sentinel"
         plugin._reminders[event_name] = make_reminder_row(
@@ -5313,7 +5318,7 @@ class TestOverlayReadsViaProfiles:
         the read is dispatched on ``effective_profile``, not hardcoded.
         """
         from llm.profile import PROFILE_VERSE, PROFILES, Profile
-        from llm.service import AssistantResult
+        from llm.service import AssistantResult, Spend
 
         plugin, mock_irc, mock_msg = plugin_env
 
@@ -5340,7 +5345,9 @@ class TestOverlayReadsViaProfiles:
 
         plugin.llm_service.detect_images.return_value = []
         plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(content="ok")
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="ok", spend=Spend.ZERO
+        )
 
         # Build a PreflightResult inline. Match the shape used by other
         # tests that drive _ask_impl through plugin.ask().
