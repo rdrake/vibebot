@@ -16,8 +16,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import NamedTuple
 
+from .identity import Identity
+
 # Schema version for future migrations
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 # Reminders older than 24 hours past their fire_at are considered expired
 EXPIRY_THRESHOLD_SECONDS = 86400  # 24 hours
@@ -673,6 +675,17 @@ class LLMDatabase:
                     PRIMARY KEY (network, nick, requester)
                 );
             """)
+            conn.commit()
+
+        if current_version < 24:
+            # Set once a task's billed retry has its usage row, so an
+            # at-least-once redelivery can never book the same spend twice.
+            self._add_column_if_missing(
+                conn,
+                "pending_tasks",
+                "usage_booked",
+                "usage_booked INTEGER NOT NULL DEFAULT 0",
+            )
             conn.commit()
 
         # Stamp the schema version so future opens skip completed migrations.
@@ -1427,9 +1440,19 @@ class LLMDatabase:
         """
         with self._write_txn() as conn:
             rows = conn.execute(
-                f"SELECT {self._PENDING_TASK_COLUMNS} FROM pending_tasks WHERE expires_at <= ?",
+                f"SELECT {self._PENDING_TASK_COLUMNS}, usage_booked FROM pending_tasks "
+                "WHERE expires_at <= ?",
                 (now,),
             ).fetchall()
+            expired = [PendingTaskRow(*row[:-1]) for row in rows]
+            # A retry that finished and was billed but never got through is
+            # booked here, in the same transaction as the delete, so neither a
+            # delivery racing this sweep nor a later one can book it again.
+            for task, (*_cols, booked) in zip(expired, rows, strict=True):
+                if not booked:
+                    self._book_task_usage(
+                        conn, task, status="error", error_detail="expired before delivery"
+                    )
             if rows:
                 ids = [row[0] for row in rows]
                 placeholders = ",".join("?" for _ in ids)
@@ -1437,7 +1460,75 @@ class LLMDatabase:
                     f"DELETE FROM pending_tasks WHERE id IN ({placeholders})",
                     ids,
                 )
-            return [PendingTaskRow(*row) for row in rows]
+            return expired
+
+    def book_pending_task_usage(self, task_id: int, *, status: str, error_detail: str = "") -> bool:
+        """Book a pending task's billed retry once, whatever its end state.
+
+        Call it at each end state — delivered, ``delivery_failed``, cancelled
+        (the expiry sweep books its own) — before the row is deleted. The
+        ``usage_booked`` flag is set in the same transaction as the insert, so
+        delivery being at-least-once cannot double-count.
+
+        Returns:
+            True when a usage row was written; False when the task is gone,
+            was already booked, or recorded no spend.
+        """
+        with self._write_txn() as conn:
+            row = conn.execute(
+                f"SELECT {self._PENDING_TASK_COLUMNS}, usage_booked FROM pending_tasks "
+                "WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            if row is None or row[-1]:
+                return False
+            return self._book_task_usage(
+                conn, PendingTaskRow(*row[:-1]), status=status, error_detail=error_detail
+            )
+
+    @staticmethod
+    def _book_task_usage(
+        conn: sqlite3.Connection, task: PendingTaskRow, *, status: str, error_detail: str
+    ) -> bool:
+        """Mark ``task`` booked and insert its usage row, inside the caller's txn.
+
+        The spend is what the retry recorded in ``result_payload``; a task
+        whose retry never finished recorded none and gets no row. The row goes
+        under the requester's storage key (``Identity.key``), the same key the
+        foreground turn booked under.
+        """
+        conn.execute("UPDATE pending_tasks SET usage_booked = 1 WHERE id = ?", (task.id,))
+        try:
+            payload = json.loads(task.result_payload) if task.result_payload else {}
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        prompt_tokens = int(payload.get("prompt_tokens") or 0)
+        completion_tokens = int(payload.get("completion_tokens") or 0)
+        cost = float(payload.get("cost") or 0.0)
+        if cost <= 0 and prompt_tokens <= 0:
+            return False
+        conn.execute(
+            "INSERT INTO usage "
+            "(timestamp, nick, channel, command, model, prompt_tokens, "
+            "completion_tokens, cost, prompt, status, error_detail, rendered_prompt) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')",
+            (
+                time.time(),
+                Identity(task.nick, task.account or None).key,
+                task.reply_target,
+                task.task_type,
+                task.model,
+                prompt_tokens,
+                completion_tokens,
+                cost,
+                task.prompt_preview,
+                status,
+                error_detail[:200],
+            ),
+        )
+        return True
 
     def get_next_due_time(self) -> float | None:
         """Return the earliest next_attempt_at for actionable unclaimed tasks.

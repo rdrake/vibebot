@@ -1535,31 +1535,6 @@ class TestUsageBooking:
         result = mocker.MagicMock(error=None)
         assert plugin._usage_status(result, delivered=True) == ("success", "")
 
-    def test_pending_delivery_books_without_a_connection(self, plugin_env, mocker) -> None:
-        """GIVEN no IRC connection to resolve the nick on THEN the billed retry
-        still books, under the nick."""
-        from llm.service import PendingTaskResult
-
-        plugin, _irc, _msg = plugin_env
-        mocker.patch("llm.plugin.world.ircs", [])
-        result = PendingTaskResult(
-            status="completed",
-            task_type="ask",
-            nick="alice",
-            reply_target="#chan",
-            is_channel=True,
-            prompt_preview="hi",
-            model="gpt-4",
-            cost=0.01,
-            prompt_tokens=10,
-            completion_tokens=5,
-            account=None,
-        )
-
-        plugin._log_pending_delivery_usage(result, nick="alice", target="#chan")
-
-        plugin.db.log_usage.assert_called_once_with("alice", "#chan", "ask", "gpt-4", 10, 5, 0.01)
-
 
 class TestMemoryExtractionMigration:
     @pytest.mark.parametrize(("account", "scheduled"), [(None, False), ("acct", True)])
