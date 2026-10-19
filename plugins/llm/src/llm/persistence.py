@@ -1610,8 +1610,10 @@ class LLMDatabase:
             cost: Estimated cost in USD.
             prompt: The user's prompt text (for audit/flagging).
             status: Outcome status.  Known values: ``"success"``,
-                ``"error"``, ``"content_blocked"``,
-                ``"auth_failure"``, ``"rate_limited"``.
+                ``"error"``, ``"content_blocked"``, ``"timeout"``,
+                ``"silent"``, ``"auth_failure"``, ``"rate_limited"``.
+                Audit-only: no usage query filters on it, so every row's
+                spend counts toward the totals whatever its status.
             error_detail: Additional error context when status is not success.
             rendered_prompt: What the generator was actually asked for, when a
                 planner rewrote the user's words on the way there (@animate).

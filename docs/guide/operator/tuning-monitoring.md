@@ -228,6 +228,8 @@ A `@draw` or `@animate` request with subject research enabled writes a `dossier`
 
 One draw can write more than one `draw:image` row. Each row is one call to the image provider, so a prompt the filter refused and a rewording of it that succeeded are two rows: the refusal carries `status='content_blocked'` and the exact prompt the filter rejected, the delivered image carries `status='success'`. Counting rows therefore counts calls, not pictures. The bill is split rather than duplicated, so `SUM(cost)` is still the true total.
 
+Every chat turn writes a row, even when its reply never reached the channel. A turn that spent tokens and then delivered nothing, such as an echo of the prompt or an empty reply, carries `status='error'`. A turn that timed out carries `status='timeout'`, including one the bot queued for a retry; the retry writes its own row when it delivers. `@usage` totals count every status.
+
 The dollar figures come from LiteLLM's built-in price table, not from any provider billing API. A model LiteLLM has no price for records `$0.0000` and logs `completion_cost failed for model=…`; image models are priced from the two-entry `IMAGE_COST_PER_IMAGE` table in `plugins/llm/src/llm/service.py`. Read `@usage` as a relative signal and reconcile against the provider invoice.
 
 ### Storage

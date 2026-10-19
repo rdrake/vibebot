@@ -63,7 +63,6 @@ from .service import (
     SILENT_TOOLS,
     AssistantRequestContext,
     AssistantResult,
-    CompletionResult,
     ImageResult,
     LLMService,
     ReferenceImage,
@@ -3892,8 +3891,14 @@ class LLM(callbacks.Plugin):
 
         Attributes the fire's LLM cost to the chain owner (account, falling
         back to nick). Never raises — a logging failure must not break
-        delivery or rescheduling.
+        delivery or rescheduling. An empty reply counts as undelivered, the
+        same as on the command path (see ``_usage_status``).
         """
+        if silent:
+            status, error_detail = "silent", (result.error or "")[:200]
+        else:
+            delivered = bool((result.content or "").strip())
+            status, error_detail = self._usage_status(result, delivered=delivered)
         try:
             self.db.log_usage(
                 Identity(nick, account).key,
@@ -3904,8 +3909,8 @@ class LLM(callbacks.Plugin):
                 result.completion_tokens,
                 result.cost,
                 prompt=prompt,
-                status=("silent" if silent else "success"),
-                error_detail=(result.error or "")[:200],
+                status=status,
+                error_detail=error_detail,
             )
         except Exception:
             self.log.exception("%s usage log failed: %s", command, log_context)
@@ -3986,6 +3991,18 @@ class LLM(callbacks.Plugin):
             )
             response = result.content.strip() if result.content else ""
             is_silent = response == "[silent]"
+            # Booked before delivery, so a send that raises cannot lose the
+            # spend. Attributes the action fire's LLM cost to the chain owner.
+            self._log_unattended_usage(
+                nick=nick,
+                account=account,
+                channel=channel,
+                command="remind_action",
+                prompt=action_prompt,
+                result=result,
+                silent=is_silent,
+                log_context=f"event={event_name}",
+            )
             if is_silent:
                 pass  # No user-visible output this fire.
             elif not response:
@@ -4005,17 +4022,6 @@ class LLM(callbacks.Plugin):
                     label=message,
                     reply_msgid=reply_msgid,
                 )
-            # Attribute the action fire's LLM cost to the chain owner.
-            self._log_unattended_usage(
-                nick=nick,
-                account=account,
-                channel=channel,
-                command="remind_action",
-                prompt=action_prompt,
-                result=result,
-                silent=is_silent,
-                log_context=f"event={event_name}",
-            )
         except Exception:
             self.log.exception(
                 "reminder_action_delivery_failed nick=%s channel=%s event=%s",
@@ -5953,11 +5959,11 @@ class LLM(callbacks.Plugin):
     ) -> tuple[str, bool]:
         """Send the reply for an assistant result.
 
-        Returns ``(response_for_context, should_log_and_store)``. When the
-        response is empty (and not suppressed by a successful reminder
-        mutation), the helper emits ``irc.error`` and returns
-        ``(response, False)`` so the caller skips
-        ``_store_context_and_log_usage``.
+        Returns ``(response_for_context, delivered)``. When the response is
+        empty (and not suppressed by a successful reminder mutation), the
+        helper emits ``irc.error`` and returns ``(response, False)``; the
+        caller passes ``delivered`` to ``_store_context_and_log_usage``, which
+        books the spend either way and stores history only for a delivery.
 
         Reminder-mutation suppression (``ask`` only) is checked BEFORE the
         empty-response error branch; that is the existing behaviour and must
@@ -7750,19 +7756,46 @@ class LLM(callbacks.Plugin):
         parts.append(f"after: {after_count}")
         return _ToolCallbackResult(True, " | ".join(parts))
 
+    def _usage_status(self, result: AssistantResult, *, delivered: bool) -> tuple[str, str]:
+        """``(status, error_detail)`` for an assistant turn's usage row.
+
+        ``timeout`` for a call that timed out (stashed for retry or not), then
+        ``content_blocked`` / ``error`` from ``result.error``. A turn with no
+        error that still delivered nothing is an ``error`` too: it was billed
+        and the user got nothing for it.
+        """
+        detail = (result.error or "")[:200]
+        if result.timed_out:
+            return "timeout", detail
+        if result.error is not None:
+            if self._is_content_blocked_error(result.error):
+                return "content_blocked", detail
+            return "error", detail
+        if not delivered:
+            return "error", "not delivered"
+        return "success", ""
+
     def _store_context_and_log_usage(
         self,
         caller: Caller,
         command: str,
         text: str,
         response: str,
-        result: CompletionResult | ImageResult | VideoResult | AssistantResult,
+        result: AssistantResult,
         irc: callbacks.Irc,
         rendered_prompt: str = "",
+        *,
+        delivered: bool = True,
     ) -> None:
-        """Store conversation context and log API usage for a command.
+        """Log API usage for a command, and store the turn if it was delivered.
 
-        Shared between all commands (ask, code, draw).
+        Shared between all commands (ask, code, draw, animate).
+
+        The usage row is written whether or not anything reached IRC: the
+        provider billed the turn either way, and a turn that spent and then
+        delivered nothing (an echo after the retry, an empty reply, a failed
+        send) used to vanish from the ledger. History is written only for a
+        delivered reply with no error.
 
         History and the usage row go under the caller's storage key and
         reply target; background memory extraction runs only for a
@@ -7780,10 +7813,12 @@ class LLM(callbacks.Plugin):
                 planner rewrote ``text`` on the way there. @animate is the only
                 caller that passes it; every other command sends the user's
                 words through unchanged.
+            delivered: Whether the reply reached IRC (the second value
+                ``_dispatch_assistant_reply`` returns).
         """
         nick, channel = caller.identity.key, caller.reply_target
-        # Store conversation context if enabled and no error occurred
-        if result.error is None and self._get_context_enabled(channel):
+        stored = delivered and result.error is None
+        if stored and self._get_context_enabled(channel):
             ctx_cfg = self._get_context_config(channel)
             self.context.add_message(nick, channel, Role.USER, text, config=ctx_cfg)
             self.context.add_message(nick, channel, Role.ASSISTANT, response, config=ctx_cfg)
@@ -7798,14 +7833,7 @@ class LLM(callbacks.Plugin):
                     shared, irc.nick, Role.ASSISTANT, response, config=ctx_cfg
                 )
 
-        # Determine status
-        if result.error is None:
-            status = "success"
-        elif self._is_content_blocked_error(result.error):
-            status = "content_blocked"
-        else:
-            status = "error"
-        error_detail = (result.error or "")[:200]
+        status, error_detail = self._usage_status(result, delivered=delivered)
         self.db.log_usage(
             nick,
             channel,
@@ -7824,7 +7852,7 @@ class LLM(callbacks.Plugin):
         # a personal key: memories are read by it alone, so a nick-keyed fact
         # is a wasted LLM call (and could land on someone else's account key).
         personal_key = caller.identity.personal_key
-        if command in _MEMORY_COMMANDS and result.error is None and personal_key:
+        if command in _MEMORY_COMMANDS and stored and personal_key:
             self._schedule_memory_extraction(personal_key, channel, text, result.content)
 
     def ask(
@@ -8338,7 +8366,7 @@ class LLM(callbacks.Plugin):
                     if footer:
                         response = f"{response}\n{footer}" if response else footer
 
-                response, should_log = self._dispatch_assistant_reply(
+                response, delivered = self._dispatch_assistant_reply(
                     irc,
                     msg,
                     result,
@@ -8347,8 +8375,9 @@ class LLM(callbacks.Plugin):
                     suppress_reminder_mutations=True,
                 )
 
-            if should_log:
-                self._store_context_and_log_usage(caller, "ask", text, response, result, irc)
+            self._store_context_and_log_usage(
+                caller, "ask", text, response, result, irc, delivered=delivered
+            )
 
     def code(
         self,
@@ -8436,7 +8465,7 @@ class LLM(callbacks.Plugin):
                         **self._pending_task_fns(caller=caller, irc=irc, msg=msg),
                     )
 
-                    response, should_log = self._dispatch_assistant_reply(
+                    response, delivered = self._dispatch_assistant_reply(
                         irc,
                         msg,
                         result,
@@ -8444,8 +8473,9 @@ class LLM(callbacks.Plugin):
                         response=result.content,
                     )
 
-                if should_log:
-                    self._store_context_and_log_usage(caller, "code", text, response, result, irc)
+                self._store_context_and_log_usage(
+                    caller, "code", text, response, result, irc, delivered=delivered
+                )
         finally:
             stop_typing()
 
@@ -8545,7 +8575,7 @@ class LLM(callbacks.Plugin):
                         **self._pending_task_fns(caller=caller, irc=irc, msg=msg),
                     )
 
-                    response, should_log = self._dispatch_assistant_reply(
+                    response, delivered = self._dispatch_assistant_reply(
                         irc,
                         msg,
                         result,
@@ -8553,8 +8583,9 @@ class LLM(callbacks.Plugin):
                         response=result.content,
                     )
 
-                if should_log:
-                    self._store_context_and_log_usage(caller, "draw", text, response, result, irc)
+                self._store_context_and_log_usage(
+                    caller, "draw", text, response, result, irc, delivered=delivered
+                )
         finally:
             stop_typing()
 
@@ -9543,7 +9574,7 @@ class LLM(callbacks.Plugin):
                         **self._pending_task_fns(caller=caller, irc=irc, msg=msg),
                     )
 
-                    response, should_log = self._dispatch_assistant_reply(
+                    response, delivered = self._dispatch_assistant_reply(
                         irc,
                         msg,
                         result,
@@ -9555,16 +9586,16 @@ class LLM(callbacks.Plugin):
                 # the only thing @animate spends: the video box is self-hosted
                 # and reports no token accounting, so the poller that delivers
                 # the clip minutes later has no usage of its own to add.
-                if should_log:
-                    self._store_context_and_log_usage(
-                        caller,
-                        "animate",
-                        text,
-                        response,
-                        result,
-                        irc,
-                        rendered_prompt=" | ".join(rendered_prompts),
-                    )
+                self._store_context_and_log_usage(
+                    caller,
+                    "animate",
+                    text,
+                    response,
+                    result,
+                    irc,
+                    rendered_prompt=" | ".join(rendered_prompts),
+                    delivered=delivered,
+                )
         finally:
             stop_typing()
 
