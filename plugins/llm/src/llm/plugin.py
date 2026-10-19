@@ -4602,18 +4602,20 @@ class LLM(callbacks.Plugin):
         """
         if result.cost <= 0 and result.prompt_tokens <= 0:
             return
-        for irc_conn in world.ircs:
-            identity = result.account or self._resolve_nick_to_identity(irc_conn, nick)
-            self.db.log_usage(
-                identity,
-                target,
-                result.task_type,
-                result.model,
-                result.prompt_tokens,
-                result.completion_tokens,
-                result.cost,
-            )
-            break
+        # With no connection to resolve the nick on, the row still lands under
+        # the nick: the retry was billed either way.
+        identity = result.account
+        if not identity:
+            identity = self._resolve_nick_to_identity(world.ircs[0], nick) if world.ircs else nick
+        self.db.log_usage(
+            identity,
+            target,
+            result.task_type,
+            result.model,
+            result.prompt_tokens,
+            result.completion_tokens,
+            result.cost,
+        )
 
     def _extract_action(self, irc: callbacks.Irc, response: str) -> str | None:
         """Return action text if *response* looks like an IRC action, else ``None``.
@@ -5820,8 +5822,10 @@ class LLM(callbacks.Plugin):
         *,
         prefixNick: bool = False,  # noqa: N803  (mirrors irc.reply kwarg)
         style: str = "answer",
-    ) -> None:
+    ) -> bool:
         """Reply with ``text`` inline when it is short, pastebinning the rest.
+
+        Returns False when the line or batch could not be queued.
 
         One wire-line goes out as-is. A reply that wraps to at most
         ``multilineMaxLines`` wire-lines goes out as a single draft/multiline
@@ -5843,8 +5847,7 @@ class LLM(callbacks.Plugin):
         ]
         max_lines = int(self.registryValue("multilineMaxLines", target) or 0)
         if 1 < len(chunks) <= max_lines and self._multiline_negotiated(irc):
-            self._send_multiline_batch(irc, msg, chunks, prefixNick=prefixNick)
-            return
+            return self._send_multiline_batch(irc, msg, chunks, prefixNick=prefixNick)
 
         # Without a batch, multi-line answers pastebin (never collapsed into
         # one line); only a sole non-blank logical line may go inline, and
@@ -5877,7 +5880,7 @@ class LLM(callbacks.Plugin):
             ),
             teaser_cap=configured_max_chars,
         )
-        self._safe_reply(irc, line, prefixNick=prefixNick)
+        return self._safe_reply(irc, line, prefixNick=prefixNick)
 
     @staticmethod
     def _multiline_negotiated(irc: callbacks.Irc) -> bool:
@@ -6055,15 +6058,69 @@ class LLM(callbacks.Plugin):
         self.log.info("replying to %s/%s", channel, nick)
         # Verse scenes that overflow to a paste render with the storybook
         # parchment theme — they're stories, not Q&A answers.
-        self._send_long_reply(
+        if not self._send_long_reply(
             irc,
             msg,
             display_response,
             prefixNick=False,
             style="story" if getattr(result, "was_verse", False) else "answer",
-        )
+        ):
+            return response, False
         self._record_last_verse_line(irc, channel, display_response, result)
         return response, True
+
+    def _reply_and_book(
+        self,
+        irc: callbacks.Irc,
+        msg: IrcMsg,
+        result: AssistantResult,
+        *,
+        caller: Caller,
+        command: str,
+        text: str,
+        response: str,
+        suppress_reminder_mutations: bool = False,
+        rendered_prompt: str = "",
+    ) -> None:
+        """Send an assistant turn's reply, then book it.
+
+        The turn is billed before anything is sent, so a send that raises
+        still books its row (as undelivered) before the exception goes on.
+        """
+        try:
+            response, delivered = self._dispatch_assistant_reply(
+                irc,
+                msg,
+                result,
+                caller=caller,
+                response=response,
+                suppress_reminder_mutations=suppress_reminder_mutations,
+            )
+        except Exception:
+            try:
+                self._store_context_and_log_usage(
+                    caller,
+                    command,
+                    text,
+                    response,
+                    result,
+                    irc,
+                    rendered_prompt=rendered_prompt,
+                    delivered=False,
+                )
+            except Exception:
+                self.log.exception("%s usage log failed after a failed reply", command)
+            raise
+        self._store_context_and_log_usage(
+            caller,
+            command,
+            text,
+            response,
+            result,
+            irc,
+            rendered_prompt=rendered_prompt,
+            delivered=delivered,
+        )
 
     def _build_request_context(
         self,
@@ -7765,7 +7822,8 @@ class LLM(callbacks.Plugin):
         and the user got nothing for it.
         """
         detail = (result.error or "")[:200]
-        if result.timed_out:
+        # ``is True``, so a test's MagicMock result can't read as a timeout.
+        if result.timed_out is True:
             return "timeout", detail
         if result.error is not None:
             if self._is_content_blocked_error(result.error):
@@ -8366,18 +8424,16 @@ class LLM(callbacks.Plugin):
                     if footer:
                         response = f"{response}\n{footer}" if response else footer
 
-                response, delivered = self._dispatch_assistant_reply(
+                self._reply_and_book(
                     irc,
                     msg,
                     result,
                     caller=caller,
+                    command="ask",
+                    text=text,
                     response=response,
                     suppress_reminder_mutations=True,
                 )
-
-            self._store_context_and_log_usage(
-                caller, "ask", text, response, result, irc, delivered=delivered
-            )
 
     def code(
         self,
@@ -8465,17 +8521,15 @@ class LLM(callbacks.Plugin):
                         **self._pending_task_fns(caller=caller, irc=irc, msg=msg),
                     )
 
-                    response, delivered = self._dispatch_assistant_reply(
+                    self._reply_and_book(
                         irc,
                         msg,
                         result,
                         caller=caller,
+                        command="code",
+                        text=text,
                         response=result.content,
                     )
-
-                self._store_context_and_log_usage(
-                    caller, "code", text, response, result, irc, delivered=delivered
-                )
         finally:
             stop_typing()
 
@@ -8575,17 +8629,15 @@ class LLM(callbacks.Plugin):
                         **self._pending_task_fns(caller=caller, irc=irc, msg=msg),
                     )
 
-                    response, delivered = self._dispatch_assistant_reply(
+                    self._reply_and_book(
                         irc,
                         msg,
                         result,
                         caller=caller,
+                        command="draw",
+                        text=text,
                         response=result.content,
                     )
-
-                self._store_context_and_log_usage(
-                    caller, "draw", text, response, result, irc, delivered=delivered
-                )
         finally:
             stop_typing()
 
@@ -9574,28 +9626,21 @@ class LLM(callbacks.Plugin):
                         **self._pending_task_fns(caller=caller, irc=irc, msg=msg),
                     )
 
-                    response, delivered = self._dispatch_assistant_reply(
+                    # One row per turn, booked at submission. The planner's
+                    # text is the only thing @animate spends: the video box is
+                    # self-hosted and reports no token accounting, so the poller
+                    # that delivers the clip minutes later has no usage of its
+                    # own to add.
+                    self._reply_and_book(
                         irc,
                         msg,
                         result,
                         caller=caller,
+                        command="animate",
+                        text=text,
                         response=result.content,
+                        rendered_prompt=" | ".join(rendered_prompts),
                     )
-
-                # One row per turn, booked at submission. The planner's text is
-                # the only thing @animate spends: the video box is self-hosted
-                # and reports no token accounting, so the poller that delivers
-                # the clip minutes later has no usage of its own to add.
-                self._store_context_and_log_usage(
-                    caller,
-                    "animate",
-                    text,
-                    response,
-                    result,
-                    irc,
-                    rendered_prompt=" | ".join(rendered_prompts),
-                    delivered=delivered,
-                )
         finally:
             stop_typing()
 
