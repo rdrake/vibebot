@@ -1833,13 +1833,36 @@ class CleanupResult(NamedTuple):
     error: str | None = None
 
 
-class AssistantResult(NamedTuple):
-    """Result of an assistant tool-calling loop."""
+@dataclass(frozen=True)
+class Spend:
+    """What a turn billed: tokens and dollars, summed with ``+``."""
 
-    content: str
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost: float = 0.0
+
+    ZERO: ClassVar[Spend]
+
+    def __add__(self, other: Spend) -> Spend:
+        return Spend(
+            self.prompt_tokens + other.prompt_tokens,
+            self.completion_tokens + other.completion_tokens,
+            self.cost + other.cost,
+        )
+
+
+Spend.ZERO = Spend()
+
+
+class AssistantResult(NamedTuple):
+    """Result of an assistant tool-calling loop.
+
+    ``spend`` has no default: an exit that forgot it booked $0 silently,
+    twice (9562c27, f5ac2aa), so every construction now says what it cost.
+    """
+
+    content: str
+    spend: Spend
     model: str = ""
     grounding_used: bool = False
     image_reworded: bool = False
@@ -1855,6 +1878,23 @@ class AssistantResult(NamedTuple):
     # never send it to IRC. User-facing text rides in ``content``.
     final_text_after_tools: str = ""
     was_verse: bool = False
+    # The call timed out. ``error`` is set too, so nothing is stored as a
+    # reply; this only lets the usage row say ``timeout`` instead of ``error``.
+    timed_out: bool = False
+
+    # Read-only views for consumers that take any result type and read the
+    # three spend fields by name (_store_context_and_log_usage).
+    @property
+    def prompt_tokens(self) -> int:
+        return self.spend.prompt_tokens
+
+    @property
+    def completion_tokens(self) -> int:
+        return self.spend.completion_tokens
+
+    @property
+    def cost(self) -> float:
+        return self.spend.cost
 
 
 @dataclass(frozen=True)
@@ -6087,7 +6127,7 @@ Examples (echo → action_prompt: ""):
         primary: str,
         fallback: str,
         trigger: str,
-        primary_spent: dict[str, Any],
+        primary_spent: Spend,
     ) -> AssistantResult:
         """Re-run a refused assistant turn on ``fallback``; book both models' spend.
 
@@ -6106,11 +6146,7 @@ Examples (echo → action_prompt: ""):
         )
         # One usage row per turn, under the model that answered; the primary's
         # refused calls are folded into it, as leaf-tool spend already is.
-        return result._replace(
-            prompt_tokens=result.prompt_tokens + primary_spent["prompt_tokens"],
-            completion_tokens=result.completion_tokens + primary_spent["completion_tokens"],
-            cost=result.cost + primary_spent["cost"],
-        )
+        return result._replace(spend=result.spend + primary_spent)
 
     def assistant_completion(
         self,
@@ -6187,23 +6223,23 @@ Examples (echo → action_prompt: ""):
             get_tools_for_profile,
         )
 
-        total_prompt_tokens = 0
-        total_completion_tokens = 0
-        total_cost = 0.0
+        # The model's own steps. Leaf-tool spend stays on the executor and is
+        # added only by spent(), never folded in here, so an exit can call
+        # spent() at any point without counting a tool twice.
+        step_spend = Spend.ZERO
         model = ""
         fallback_model = ""
         executor: AssistantToolExecutor | None = None
 
-        def spent() -> dict[str, Any]:
+        def spent() -> Spend:
             """What the turn billed so far: earlier steps plus leaf tools."""
-            return {
-                "prompt_tokens": total_prompt_tokens
-                + (executor.accumulated_prompt_tokens if executor else 0),
-                "completion_tokens": total_completion_tokens
-                + (executor.accumulated_completion_tokens if executor else 0),
-                "cost": total_cost + (executor.accumulated_cost if executor else 0.0),
-                "model": model,
-            }
+            if executor is None:
+                return step_spend
+            return step_spend + Spend(
+                executor.accumulated_prompt_tokens,
+                executor.accumulated_completion_tokens,
+                executor.accumulated_cost,
+            )
 
         stop_typing = self._begin_typing(irc, msg) if manage_typing else lambda: None
 
@@ -6226,6 +6262,7 @@ Examples (echo → action_prompt: ""):
                 error_content = _("Error: %s") % key_error
                 return AssistantResult(
                     content=error_content,
+                    spend=Spend.ZERO,
                     error=error_content,
                 )
             # Empty when there is nowhere to fall back to. The re-run carries
@@ -6644,9 +6681,7 @@ Examples (echo → action_prompt: ""):
 
                 # Accumulate usage via _extract_usage for proper cost
                 p, c, cost = self._extract_usage(response, model)
-                total_prompt_tokens += p
-                total_completion_tokens += c
-                total_cost += cost
+                step_spend += Spend(p, c, cost)
 
                 choice = response.choices[0]
                 message = choice.message
@@ -6800,11 +6835,6 @@ Examples (echo → action_prompt: ""):
                             turn_args, model, fallback_model, "text", spent()
                         )
 
-                    # Fold in any costs accumulated by leaf tool calls
-                    total_prompt_tokens += executor.accumulated_prompt_tokens
-                    total_completion_tokens += executor.accumulated_completion_tokens
-                    total_cost += executor.accumulated_cost
-
                     # Still echoing after the retry budget — return an error
                     # result (empty content) so the caller surfaces a
                     # "try again" message instead of relaying the user's
@@ -6819,9 +6849,7 @@ Examples (echo → action_prompt: ""):
                         )
                         return AssistantResult(
                             content="",
-                            prompt_tokens=total_prompt_tokens,
-                            completion_tokens=total_completion_tokens,
-                            cost=total_cost,
+                            spend=spent(),
                             model=model,
                             grounding_used=executor.grounding_used,
                             image_reworded=executor.image_reworded,
@@ -6839,9 +6867,7 @@ Examples (echo → action_prompt: ""):
                         content = unlabelled
                     return AssistantResult(
                         content=self.sanitize_output(content),
-                        prompt_tokens=total_prompt_tokens,
-                        completion_tokens=total_completion_tokens,
-                        cost=total_cost,
+                        spend=spent(),
                         model=model,
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
@@ -7015,9 +7041,6 @@ Examples (echo → action_prompt: ""):
                 # empty content so the channel sees ONLY the async link — not a
                 # disconnected sentence followed ~30s later by a surprise URL.
                 if storybook_ok:
-                    total_prompt_tokens += executor.accumulated_prompt_tokens
-                    total_completion_tokens += executor.accumulated_completion_tokens
-                    total_cost += executor.accumulated_cost
                     self.log.info(
                         "assistant_completion: short-circuit after verse_storybook, "
                         "skipping step_%i",
@@ -7025,9 +7048,7 @@ Examples (echo → action_prompt: ""):
                     )
                     return AssistantResult(
                         content="",
-                        prompt_tokens=total_prompt_tokens,
-                        completion_tokens=total_completion_tokens,
-                        cost=total_cost,
+                        spend=spent(),
                         model=model,
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
@@ -7042,9 +7063,6 @@ Examples (echo → action_prompt: ""):
                 # the same reason. When every such call failed the turn continues
                 # so the model can answer in text.
                 if silent_ok and all(tc.function.name in SILENT_TOOLS for tc in message.tool_calls):
-                    total_prompt_tokens += executor.accumulated_prompt_tokens
-                    total_completion_tokens += executor.accumulated_completion_tokens
-                    total_cost += executor.accumulated_cost
                     self.log.info(
                         "assistant_completion: short-circuit after %s, skipping step_%i",
                         last_successful_tool,
@@ -7052,9 +7070,7 @@ Examples (echo → action_prompt: ""):
                     )
                     return AssistantResult(
                         content="",
-                        prompt_tokens=total_prompt_tokens,
-                        completion_tokens=total_completion_tokens,
-                        cost=total_cost,
+                        spend=spent(),
                         model=model,
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
@@ -7093,9 +7109,6 @@ Examples (echo → action_prompt: ""):
                     tc.function.name in _IMAGE_MINTING_TOOLS for tc in message.tool_calls
                 ):
                     url = " ".join(step_image_urls)
-                    total_prompt_tokens += executor.accumulated_prompt_tokens
-                    total_completion_tokens += executor.accumulated_completion_tokens
-                    total_cost += executor.accumulated_cost
                     self.log.info(
                         "assistant_completion: short-circuit after generate_image "
                         "(%i/%i calls delivered), skipping step_%i",
@@ -7105,9 +7118,7 @@ Examples (echo → action_prompt: ""):
                     )
                     return AssistantResult(
                         content=self.sanitize_output(url),
-                        prompt_tokens=total_prompt_tokens,
-                        completion_tokens=total_completion_tokens,
-                        cost=total_cost,
+                        spend=spent(),
                         model=model,
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
@@ -7116,10 +7127,7 @@ Examples (echo → action_prompt: ""):
                         was_verse=was_verse,
                     )
 
-            # Step cap reached — fold in leaf tool costs
-            total_prompt_tokens += executor.accumulated_prompt_tokens
-            total_completion_tokens += executor.accumulated_completion_tokens
-            total_cost += executor.accumulated_cost
+            # Step cap reached.
             fallback = last_assistant_text.strip()
             # Never let a degenerate echo of the prompt — or a run-on/looping
             # collapse — leak out as the step-cap fallback.
@@ -7127,9 +7135,7 @@ Examples (echo → action_prompt: ""):
                 fallback = "I couldn't pull enough context to answer that — give me more detail."
             return AssistantResult(
                 content=self.sanitize_output(fallback),
-                prompt_tokens=total_prompt_tokens,
-                completion_tokens=total_completion_tokens,
-                cost=total_cost,
+                spend=spent(),
                 model=model,
                 grounding_used=executor.grounding_used,
                 image_reworded=executor.image_reworded,
@@ -7181,11 +7187,22 @@ Examples (echo → action_prompt: ""):
                 error_content = _(
                     "Timed out, but I'll keep trying and deliver the answer when ready."
                 )
-                return AssistantResult(content=error_content, **spent())
+                # Sent to the channel, but ``error`` keeps the placeholder out
+                # of history: it is not an answer, and the stashed retry books
+                # its own usage row when it delivers one.
+                return AssistantResult(
+                    content=error_content,
+                    spend=spent(),
+                    model=model,
+                    error=error_content,
+                    timed_out=True,
+                )
             return AssistantResult(
                 content=self._handle_llm_error(e, "chat"),
+                spend=spent(),
+                model=model,
                 error=self._sanitize(str(e)),
-                **spent(),
+                timed_out=True,
             )
 
         except Exception as e:
@@ -7202,7 +7219,8 @@ Examples (echo → action_prompt: ""):
             return AssistantResult(
                 content=self._handle_llm_error(e, "chat"),
                 error=self._sanitize(str(e)),
-                **spent(),
+                spend=spent(),
+                model=model,
             )
         finally:
             stop_typing()

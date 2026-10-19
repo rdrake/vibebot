@@ -356,14 +356,12 @@ class TestMakeMemeTool:
 
 class TestChatWiring:
     def _result(self):
-        from llm.service import AssistantResult
+        from llm.service import AssistantResult, Spend
 
         return AssistantResult(
             content="ok",
             grounding_used=False,
-            prompt_tokens=1,
-            completion_tokens=1,
-            cost=0.0,
+            spend=Spend(prompt_tokens=1, completion_tokens=1, cost=0.0),
             model="m",
         )
 

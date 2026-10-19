@@ -8,7 +8,13 @@ import pytest
 from hypothesis import given
 from hypothesis.strategies import characters, ip_addresses, lists, sampled_from, text, tuples
 from llm.identity import Caller, Identity
-from llm.service import AssistantRequestContext, AssistantResult, LLMService, validate_external_url
+from llm.service import (
+    AssistantRequestContext,
+    AssistantResult,
+    LLMService,
+    Spend,
+    validate_external_url,
+)
 
 from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
 
@@ -40,7 +46,9 @@ class TestLLMService:
             is_owner=False,
             capabilities=frozenset({"llm.ask"}),
         )
-        expected = AssistantResult(content="Hello from assistant facade", grounding_used=True)
+        expected = AssistantResult(
+            content="Hello from assistant facade", spend=Spend.ZERO, grounding_used=True
+        )
         self.service.assistant_completion = self.mocker.Mock(return_value=expected)
 
         result = self.service.assistant_request(
@@ -68,7 +76,7 @@ class TestLLMService:
             capabilities=frozenset({"llm.ask"}),
         )
         self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="ok"),
+            return_value=AssistantResult(content="ok", spend=Spend.ZERO),
         )
 
         self.service.assistant_request(
@@ -97,7 +105,7 @@ class TestLLMService:
             capabilities=frozenset({"llm.ask"}),
         )
         self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="ok"),
+            return_value=AssistantResult(content="ok", spend=Spend.ZERO),
         )
 
         self.service.assistant_request(
@@ -123,7 +131,7 @@ class TestLLMService:
             capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
         )
         self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="ok"),
+            return_value=AssistantResult(content="ok", spend=Spend.ZERO),
         )
 
         self.service.assistant_request(

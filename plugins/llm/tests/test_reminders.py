@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from llm.identity import Caller
-from llm.service import AssistantResult, ReminderParseResult
+from llm.service import AssistantResult, ReminderParseResult, Spend
 
 from .conftest import FAKE_PROVIDER_KEYS, make_completion_response, make_reminder_row
 
@@ -1656,7 +1656,9 @@ class TestReminderActionDelivery:
         mocker.patch.object(plugin, "_gather_history", return_value=([], []))
         memories = mocker.patch.object(plugin, "_get_user_memories", return_value=["secret"])
         plugin.db.get_instruction.return_value = "secret instruction"
-        plugin.llm_service.assistant_request.return_value = AssistantResult(content="ok")
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="ok", spend=Spend.ZERO
+        )
 
         event_name = "llm_remind_action_1"
         plugin._reminders[event_name] = make_reminder_row(
@@ -1694,7 +1696,7 @@ class TestReminderActionDelivery:
         mocker.patch.object(plugin, "_get_user_memories", return_value=["prefers concise"])
         plugin.db.get_instruction.return_value = "Be direct."
         plugin.llm_service.assistant_request.return_value = AssistantResult(
-            content="Build is green."
+            content="Build is green.", spend=Spend.ZERO
         )
 
         event_name = "llm_remind_action_1"
@@ -1771,7 +1773,9 @@ class TestReminderActionDelivery:
         mock_world.ircs = [active_irc]
 
         rl_spy = mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(content="done")
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="done", spend=Spend.ZERO
+        )
 
         event_name = "llm_remind_action_2"
         plugin._reminders[event_name] = make_reminder_row(
@@ -1886,7 +1890,9 @@ class TestReminderActionDelivery:
         active_irc.state.capabilities_ack = {"message-tags"}
         mock_world.ircs = [active_irc]
         mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(content="all green")
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="all green", spend=Spend.ZERO
+        )
 
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
@@ -1914,7 +1920,9 @@ class TestReminderActionDelivery:
         active_irc.state.capabilities_ack = set()
         mock_world.ircs = [active_irc]
         mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(content="all green")
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="all green", spend=Spend.ZERO
+        )
 
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
@@ -1945,7 +1953,9 @@ class TestReminderActionDelivery:
         mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
         long_reply = " ".join(f"word{i}" for i in range(150))  # ~900 chars
         assert len(long_reply) > 850
-        plugin.llm_service.assistant_request.return_value = AssistantResult(content=long_reply)
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content=long_reply, spend=Spend.ZERO
+        )
         plugin.llm_service.save_markdown_to_http.return_value = "http://h/remind.html"
 
         deliver = plugin._make_reminder_delivery_closure(
@@ -2054,9 +2064,7 @@ class TestReminderActionDelivery:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="status: green",
             model="gemini/gemini-2.0-flash-lite",
-            prompt_tokens=42,
-            completion_tokens=8,
-            cost=0.0001,
+            spend=Spend(prompt_tokens=42, completion_tokens=8, cost=0.0001),
         )
 
         event_name = "llm_remind_action_usage"
@@ -2101,9 +2109,7 @@ class TestReminderActionDelivery:
         plugin.llm_service.assistant_request.return_value = AssistantResult(
             content="[silent]",
             model="gemini/gemini-2.0-flash-lite",
-            prompt_tokens=30,
-            completion_tokens=2,
-            cost=0.00005,
+            spend=Spend(prompt_tokens=30, completion_tokens=2, cost=0.00005),
         )
 
         event_name = "llm_remind_action_silent"
@@ -2228,7 +2234,9 @@ class TestRoutingGateAndMechanicalReschedule:
     ) -> None:
         """GIVEN structured row WHEN fired THEN exclude_tools={set_reminder} and mechanical reschedule runs."""
         self._wire_active_irc(plugin, mocker)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(content="ok")
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="ok", spend=Spend.ZERO
+        )
         add_event = mocker.patch("llm.plugin.schedule.addEvent")
         mech_spy = mocker.spy(plugin, "_mechanical_reschedule")
 
@@ -2280,7 +2288,9 @@ class TestRoutingGateAndMechanicalReschedule:
     def test_one_shot_row_runs_neither_path(self, plugin: MagicMock, mocker: MockerFixture) -> None:
         """GIVEN one-shot row WHEN fired THEN neither mechanical nor LLM-tool reschedule runs."""
         self._wire_active_irc(plugin, mocker)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(content="ok")
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="ok", spend=Spend.ZERO
+        )
         mech_spy = mocker.spy(plugin, "_mechanical_reschedule")
 
         event_name = "llm_remind_oneshot_1"
@@ -2334,7 +2344,7 @@ class TestRoutingGateAndMechanicalReschedule:
         def _pop_then_respond(*_a, **_kw) -> AssistantResult:
             with plugin._reminders_lock:
                 plugin._reminders.pop(event_name, None)
-            return AssistantResult(content="ok")
+            return AssistantResult(content="ok", spend=Spend.ZERO)
 
         plugin.llm_service.assistant_request.side_effect = _pop_then_respond
 
@@ -2359,7 +2369,9 @@ class TestRoutingGateAndMechanicalReschedule:
     ) -> None:
         """GIVEN structured row at cap WHEN fired THEN mechanical reschedule no-ops."""
         self._wire_active_irc(plugin, mocker)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(content="ok")
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="ok", spend=Spend.ZERO
+        )
         add_event = mocker.patch("llm.plugin.schedule.addEvent")
 
         event_name = "llm_remind_cap_1"
@@ -2392,7 +2404,9 @@ class TestRoutingGateAndMechanicalReschedule:
     ) -> None:
         """GIVEN structured watch row WHEN response is [silent] THEN watch keeps watching."""
         active_irc = self._wire_active_irc(plugin, mocker)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(content="[silent]")
+        plugin.llm_service.assistant_request.return_value = AssistantResult(
+            content="[silent]", spend=Spend.ZERO
+        )
         add_event = mocker.patch("llm.plugin.schedule.addEvent")
 
         event_name = "llm_remind_watch_1"

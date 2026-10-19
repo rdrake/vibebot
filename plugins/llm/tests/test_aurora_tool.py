@@ -383,7 +383,7 @@ def test_handler_returns_tool_result(env, mocker) -> None:
 
 
 def _ask_tools(plugin_env, enabled: bool):
-    from llm.service import AssistantResult
+    from llm.service import AssistantResult, Spend
 
     plugin, irc, msg = plugin_env
     irc.state.nickToAccount.return_value = "test_account"
@@ -395,9 +395,7 @@ def _ask_tools(plugin_env, enabled: bool):
     plugin.llm_service.assistant_request.return_value = AssistantResult(
         content="ok",
         grounding_used=False,
-        prompt_tokens=1,
-        completion_tokens=1,
-        cost=0.0,
+        spend=Spend(prompt_tokens=1, completion_tokens=1, cost=0.0),
         model="m",
     )
     plugin.ask(irc, msg, ["any aurora tonight in Toronto"])

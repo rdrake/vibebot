@@ -6,7 +6,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 from llm.identity import Caller, Identity
-from llm.service import AssistantRequestContext, AssistantResult, CompletionResult, LLMService
+from llm.service import (
+    AssistantRequestContext,
+    AssistantResult,
+    CompletionResult,
+    LLMService,
+    Spend,
+)
 
 from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
 
@@ -1034,12 +1040,12 @@ class TestAssistantResultGroundingUsed:
 
     def test_grounding_used_defaults_to_false(self) -> None:
         """GIVEN AssistantResult with no grounding_used WHEN accessed THEN defaults to False."""
-        result = AssistantResult(content="hello")
+        result = AssistantResult(content="hello", spend=Spend.ZERO)
         assert result.grounding_used is False
 
     def test_grounding_used_can_be_set_true(self) -> None:
         """GIVEN AssistantResult with grounding_used=True WHEN accessed THEN is True."""
-        result = AssistantResult(content="hello", grounding_used=True)
+        result = AssistantResult(content="hello", spend=Spend.ZERO, grounding_used=True)
         assert result.grounding_used is True
 
     def test_grounding_used_coexists_with_other_fields(self) -> None:
@@ -1047,9 +1053,7 @@ class TestAssistantResultGroundingUsed:
 
         result = AssistantResult(
             content="response",
-            prompt_tokens=100,
-            completion_tokens=50,
-            cost=0.01,
+            spend=Spend(prompt_tokens=100, completion_tokens=50, cost=0.01),
             model="gpt-4",
             grounding_used=True,
             error=None,
@@ -1306,7 +1310,7 @@ class TestAssistantRequestFacade:
         system_prompt — the latter is reserved for personality overlays."""
         ctx = self._make_ctx(profile="chat")
         self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="answer"),
+            return_value=AssistantResult(content="answer", spend=Spend.ZERO),
         )
 
         self.service.assistant_request(
@@ -1330,7 +1334,7 @@ class TestAssistantRequestFacade:
             capabilities=frozenset({"llm.code"}),
         )
         self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="code link"),
+            return_value=AssistantResult(content="code link", spend=Spend.ZERO),
         )
 
         self.service.assistant_request(
@@ -1351,7 +1355,7 @@ class TestAssistantRequestFacade:
         still bypassing the token cap (PROFILE_VERSE not in profile_max_output)."""
         ctx = self._make_ctx(profile="verse")
         self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="verse answer"),
+            return_value=AssistantResult(content="verse answer", spend=Spend.ZERO),
         )
 
         self.service.assistant_request(
@@ -1375,7 +1379,7 @@ class TestAssistantRequestFacade:
             capabilities=frozenset({"llm.draw"}),
         )
         self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="image link"),
+            return_value=AssistantResult(content="image link", spend=Spend.ZERO),
         )
 
         self.service.assistant_request(
@@ -1394,7 +1398,7 @@ class TestAssistantRequestFacade:
         """assistant_request returns AssistantResult with all fields preserved."""
         ctx = self._make_ctx()
         self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="answer", grounding_used=True),
+            return_value=AssistantResult(content="answer", spend=Spend.ZERO, grounding_used=True),
         )
 
         result = self.service.assistant_request(
@@ -1414,7 +1418,7 @@ class TestAssistantRequestFacade:
         search_fn = self.mocker.Mock()
         draw_fn = self.mocker.Mock()
         self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="answer"),
+            return_value=AssistantResult(content="answer", spend=Spend.ZERO),
         )
 
         self.service.assistant_request(
@@ -1435,7 +1439,7 @@ class TestAssistantRequestFacade:
         """An explicit system_prompt kwarg takes priority over the profile default."""
         ctx = self._make_ctx(profile="chat")
         self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="ok"),
+            return_value=AssistantResult(content="ok", spend=Spend.ZERO),
         )
 
         self.service.assistant_request(
@@ -1463,7 +1467,7 @@ class TestAssistantRequestFacade:
             capabilities=frozenset({"llm.ask", "llm.code"}),
         )
         self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="ok"),
+            return_value=AssistantResult(content="ok", spend=Spend.ZERO),
         )
 
         self.service.assistant_request(
@@ -1487,7 +1491,7 @@ class TestAssistantRequestFacade:
         target, to assistant_completion: never the bot's own nick."""
         ctx = self._make_ctx(nick="user", channel=None)
         self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="ok"),
+            return_value=AssistantResult(content="ok", spend=Spend.ZERO),
         )
 
         self.service.assistant_request(
@@ -1712,8 +1716,8 @@ class TestResponsesApiTextAndUsage:
 
 
 def test_assistant_result_was_verse_defaults_false():
-    assert AssistantResult(content="x").was_verse is False
+    assert AssistantResult(content="x", spend=Spend.ZERO).was_verse is False
 
 
 def test_assistant_result_was_verse_settable():
-    assert AssistantResult(content="x", was_verse=True).was_verse is True
+    assert AssistantResult(content="x", spend=Spend.ZERO, was_verse=True).was_verse is True

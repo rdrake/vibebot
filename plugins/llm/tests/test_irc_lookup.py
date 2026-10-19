@@ -13,6 +13,7 @@ import json
 import pytest
 from llm.identity import Caller, Identity
 from llm.plugin import AssistantResult
+from llm.service import Spend
 from supybot import ircmsgs
 
 from .conftest import make_registry_side_effect
@@ -267,9 +268,7 @@ class TestChatWiring:
         return AssistantResult(
             content="ok",
             grounding_used=False,
-            prompt_tokens=1,
-            completion_tokens=1,
-            cost=0.0,
+            spend=Spend(prompt_tokens=1, completion_tokens=1, cost=0.0),
             model="m",
         )
 
