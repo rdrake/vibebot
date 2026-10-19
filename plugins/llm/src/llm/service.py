@@ -9352,17 +9352,18 @@ Examples (echo → action_prompt: ""):
         )
 
         response = (result.content or "").strip()
-        if not plugin._llm_executor.closing:
-            plugin._log_unattended_usage(
-                nick=row.creator_nick,
-                account=row.account,
-                channel=row.channel,
-                command="scheduled_llm_task",
-                prompt=row.prompt,
-                result=result,
-                silent=bool(row.watch_mode and response == "[silent]"),
-                log_context=row.event_name,
-            )
+        # Booked even while the executor is closing: the turn already ran and
+        # was billed, and _log_unattended_usage never raises.
+        plugin._log_unattended_usage(
+            nick=row.creator_nick,
+            account=row.account,
+            channel=row.channel,
+            command="scheduled_llm_task",
+            prompt=row.prompt,
+            result=result,
+            silent=bool(row.watch_mode and response == "[silent]"),
+            log_context=row.event_name,
+        )
 
         if not response or (row.watch_mode and response == "[silent]"):
             return

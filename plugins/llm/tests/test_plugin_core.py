@@ -1497,6 +1497,69 @@ class TestUsageBooking:
         )
         assert plugin.db.log_usage.call_args.kwargs["status"] == status
 
+    def test_reply_that_raises_is_still_booked(self, plugin_env, mocker) -> None:
+        """GIVEN sending the reply raises THEN the turn books as undelivered
+        before the exception propagates, and nothing reaches history."""
+        plugin, irc, msg = plugin_env
+        caller = make_caller(irc, msg, "testnick", account="acct", channel="#test")
+        mocker.patch.object(plugin, "_dispatch_assistant_reply", side_effect=RuntimeError("boom"))
+        add_message = mocker.patch.object(plugin.context, "add_message")
+        result = AssistantResult(content="reply", spend=self.SPEND, model="m")
+
+        with pytest.raises(RuntimeError):
+            plugin._reply_and_book(
+                irc, msg, result, caller=caller, command="code", text="hi", response="reply"
+            )
+
+        kwargs = plugin.db.log_usage.call_args.kwargs
+        assert (kwargs["status"], kwargs["error_detail"]) == ("error", "not delivered")
+        add_message.assert_not_called()
+
+    def test_failed_long_reply_send_is_not_delivered(self, plugin_env, mocker) -> None:
+        """GIVEN the reply could not be queued THEN dispatch reports it undelivered."""
+        plugin, irc, msg = plugin_env
+        caller = make_caller(irc, msg, "testnick", account="acct", channel="#test")
+        mocker.patch.object(plugin, "_send_long_reply", return_value=False)
+        result = AssistantResult(content="reply", spend=self.SPEND, model="m")
+
+        _response, delivered = plugin._dispatch_assistant_reply(
+            irc, msg, result, caller=caller, response="reply"
+        )
+
+        assert delivered is False
+
+    def test_mock_result_never_books_as_timeout(self, plugin_env, mocker) -> None:
+        """A MagicMock's timed_out is a truthy mock, not True; it must not
+        turn every mocked turn into a ``timeout`` row."""
+        plugin, _irc, _msg = plugin_env
+        result = mocker.MagicMock(error=None)
+        assert plugin._usage_status(result, delivered=True) == ("success", "")
+
+    def test_pending_delivery_books_without_a_connection(self, plugin_env, mocker) -> None:
+        """GIVEN no IRC connection to resolve the nick on THEN the billed retry
+        still books, under the nick."""
+        from llm.service import PendingTaskResult
+
+        plugin, _irc, _msg = plugin_env
+        mocker.patch("llm.plugin.world.ircs", [])
+        result = PendingTaskResult(
+            status="completed",
+            task_type="ask",
+            nick="alice",
+            reply_target="#chan",
+            is_channel=True,
+            prompt_preview="hi",
+            model="gpt-4",
+            cost=0.01,
+            prompt_tokens=10,
+            completion_tokens=5,
+            account=None,
+        )
+
+        plugin._log_pending_delivery_usage(result, nick="alice", target="#chan")
+
+        plugin.db.log_usage.assert_called_once_with("alice", "#chan", "ask", "gpt-4", 10, 5, 0.01)
+
 
 class TestMemoryExtractionMigration:
     @pytest.mark.parametrize(("account", "scheduled"), [(None, False), ("acct", True)])

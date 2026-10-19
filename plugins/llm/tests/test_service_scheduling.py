@@ -1308,3 +1308,40 @@ def test_secondly_rrule_is_floored_at_fire_time() -> None:
     from llm.plugin import LLM
 
     assert LLM._next_rrule_fire("FREQ=SECONDLY", 1_000.0) == 1_060.0
+
+
+def test_scheduled_fire_books_usage_while_closing(llm_service, mocker: MockerFixture) -> None:
+    """GIVEN shutdown began while a fire's turn ran THEN its spend is still
+    booked: the provider billed it whether or not the bot stays up."""
+    from llm.persistence import ScheduledLlmTaskRow
+    from llm.service import AssistantResult, Spend
+
+    plugin = llm_service.plugin
+    plugin._llm_executor.closing = True
+    plugin._unattended_ask_rate_limited.return_value = False
+    plugin._run_unattended_assistant.return_value = AssistantResult(
+        content="ok", spend=Spend(prompt_tokens=5, completion_tokens=2, cost=0.01), model="m"
+    )
+    mocker.patch("llm.service.ircdb.checkCapability", return_value=True)
+    row = ScheduledLlmTaskRow(
+        id=1,
+        event_name="scheduled_llm_task_1",
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#t",
+        network="afternet",
+        wire_msg=":rdrake!u@h PRIVMSG #t :@ask do x",
+        prompt="do x",
+        fire_at=0.0,
+        created_at=0.0,
+        recurrence_seconds=None,
+        recurrence_rrule=None,
+        chain_position=1,
+        watch_mode=False,
+        reply_target=None,
+    )
+
+    llm_service._dispatch_scheduled_task(_irc_mock(mocker), _msg_mock(mocker), row)
+
+    plugin._log_unattended_usage.assert_called_once()
+    assert plugin._log_unattended_usage.call_args.kwargs["result"].cost == 0.01
