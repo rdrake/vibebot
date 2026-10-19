@@ -23,7 +23,7 @@ from llm.persistence import UsageBreakdown, UsageRank, UsageSummary
 from llm.plugin import LLM, PreflightResult
 from llm.service import AssistantResult, CompletionResult, ReminderParseResult, Spend
 
-from .conftest import make_registry_side_effect, make_reminder_row
+from .conftest import make_registry_side_effect, make_reminder_row, put_reminder, reminder_names
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -2020,8 +2020,9 @@ class TestRemindSetCommand:
         mock_add_event = mocker.patch("llm.plugin.schedule.addEvent")
         plugin.remind(mock_irc, mock_msg, ["in 30m check the build"])
 
-        # Should schedule the event
+        # Should arm the one agenda wakeup at the reminder's time
         mock_add_event.assert_called_once()
+        assert mock_add_event.call_args.kwargs["name"] == "llm_agenda_wakeup"
         # Should persist to database
         plugin.db.save_reminder.assert_called_once()
         # Should reply with confirmation
@@ -2106,7 +2107,7 @@ class TestRemindSetCommand:
         assert "could not determine" in reply_text.lower()
 
     def test_remind_handles_schedule_failure(self, plugin_env, mocker: MockerFixture):
-        """GIVEN schedule.addEvent raises WHEN remind called THEN error is reported."""
+        """GIVEN the reminder cannot be stored WHEN remind called THEN error is reported."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
             action="schedule",
@@ -2115,7 +2116,7 @@ class TestRemindSetCommand:
             confirmation="ok",
         )
 
-        mocker.patch("llm.plugin.schedule.addEvent", side_effect=RuntimeError("scheduler broke"))
+        plugin.db.save_reminder.side_effect = RuntimeError("database locked")
         plugin.remind(mock_irc, mock_msg, ["in 1m test"])
 
         mock_irc.error.assert_called_once()
@@ -2132,19 +2133,24 @@ class TestRemindListCommand:
     def test_remind_list_shows_pending_reminders(self, plugin_env):
         """GIVEN user has reminders WHEN remind list called THEN formatted list is shown."""
         plugin, mock_irc, mock_msg = plugin_env
-        with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_1"] = make_reminder_row(
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_100_1",
                 nick="testnick",
                 channel="#test",
                 message="check build",
-            )
-            plugin._reminders["llm_remind_100_2"] = make_reminder_row(
+            ),
+        )
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_100_2",
                 nick="testnick",
                 channel="#test",
                 message="call Bob",
-            )
+            ),
+        )
 
         plugin.remind(mock_irc, mock_msg, ["list"])
 
@@ -2174,19 +2180,24 @@ class TestRemindListCommand:
     def test_remind_list_only_shows_own_reminders(self, plugin_env):
         """GIVEN reminders from different users WHEN remind list called THEN only shows own."""
         plugin, mock_irc, mock_msg = plugin_env
-        with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_1"] = make_reminder_row(
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_100_1",
                 nick="testnick",
                 channel="#test",
                 message="my reminder",
-            )
-            plugin._reminders["llm_remind_100_2"] = make_reminder_row(
+            ),
+        )
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_100_2",
                 nick="otheruser",
                 channel="#test",
                 message="not mine",
-            )
+            ),
+        )
 
         plugin.remind(mock_irc, mock_msg, ["list"])
 
@@ -2207,22 +2218,20 @@ class TestRemindDeleteCommand:
         """GIVEN user owns a reminder WHEN remind delete called THEN reminder is cancelled."""
         plugin, mock_irc, mock_msg = plugin_env
         event_name = "llm_remind_100_42"
-        with plugin._reminders_lock:
-            plugin._reminders[event_name] = make_reminder_row(
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name=event_name,
                 nick="testnick",
                 channel="#test",
                 message="my reminder",
-            )
+            ),
+        )
 
-        mock_remove = mocker.patch("llm.plugin.schedule.removeEvent")
         plugin.remind(mock_irc, mock_msg, ["delete 42"])
 
-        # Should remove from schedule
-        mock_remove.assert_called_once_with(event_name)
-        # Should remove from internal dict
-        assert event_name not in plugin._reminders
-        # Should delete from database
+        # Deleting the row is the cancel: nothing else holds the schedule.
+        assert event_name not in reminder_names(plugin)
         plugin.db.delete_reminder.assert_called_once_with(event_name)
         # Should confirm
         reply_text = mock_irc.reply.call_args[0][0]
@@ -2241,76 +2250,62 @@ class TestRemindDeleteCommand:
     def test_remind_delete_rejects_other_users_reminder(self, plugin_env):
         """GIVEN reminder owned by another user WHEN remind delete called THEN error."""
         plugin, mock_irc, mock_msg = plugin_env
-        with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_5"] = make_reminder_row(
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_100_5",
                 nick="otheruser",
                 channel="#test",
                 message="their reminder",
-            )
+            ),
+        )
 
         plugin.remind(mock_irc, mock_msg, ["delete 5"])
 
         mock_irc.error.assert_called_once()
 
-    def test_remind_delete_handles_missing_schedule_event_gracefully(
-        self, plugin_env, mocker: MockerFixture
-    ):
-        """GIVEN reminder exists but schedule event is gone WHEN remind delete THEN no crash."""
-        plugin, mock_irc, mock_msg = plugin_env
-        event_name = "llm_remind_100_7"
-        with plugin._reminders_lock:
-            plugin._reminders[event_name] = make_reminder_row(
-                event_name=event_name,
-                nick="testnick",
-                channel="#test",
-                message="my reminder",
-            )
-
-        mocker.patch("llm.plugin.schedule.removeEvent", side_effect=KeyError("gone"))
-        plugin.remind(mock_irc, mock_msg, ["delete 7"])
-
-        # Still confirmed
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "cancelled" in reply_text.lower()
-
     def test_remind_del_shorthand_works(self, plugin_env, mocker: MockerFixture):
         """GIVEN user owns a reminder WHEN remind del called THEN reminder is cancelled."""
         plugin, mock_irc, mock_msg = plugin_env
         event_name = "llm_remind_100_42"
-        with plugin._reminders_lock:
-            plugin._reminders[event_name] = make_reminder_row(
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name=event_name,
                 nick="testnick",
                 channel="#test",
                 message="my reminder",
-            )
+            ),
+        )
 
-        mocker.patch("llm.plugin.schedule.removeEvent")
         plugin.remind(mock_irc, mock_msg, ["del 42"])
 
-        assert event_name not in plugin._reminders
+        assert event_name not in reminder_names(plugin)
         reply_text = mock_irc.reply.call_args[0][0]
         assert "cancelled" in reply_text.lower()
 
     def test_remind_delete_multiple_ids(self, plugin_env, mocker: MockerFixture):
         """GIVEN user owns multiple reminders WHEN remind delete with multiple IDs THEN all cancelled."""
         plugin, mock_irc, mock_msg = plugin_env
-        with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_1"] = make_reminder_row(
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_100_1",
                 nick="testnick",
                 channel="#test",
                 message="first",
-            )
-            plugin._reminders["llm_remind_100_2"] = make_reminder_row(
+            ),
+        )
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_100_2",
                 nick="testnick",
                 channel="#test",
                 message="second",
-            )
+            ),
+        )
 
-        mocker.patch("llm.plugin.schedule.removeEvent")
         plugin.remind(mock_irc, mock_msg, ["delete 1 2"])
 
         reply_text = mock_irc.reply.call_args[0][0]
@@ -2328,33 +2323,40 @@ class TestRemindClearCommand:
     def test_remind_clear_removes_all_own_reminders(self, plugin_env, mocker: MockerFixture):
         """GIVEN user has reminders WHEN remind clear called THEN all are removed."""
         plugin, mock_irc, mock_msg = plugin_env
-        with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_1"] = make_reminder_row(
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_100_1",
                 nick="testnick",
                 channel="#test",
                 message="first",
-            )
-            plugin._reminders["llm_remind_100_2"] = make_reminder_row(
+            ),
+        )
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_100_2",
                 nick="testnick",
                 channel="#test",
                 message="second",
-            )
-            plugin._reminders["llm_remind_100_3"] = make_reminder_row(
+            ),
+        )
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_100_3",
                 nick="otheruser",
                 channel="#test",
                 message="not mine",
-            )
+            ),
+        )
 
-        mocker.patch("llm.plugin.schedule.removeEvent")
         plugin.remind(mock_irc, mock_msg, ["clear"])
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert "2 reminders" in reply_text.lower()
         # Other user's reminder should remain
-        assert "llm_remind_100_3" in plugin._reminders
+        assert "llm_remind_100_3" in reminder_names(plugin)
 
     def test_remind_clear_reports_no_reminders(self, plugin_env):
         """GIVEN user has no reminders WHEN remind clear called THEN reports none."""
@@ -2368,15 +2370,16 @@ class TestRemindClearCommand:
     def test_remind_clear_singular_label(self, plugin_env, mocker: MockerFixture):
         """GIVEN user has one reminder WHEN remind clear called THEN uses singular label."""
         plugin, mock_irc, mock_msg = plugin_env
-        with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_1"] = make_reminder_row(
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_100_1",
                 nick="testnick",
                 channel="#test",
                 message="only one",
-            )
+            ),
+        )
 
-        mocker.patch("llm.plugin.schedule.removeEvent")
         plugin.remind(mock_irc, mock_msg, ["clear"])
 
         reply_text = mock_irc.reply.call_args[0][0]
@@ -2477,13 +2480,15 @@ class TestRemindUserScheduledTasks:
     def test_list_shows_reminders_and_tasks_together(self, plugin_env, mocker: MockerFixture):
         """GIVEN both kinds WHEN remind list THEN both are listed in one reply."""
         plugin, mock_irc, mock_msg = plugin_env
-        with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_1"] = make_reminder_row(
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_100_1",
                 nick="testnick",
                 channel="#test",
                 message="check build",
-            )
+            ),
+        )
         plugin.llm_service.list_scheduled_llm_tasks.return_value = [
             _fake_task(mocker, "llm_task_deadbeef", "summarise the news"),
         ]
@@ -2542,15 +2547,16 @@ class TestRemindUserScheduledTasks:
     def test_delete_mixed_reminder_and_task(self, plugin_env, mocker: MockerFixture):
         """GIVEN one of each WHEN remind del with both ids THEN both are cancelled."""
         plugin, mock_irc, mock_msg = plugin_env
-        with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_7"] = make_reminder_row(
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_100_7",
                 nick="testnick",
                 channel="#test",
                 message="mine",
-            )
+            ),
+        )
         plugin.llm_service.cancel_scheduled_llm_task.return_value = mocker.MagicMock(status="ok")
-        mocker.patch("llm.plugin.schedule.removeEvent")
 
         plugin.remind(mock_irc, mock_msg, ["del 7 abc123"])
 
@@ -2560,19 +2566,20 @@ class TestRemindUserScheduledTasks:
     def test_clear_also_cancels_scheduled_tasks(self, plugin_env, mocker: MockerFixture):
         """GIVEN a reminder and two tasks WHEN remind clear THEN all three go."""
         plugin, mock_irc, mock_msg = plugin_env
-        with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_1"] = make_reminder_row(
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_100_1",
                 nick="testnick",
                 channel="#test",
                 message="mine",
-            )
+            ),
+        )
         plugin.llm_service.list_scheduled_llm_tasks.return_value = [
             _fake_task(mocker, "llm_task_aaa", "one"),
             _fake_task(mocker, "llm_task_bbb", "two"),
         ]
         plugin.llm_service.cancel_scheduled_llm_task.return_value = mocker.MagicMock(status="ok")
-        mocker.patch("llm.plugin.schedule.removeEvent")
 
         plugin.remind(mock_irc, mock_msg, ["clear"])
 
@@ -2592,19 +2599,20 @@ class TestRemindUserScheduledTasks:
         checkCapability converter and this goes red.
         """
         plugin, mock_irc, mock_msg = plugin_env
-        with plugin._reminders_lock:
-            plugin._reminders["llm_remind_100_1"] = make_reminder_row(
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_100_1",
                 nick="testnick",
                 channel="#test",
                 message="mine",
-            )
+            ),
+        )
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=False)
-        mocker.patch("llm.plugin.schedule.removeEvent")
 
         plugin.remind(mock_irc, mock_msg, ["clear"])
 
-        assert "llm_remind_100_1" in plugin._reminders
+        assert "llm_remind_100_1" in reminder_names(plugin)
         plugin.db.delete_reminder.assert_not_called()
         plugin.llm_service.cancel_scheduled_llm_task.assert_not_called()
 
@@ -2652,26 +2660,34 @@ class TestRemindAdminCommand:
     """Tests for the owner-only ``remind admin`` subcommand."""
 
     def _seed(self, plugin) -> None:
-        with plugin._reminders_lock:
-            plugin._reminders["llm_remind_aaaa_a1"] = make_reminder_row(
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_aaaa_a1",
                 nick="targetnick",
                 channel="#test",
                 message="target one",
-            )
-            plugin._reminders["llm_remind_aaaa_a2"] = make_reminder_row(
+            ),
+        )
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_aaaa_a2",
                 nick="targetnick",
                 channel="#test",
                 message="target two",
                 account="TargetAccount",
-            )
-            plugin._reminders["llm_remind_aaaa_a3"] = make_reminder_row(
+            ),
+        )
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_aaaa_a3",
                 nick="someoneelse",
                 channel="#test",
                 message="not target",
-            )
+            ),
+        )
 
     def test_admin_requires_owner(self, plugin_env, mocker: MockerFixture):
         """Non-owner invoking remind admin gets an error and no state changes."""
@@ -2689,8 +2705,8 @@ class TestRemindAdminCommand:
 
         mock_irc.error.assert_called_once()
         assert "owner" in mock_irc.error.call_args[0][0].lower()
-        assert "llm_remind_aaaa_a1" in plugin._reminders
-        assert "llm_remind_aaaa_a2" in plugin._reminders
+        assert "llm_remind_aaaa_a1" in reminder_names(plugin)
+        assert "llm_remind_aaaa_a2" in reminder_names(plugin)
 
     def test_admin_list_shows_target_reminders(self, plugin_env, mocker: MockerFixture):
         """Owner running remind admin list <nick> sees that user's reminders."""
@@ -2754,20 +2770,18 @@ class TestRemindAdminCommand:
         plugin, mock_irc, mock_msg = plugin_env
         self._seed(plugin)
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
-        mocker.patch("llm.plugin.schedule.removeEvent")
         mocker.patch.object(plugin.db, "load_scheduled_llm_tasks_for_target", return_value=[])
 
         plugin.remind(mock_irc, mock_msg, ["admin clear targetnick"])
 
-        assert "llm_remind_aaaa_a1" not in plugin._reminders
-        assert "llm_remind_aaaa_a2" not in plugin._reminders
-        assert "llm_remind_aaaa_a3" in plugin._reminders
+        assert "llm_remind_aaaa_a1" not in reminder_names(plugin)
+        assert "llm_remind_aaaa_a2" not in reminder_names(plugin)
+        assert "llm_remind_aaaa_a3" in reminder_names(plugin)
 
     def test_admin_clear_cancels_scheduled_tasks_too(self, plugin_env, mocker: MockerFixture):
         """admin clear nukes scheduled_llm_tasks rows alongside reminders."""
         plugin, mock_irc, mock_msg = plugin_env
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
-        mocker.patch("llm.plugin.schedule.removeEvent")
         fake_task = mocker.MagicMock(event_name="llm_task_xyz", account=None)
         mocker.patch.object(
             plugin.db, "load_scheduled_llm_tasks_for_target", return_value=[fake_task]
@@ -2796,20 +2810,18 @@ class TestRemindAdminCommand:
         plugin, mock_irc, mock_msg = plugin_env
         self._seed(plugin)
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
-        mocker.patch("llm.plugin.schedule.removeEvent")
         mocker.patch.object(plugin.db, "get_scheduled_llm_task", return_value=None)
 
         plugin.remind(mock_irc, mock_msg, ["admin del targetnick a1"])
 
-        assert "llm_remind_aaaa_a1" not in plugin._reminders
-        assert "llm_remind_aaaa_a2" in plugin._reminders
-        assert "llm_remind_aaaa_a3" in plugin._reminders
+        assert "llm_remind_aaaa_a1" not in reminder_names(plugin)
+        assert "llm_remind_aaaa_a2" in reminder_names(plugin)
+        assert "llm_remind_aaaa_a3" in reminder_names(plugin)
 
     def test_admin_del_scheduled_task_by_event_name(self, plugin_env, mocker: MockerFixture):
         """Owner deletes a scheduled_llm_task by full event_name."""
         plugin, mock_irc, mock_msg = plugin_env
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
-        mocker.patch("llm.plugin.schedule.removeEvent")
         fake_row = mocker.MagicMock(creator_nick="fc42", account=None)
         mocker.patch.object(plugin.db, "get_scheduled_llm_task", return_value=fake_row)
         delete_mock = mocker.patch.object(plugin.db, "delete_scheduled_llm_task")
@@ -2828,7 +2840,7 @@ class TestRemindAdminCommand:
         plugin.remind(mock_irc, mock_msg, ["admin del targetnick zzzz"])
 
         mock_irc.error.assert_called_once()
-        assert "llm_remind_aaaa_a1" in plugin._reminders
+        assert "llm_remind_aaaa_a1" in reminder_names(plugin)
 
     def test_admin_usage_error_when_args_missing(self, plugin_env, mocker: MockerFixture):
         """Bare ``remind admin`` returns a usage error."""
@@ -3263,45 +3275,6 @@ class TestRemindEdgeCases:
         # The save_reminder call should use the original text as fallback
         save_call = plugin.db.save_reminder.call_args
         assert save_call[0][3] == "in 1m something"  # message arg = original text
-
-
-class TestReloadRemindersEdgeCases:
-    """Tests for _reload_reminders error handling."""
-
-    def test_reload_reminders_handles_schedule_failure(self, plugin_env, mocker: MockerFixture):
-        """GIVEN future reminder WHEN schedule.addEvent fails THEN reminder cleaned from DB."""
-        import time as time_module
-
-        from llm.persistence import ReminderRow
-
-        plugin, mock_irc, mock_msg = plugin_env
-        future_time = time_module.time() + 3600
-        created = time_module.time()
-        reminder = ReminderRow(
-            id=1,
-            event_name="llm_remind_broken_1",
-            nick="testuser",
-            channel="#test",
-            message="test",
-            action_prompt="",
-            account=None,
-            fire_at=future_time,
-            created_at=created,
-            chain_position=1,
-            recurrence_seconds=None,
-            recurrence_rrule=None,
-            watch_mode=False,
-        )
-
-        plugin.db.load_pending_reminders.return_value = [reminder]
-
-        mocker.patch("llm.plugin.schedule.addEvent", side_effect=RuntimeError("scheduler broke"))
-        plugin._reload_reminders(mock_irc)
-
-        # Failed reminder should be deleted from DB
-        plugin.db.delete_reminder.assert_called_with("llm_remind_broken_1")
-        # Should NOT be stored in _reminders dict
-        assert "llm_remind_broken_1" not in plugin._reminders
 
 
 class TestCodeEdgeCases:

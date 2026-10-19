@@ -5,14 +5,21 @@ from __future__ import annotations
 import json
 import threading
 import time
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
 from llm.identity import Caller
 from llm.service import AssistantResult, ReminderParseResult, Spend
 
-from .conftest import FAKE_PROVIDER_KEYS, make_completion_response, make_reminder_row
+from .conftest import (
+    FAKE_PROVIDER_KEYS,
+    back_reminders_with_sqlite,
+    due_reminder,
+    make_completion_response,
+    make_reminder_row,
+    put_reminder,
+    reminder_names,
+)
 
 if TYPE_CHECKING:
     from unittest.mock import MagicMock
@@ -98,7 +105,7 @@ class TestReminderHelperMethods:
     """Tests for reminder helper methods on the plugin."""
 
     @pytest.fixture
-    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture) -> MagicMock:
+    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path) -> MagicMock:
         """Create a plugin instance with reminder support."""
         from llm.plugin import LLM
 
@@ -107,14 +114,9 @@ class TestReminderHelperMethods:
         mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
         plugin_init_patches(mocker)
         plugin = LLM(mock_irc)
+        back_reminders_with_sqlite(plugin.db, tmp_path / "reminders.db")
 
         return plugin
-
-    def test_plugin_initializes_reminders_dict(self, plugin: MagicMock) -> None:
-        """GIVEN plugin WHEN initialized THEN _reminders dict exists."""
-        assert hasattr(plugin, "_reminders")
-        assert isinstance(plugin._reminders, dict)
-        assert len(plugin._reminders) == 0
 
     # Tests for _get_user_reminders
 
@@ -129,17 +131,23 @@ class TestReminderHelperMethods:
         """GIVEN reminders from multiple users WHEN queried THEN filters."""
         from llm.plugin import Identity
 
-        plugin._reminders["llm_remind_1_100"] = make_reminder_row(
-            event_name="llm_remind_1_100",
-            nick="testnick",
-            channel="#channel",
-            message="my msg",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_1_100",
+                nick="testnick",
+                channel="#channel",
+                message="my msg",
+            ),
         )
-        plugin._reminders["llm_remind_2_200"] = make_reminder_row(
-            event_name="llm_remind_2_200",
-            nick="othernick",
-            channel="#channel",
-            message="their msg",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_2_200",
+                nick="othernick",
+                channel="#channel",
+                message="their msg",
+            ),
         )
 
         result = plugin._get_user_reminders(Identity(raw_nick="testnick", account=None))
@@ -152,12 +160,15 @@ class TestReminderHelperMethods:
 
         # User scheduled while presenting as "testnick"; later changes to "newnick"
         # but still identified as "MyAccount". Account match wins.
-        plugin._reminders["llm_remind_1_100"] = make_reminder_row(
-            event_name="llm_remind_1_100",
-            nick="testnick",
-            channel="#channel",
-            message="my msg",
-            account="MyAccount",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_1_100",
+                nick="testnick",
+                channel="#channel",
+                message="my msg",
+                account="MyAccount",
+            ),
         )
         result = plugin._get_user_reminders(Identity(raw_nick="newnick", account="MyAccount"))
         assert len(result) == 1
@@ -169,19 +180,25 @@ class TestReminderHelperMethods:
 
         # Two accounts have happened to share a raw_nick; they must not
         # see each other's reminders.
-        plugin._reminders["llm_remind_1_100"] = make_reminder_row(
-            event_name="llm_remind_1_100",
-            nick="shared",
-            channel="#channel",
-            message="alpha msg",
-            account="AccountAlpha",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_1_100",
+                nick="shared",
+                channel="#channel",
+                message="alpha msg",
+                account="AccountAlpha",
+            ),
         )
-        plugin._reminders["llm_remind_2_200"] = make_reminder_row(
-            event_name="llm_remind_2_200",
-            nick="shared",
-            channel="#channel",
-            message="beta msg",
-            account="AccountBeta",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_2_200",
+                nick="shared",
+                channel="#channel",
+                message="beta msg",
+                account="AccountBeta",
+            ),
         )
         result = plugin._get_user_reminders(Identity(raw_nick="shared", account="AccountAlpha"))
         assert len(result) == 1
@@ -237,8 +254,9 @@ class TestReminderHelperMethods:
         """GIVEN mixed reminders WHEN formatted THEN only action ones get [auto] marker."""
         from llm.plugin import Identity
 
-        plugin._reminders = {
-            "llm_remind_aaa1": make_reminder_row(
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_aaa1",
                 nick="alice",
                 channel="#chan",
@@ -246,13 +264,16 @@ class TestReminderHelperMethods:
                 action_prompt="check CVE status",
                 account="alice",
             ),
-            "llm_remind_bbb2": make_reminder_row(
+        )
+        put_reminder(
+            plugin,
+            make_reminder_row(
                 event_name="llm_remind_bbb2",
                 nick="alice",
                 channel="#chan",
                 message="echo this",
             ),
-        }
+        )
         formatted = plugin._format_reminders(
             plugin._get_user_reminders(Identity(raw_nick="alice", account="alice"))
         )
@@ -286,11 +307,14 @@ class TestReminderHelperMethods:
         """GIVEN matching reminder WHEN searched THEN returns event name."""
         from llm.plugin import Identity
 
-        plugin._reminders["llm_remind_123_456"] = make_reminder_row(
-            event_name="llm_remind_123_456",
-            nick="testnick",
-            channel="#channel",
-            message="msg",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_123_456",
+                nick="testnick",
+                channel="#channel",
+                message="msg",
+            ),
         )
         result = plugin._find_user_reminder(Identity(raw_nick="testnick", account=None), "456")
         assert result == "llm_remind_123_456"
@@ -306,11 +330,14 @@ class TestReminderHelperMethods:
         """GIVEN reminder owned by other WHEN searched THEN returns None."""
         from llm.plugin import Identity
 
-        plugin._reminders["llm_remind_123_456"] = make_reminder_row(
-            event_name="llm_remind_123_456",
-            nick="othernick",
-            channel="#channel",
-            message="msg",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_123_456",
+                nick="othernick",
+                channel="#channel",
+                message="msg",
+            ),
         )
         result = plugin._find_user_reminder(Identity(raw_nick="testnick", account=None), "456")
         assert result is None
@@ -323,12 +350,15 @@ class TestReminderHelperMethods:
         from llm.plugin import Identity
 
         remove = mocker.patch("llm.plugin.schedule.removeEvent")
-        plugin._reminders["llm_remind_a_111"] = make_reminder_row(
-            event_name="llm_remind_a_111",
-            nick="alice",
-            channel="#chan",
-            message="alice 1",
-            account="alice",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_a_111",
+                nick="alice",
+                channel="#chan",
+                message="alice 1",
+                account="alice",
+            ),
         )
         squatter = Identity(raw_nick="alice", account=None)
 
@@ -336,18 +366,21 @@ class TestReminderHelperMethods:
         assert plugin._find_user_reminder(squatter, "111") is None
         plugin._remind_clear_for_assistant(squatter)
         remove.assert_not_called()
-        assert "llm_remind_a_111" in plugin._reminders
+        assert "llm_remind_a_111" in reminder_names(plugin)
 
     def test_owner_keeps_account_owned_reminder_after_nick_change(self, plugin: MagicMock) -> None:
         """GIVEN alice's account-owned reminder WHEN she returns as alice_ THEN she still owns it."""
         from llm.plugin import Identity
 
-        plugin._reminders["llm_remind_a_111"] = make_reminder_row(
-            event_name="llm_remind_a_111",
-            nick="alice",
-            channel="#chan",
-            message="alice 1",
-            account="alice",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_a_111",
+                nick="alice",
+                channel="#chan",
+                message="alice 1",
+                account="alice",
+            ),
         )
         owner = Identity(raw_nick="alice_", account="alice")
 
@@ -359,11 +392,14 @@ class TestReminderHelperMethods:
         asks while identified THEN it matches by nick."""
         from llm.plugin import Identity
 
-        plugin._reminders["llm_remind_a_111"] = make_reminder_row(
-            event_name="llm_remind_a_111",
-            nick="alice",
-            channel="#chan",
-            message="alice 1",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_a_111",
+                nick="alice",
+                channel="#chan",
+                message="alice 1",
+            ),
         )
 
         assert len(plugin._get_user_reminders(Identity(raw_nick="alice", account="alice"))) == 1
@@ -374,27 +410,35 @@ class TestReminderHelperMethods:
         """GIVEN reminders from multiple users WHEN clear THEN only caller's are cancelled."""
         from llm.plugin import Identity
 
-        mocker.patch("llm.plugin.schedule.removeEvent")
-        plugin._reminders["llm_remind_a_111"] = make_reminder_row(
-            event_name="llm_remind_a_111",
-            nick="alice",
-            channel="#chan",
-            message="alice 1",
-            account="alice",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_a_111",
+                nick="alice",
+                channel="#chan",
+                message="alice 1",
+                account="alice",
+            ),
         )
-        plugin._reminders["llm_remind_b_222"] = make_reminder_row(
-            event_name="llm_remind_b_222",
-            nick="alice",
-            channel="#chan",
-            message="alice 2",
-            account="alice",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_b_222",
+                nick="alice",
+                channel="#chan",
+                message="alice 2",
+                account="alice",
+            ),
         )
-        plugin._reminders["llm_remind_c_333"] = make_reminder_row(
-            event_name="llm_remind_c_333",
-            nick="bob",
-            channel="#chan",
-            message="bob 1",
-            account="bob",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_c_333",
+                nick="bob",
+                channel="#chan",
+                message="bob 1",
+                account="bob",
+            ),
         )
 
         result = plugin._remind_clear_for_assistant(
@@ -403,7 +447,7 @@ class TestReminderHelperMethods:
 
         assert "2 reminders" in result
         # bob's reminder must remain.
-        assert list(plugin._reminders.keys()) == ["llm_remind_c_333"]
+        assert reminder_names(plugin) == {"llm_remind_c_333"}
         assert plugin.db.delete_reminder.call_count == 2
 
     def test_remind_clear_for_assistant_no_reminders(self, plugin: MagicMock) -> None:
@@ -422,19 +466,21 @@ class TestReminderHelperMethods:
         """GIVEN one reminder WHEN cleared THEN message uses singular phrasing."""
         from llm.plugin import Identity
 
-        mocker.patch("llm.plugin.schedule.removeEvent")
-        plugin._reminders["llm_remind_x_999"] = make_reminder_row(
-            event_name="llm_remind_x_999",
-            nick="alice",
-            channel="#chan",
-            message="only one",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_x_999",
+                nick="alice",
+                channel="#chan",
+                message="only one",
+            ),
         )
 
         result = plugin._remind_clear_for_assistant(
             Identity(raw_nick="alice", account=None),
         )
         assert result == "Cancelled 1 reminder."
-        assert plugin._reminders == {}
+        assert reminder_names(plugin) == set()
 
     # Tests for chain caps in _schedule_reminder
 
@@ -457,33 +503,6 @@ class TestReminderHelperMethods:
         )
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
-    def test_schedule_reminder_chain_cap_refuses_at_max_position(
-        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """GIVEN parent_chain at the cap WHEN scheduling THEN refuses."""
-        from llm.plugin import LLM
-
-        plugin._MetaSynchronized_rlock = threading.RLock()
-        self._stub_parse_for_schedule(plugin, action_prompt="ping (recurring: every 1m)")
-        mocker.patch("llm.plugin.schedule.addEvent")
-
-        msg = mocker.MagicMock()
-        msg.args = ("#chan", "remind text")
-        msg.prefix = "alice!user@host"
-        # Position 50 is the cap; reschedule would be 51 → refused.
-        parent = LLM._REMINDER_MAX_CHAIN_POSITION
-
-        result = plugin._schedule_reminder(
-            mock_irc,
-            msg,
-            Caller.from_row("alice", "alice", msg.args[0]),
-            "every 1m ping",
-            parent_chain=parent,
-        )
-        assert result.ok is False
-        assert "cap" in result.message.lower()
-        plugin.db.save_reminder.assert_not_called()
-
     def test_schedule_reminder_per_user_pending_cap(
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
@@ -497,16 +516,20 @@ class TestReminderHelperMethods:
         msg = mocker.MagicMock()
         msg.args = ("#chan", "remind text")
         msg.prefix = "alice!user@host"
+        msg.server_tags = {}
 
         # Pre-populate with the cap number of pending reminders for alice.
         for i in range(LLM._REMINDER_MAX_PENDING_PER_USER):
-            plugin._reminders[f"llm_remind_{i}_xxx"] = make_reminder_row(
-                event_name=f"llm_remind_{i}_xxx",
-                nick="alice",
-                channel="#chan",
-                message=f"r{i}",
-                account="alice",
-                chain_position=1,
+            put_reminder(
+                plugin,
+                make_reminder_row(
+                    event_name=f"llm_remind_{i}_xxx",
+                    nick="alice",
+                    channel="#chan",
+                    message=f"r{i}",
+                    account="alice",
+                    chain_position=1,
+                ),
             )
 
         result = plugin._schedule_reminder(
@@ -569,15 +592,18 @@ class TestReminderHelperMethods:
         now = time.time()
 
         # "remind me to ping in 10s", 5 seconds ago — still pending.
-        plugin._reminders["llm_remind_first"] = make_reminder_row(
-            event_name="llm_remind_first",
-            nick="alice",
-            channel="#chan",
-            message="ping",
-            account="alice",
-            fire_at=now + 5,
-            created_at=now - 5,
-            chain_position=1,
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_first",
+                nick="alice",
+                channel="#chan",
+                message="ping",
+                account="alice",
+                fire_at=now + 5,
+                created_at=now - 5,
+                chain_position=1,
+            ),
         )
 
         result = plugin._schedule_reminder(
@@ -590,8 +616,8 @@ class TestReminderHelperMethods:
         assert result.ok is True
         # The original is gone from every layer and exactly one row remains.
         plugin.db.delete_reminder.assert_called_once_with("llm_remind_first")
-        assert list(plugin._reminders) != ["llm_remind_first"]
-        assert len(plugin._reminders) == 1
+        assert reminder_names(plugin) != {"llm_remind_first"}
+        assert len(reminder_names(plugin)) == 1
         plugin.db.save_reminder.assert_called_once()
         # ...and it fires at the amended time, not the original 5s.
         assert add_event.call_args.args[1] - now == pytest.approx(60, abs=2)
@@ -614,15 +640,18 @@ class TestReminderHelperMethods:
         add_event = mocker.patch("llm.plugin.schedule.addEvent")
         now = time.time()
 
-        plugin._reminders["llm_remind_first"] = make_reminder_row(
-            event_name="llm_remind_first",
-            nick="alice",
-            channel="#chan",
-            message="ping",
-            account="alice",
-            fire_at=now + 50,
-            created_at=now - 10,
-            chain_position=1,
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_first",
+                nick="alice",
+                channel="#chan",
+                message="ping",
+                account="alice",
+                fire_at=now + 50,
+                created_at=now - 10,
+                chain_position=1,
+            ),
         )
 
         result = plugin._schedule_reminder(
@@ -633,7 +662,7 @@ class TestReminderHelperMethods:
         )
 
         assert result.ok is True
-        assert len(plugin._reminders) == 1
+        assert len(reminder_names(plugin)) == 1
         plugin.db.save_reminder.assert_called_once()
         assert add_event.call_args.args[1] - now == pytest.approx(300, abs=2)
 
@@ -648,15 +677,18 @@ class TestReminderHelperMethods:
         now = time.time()
 
         # Set ten minutes ago — a deliberate second reminder, not a correction.
-        plugin._reminders["llm_remind_old"] = make_reminder_row(
-            event_name="llm_remind_old",
-            nick="alice",
-            channel="#chan",
-            message="ping",
-            account="alice",
-            fire_at=now + 3600,
-            created_at=now - 600,
-            chain_position=1,
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_old",
+                nick="alice",
+                channel="#chan",
+                message="ping",
+                account="alice",
+                fire_at=now + 3600,
+                created_at=now - 600,
+                chain_position=1,
+            ),
         )
 
         result = plugin._schedule_reminder(
@@ -668,46 +700,53 @@ class TestReminderHelperMethods:
 
         assert result.ok is True
         plugin.db.delete_reminder.assert_not_called()
-        assert len(plugin._reminders) == 2
+        assert len(reminder_names(plugin)) == 2
         plugin.db.save_reminder.assert_called_once()
 
-    def test_schedule_reminder_chain_reschedule_is_not_amended(
+    def test_restating_a_recurring_reminder_after_a_fire_keeps_the_chain(
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN a recurring chain rescheduling itself WHEN the parent row is still pending THEN it is not treated as an amendment."""
+        """GIVEN a recurring reminder set long ago that just fired WHEN its owner
+        restates it within the amend window THEN it is a second reminder, not
+        an amendment that ends the chain: a fire moves the row in place and
+        keeps the created_at of the request that set it."""
 
         plugin._MetaSynchronized_rlock = threading.RLock()
         self._stub_parse_for_schedule(plugin)
-        mocker.patch("llm.plugin.schedule.addEvent")
+        mocker.patch("llm.plugin.world").ircs = [mocker.MagicMock()]
         now = time.time()
-
-        plugin._reminders["llm_remind_parent"] = make_reminder_row(
-            event_name="llm_remind_parent",
-            nick="alice",
-            channel="#chan",
-            message="ping",
-            account="alice",
-            fire_at=now + 55,
-            created_at=now - 5,
-            chain_position=1,
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_chain",
+                nick="alice",
+                channel="#chan",
+                message="ping",
+                account="alice",
+                fire_at=now - 1,
+                created_at=now - 3600,
+                recurrence_seconds=600,
+            ),
         )
+        plugin._agenda_tick()
+        fired = plugin.db.sqlite_reminders.get_reminder("llm_remind_chain")
+        assert fired is not None and fired.chain_position == 2
 
         result = plugin._schedule_reminder(
             mock_irc,
             msg=self._amend_msg(mocker),
             caller=Caller.from_row("alice", "alice", "#chan"),
             text="in 60s ping",
-            parent_chain=1,
         )
 
         assert result.ok is True
         plugin.db.delete_reminder.assert_not_called()
-        plugin.db.save_reminder.assert_called_once()
+        assert len(reminder_names(plugin)) == 2
 
     def test_schedule_reminder_fresh_chain_starts_at_position_one(
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN no parent_chain WHEN scheduling THEN chain_position=1."""
+        """GIVEN a new reminder WHEN scheduling THEN its chain starts at position 1."""
 
         plugin._MetaSynchronized_rlock = threading.RLock()
         self._stub_parse_for_schedule(plugin)
@@ -716,6 +755,7 @@ class TestReminderHelperMethods:
         msg = mocker.MagicMock()
         msg.args = ("#chan", "remind text")
         msg.prefix = "alice!user@host"
+        msg.server_tags = {}
 
         result = plugin._schedule_reminder(
             mock_irc,
@@ -724,35 +764,8 @@ class TestReminderHelperMethods:
             "in 1m ping",
         )
         assert result.ok is True
-        kwargs = plugin.db.save_reminder.call_args.kwargs
-        assert kwargs["chain_position"] == 1
-
-    def test_schedule_reminder_carries_chain_position_through_reschedule(
-        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """GIVEN parent_chain WHEN rescheduling THEN child increments position."""
-
-        plugin._MetaSynchronized_rlock = threading.RLock()
-        self._stub_parse_for_schedule(plugin, action_prompt="ping (recurring: every 1m)")
-        mocker.patch("llm.plugin.schedule.addEvent")
-
-        msg = mocker.MagicMock()
-        msg.args = ("#chan", "remind text")
-        msg.prefix = "alice!user@host"
-        parent = 3
-
-        result = plugin._schedule_reminder(
-            mock_irc,
-            msg,
-            Caller.from_row("alice", "alice", msg.args[0]),
-            "every 1m ping",
-            parent_chain=parent,
-        )
-        assert result.ok is True
-        kwargs = plugin.db.save_reminder.call_args.kwargs
-        assert kwargs["chain_position"] == 4
-        # User-visible reply mentions the running counter.
-        assert "4/" in result.message
+        [row] = plugin.db.sqlite_reminders.load_pending_reminders()
+        assert row.chain_position == 1
 
     # Tests for _react helper
 
@@ -796,6 +809,7 @@ class TestReminderHelperMethods:
         msg = mocker.MagicMock()
         msg.args = ("#ops", "remind test")
         msg.prefix = "testnick!user@host"
+        msg.server_tags = {}
 
         plugin._MetaSynchronized_rlock = threading.RLock()
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -807,9 +821,6 @@ class TestReminderHelperMethods:
         )
 
         mocker.patch("llm.plugin.schedule.addEvent")
-        closure_spy = mocker.patch.object(
-            plugin, "_make_reminder_delivery_closure", return_value=lambda: None
-        )
 
         result = plugin._schedule_reminder(
             mock_irc,
@@ -819,13 +830,9 @@ class TestReminderHelperMethods:
         )
 
         assert result.ok is True
-        assert closure_spy.call_args.kwargs["action_prompt"] == "Post a status update in #ops."
-        assert closure_spy.call_args.kwargs["account"] == "acct-testnick"
 
-        saved_event_name, reminder_data = next(iter(plugin._reminders.items()))
-        assert saved_event_name.startswith("llm_remind_")
-        # User-facing fields plus chain bookkeeping (chain_position=1,
-        # chain_started_at is a recent timestamp).
+        [reminder_data] = plugin.db.sqlite_reminders.load_pending_reminders()
+        assert reminder_data.event_name.startswith("llm_remind_")
         assert reminder_data.nick == "testnick"
         assert reminder_data.channel == "#ops"
         assert reminder_data.message == "post status update in #ops"
@@ -837,7 +844,6 @@ class TestReminderHelperMethods:
             "Post a status update in #ops."
         )
         assert plugin.db.save_reminder.call_args.kwargs["account"] == "acct-testnick"
-        assert plugin.db.save_reminder.call_args.kwargs["chain_position"] == 1
 
     # Test plugin cleanup
 
@@ -846,32 +852,40 @@ class TestReminderHelperMethods:
         plugin: MagicMock,
         mocker: MockerFixture,
     ) -> None:
-        """GIVEN plugin with reminders WHEN die called THEN removes all."""
+        """GIVEN plugin with reminders WHEN die called THEN the wakeup goes and the rows stay.
+
+        The rows are the schedule: they must survive a restart.
+        """
         from llm.plugin import LLM
 
         mock_remove_event = mocker.patch("llm.plugin.schedule.removeEvent")
 
         # Add some reminders
-        plugin._reminders["llm_remind_1_100"] = make_reminder_row(
-            event_name="llm_remind_1_100",
-            nick="user1",
-            channel="#channel",
-            message="msg1",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_1_100",
+                nick="user1",
+                channel="#channel",
+                message="msg1",
+            ),
         )
-        plugin._reminders["llm_remind_2_200"] = make_reminder_row(
-            event_name="llm_remind_2_200",
-            nick="user2",
-            channel="#channel",
-            message="msg2",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_2_200",
+                nick="user2",
+                channel="#channel",
+                message="msg2",
+            ),
         )
 
         mocker.patch.object(LLM.__bases__[0], "die", return_value=None)
         mocker.patch("llm.plugin.httpserver.unhook")
         plugin.die()
 
-        # Should have removed both reminder events
-        assert mock_remove_event.call_count >= 2
-        assert len(plugin._reminders) == 0
+        assert mocker.call("llm_agenda_wakeup") in mock_remove_event.call_args_list
+        assert reminder_names(plugin) == {"llm_remind_1_100", "llm_remind_2_200"}
 
 
 class TestParseReminderService:
@@ -1441,7 +1455,7 @@ class TestReminderEventNaming:
     """Tests for uuid-based reminder event naming (Fix 3)."""
 
     @pytest.fixture
-    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture) -> MagicMock:
+    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path) -> MagicMock:
         """Create a plugin instance."""
         from llm.plugin import LLM
 
@@ -1450,6 +1464,7 @@ class TestReminderEventNaming:
         mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
         plugin_init_patches(mocker)
         plugin = LLM(mock_irc)
+        back_reminders_with_sqlite(plugin.db, tmp_path / "reminders.db")
 
         return plugin
 
@@ -1457,9 +1472,7 @@ class TestReminderEventNaming:
         """GIVEN reminder delivery closure WHEN created THEN event name uses uuid hex."""
         import re
 
-        closure = plugin._make_reminder_delivery_closure(
-            "nick", "#chan", "msg", "llm_remind_abc123"
-        )
+        closure = due_reminder(plugin, "nick", "#chan", "msg", "llm_remind_abc123")
         assert callable(closure)
         # The event name format should be llm_remind_ + 12 hex chars
         assert re.match(r"^[a-f0-9]{12}$", "abc123def456")
@@ -1473,7 +1486,7 @@ class TestReminderDeliveryClosure:
     """Tests for _make_reminder_delivery_closure (Fix 6)."""
 
     @pytest.fixture
-    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture) -> MagicMock:
+    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path) -> MagicMock:
         """Create a plugin instance."""
         from llm.plugin import LLM
 
@@ -1482,6 +1495,7 @@ class TestReminderDeliveryClosure:
         mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
         plugin_init_patches(mocker)
         plugin = LLM(mock_irc)
+        back_reminders_with_sqlite(plugin.db, tmp_path / "reminders.db")
 
         return plugin
 
@@ -1489,8 +1503,11 @@ class TestReminderDeliveryClosure:
         mock_world = mocker.patch("llm.plugin.world")
         mock_irc = mocker.MagicMock()
         mock_world.ircs = [mock_irc]
-        plugin._reminders["llm_remind_a"] = make_reminder_row(
-            event_name="llm_remind_a", nick="Rubin", channel="#chan", reply_msgid="m1"
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_a", nick="Rubin", channel="#chan", reply_msgid="m1"
+            ),
         )
 
         plugin._cancel_reminder("llm_remind_a")
@@ -1505,8 +1522,11 @@ class TestReminderDeliveryClosure:
         mock_world = mocker.patch("llm.plugin.world")
         mock_irc = mocker.MagicMock()
         mock_world.ircs = [mock_irc]
-        plugin._reminders["llm_remind_a"] = make_reminder_row(
-            event_name="llm_remind_a", nick="Rubin", channel="vibebot", reply_msgid="m1"
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name="llm_remind_a", nick="Rubin", channel="vibebot", reply_msgid="m1"
+            ),
         )
 
         plugin._cancel_reminder("llm_remind_a")
@@ -1517,8 +1537,8 @@ class TestReminderDeliveryClosure:
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
         mocker.patch("llm.plugin.world").ircs = [mocker.MagicMock()]
-        plugin._reminders["llm_remind_a"] = make_reminder_row(
-            event_name="llm_remind_a", nick="Rubin", channel="#chan"
+        put_reminder(
+            plugin, make_reminder_row(event_name="llm_remind_a", nick="Rubin", channel="#chan")
         )
 
         plugin._cancel_reminder("llm_remind_a")
@@ -1532,17 +1552,20 @@ class TestReminderDeliveryClosure:
         mock_world.ircs = [mock_irc]
 
         event_name = "llm_remind_test123"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="nick",
-            channel="#chan",
-            message="test msg",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name=event_name,
+                nick="nick",
+                channel="#chan",
+                message="test msg",
+            ),
         )
 
-        deliver = plugin._make_reminder_delivery_closure("nick", "#chan", "test msg", event_name)
+        deliver = due_reminder(plugin, "nick", "#chan", "test msg", event_name)
         deliver()
 
-        assert event_name not in plugin._reminders
+        assert event_name not in reminder_names(plugin)
         plugin.db.delete_reminder.assert_called_with(event_name)
         mock_irc.queueMsg.assert_called_once()
 
@@ -1557,16 +1580,17 @@ class TestReminderDeliveryClosure:
 
         event_name = "llm_remind_pm_test"
         # channel="vibebot" simulates PM: _get_channel returns the bot's own nick
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="rdrake",
-            channel="vibebot",
-            message="eat a sandwich",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name=event_name,
+                nick="rdrake",
+                channel="vibebot",
+                message="eat a sandwich",
+            ),
         )
 
-        deliver = plugin._make_reminder_delivery_closure(
-            "rdrake", "vibebot", "eat a sandwich", event_name
-        )
+        deliver = due_reminder(plugin, "rdrake", "vibebot", "eat a sandwich", event_name)
         deliver()
 
         # Should deliver to user's nick, not the bot's nick
@@ -1584,16 +1608,17 @@ class TestReminderDeliveryClosure:
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
 
         event_name = "llm_remind_chan_test"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="rdrake",
-            channel="#test",
-            message="check build",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name=event_name,
+                nick="rdrake",
+                channel="#test",
+                message="check build",
+            ),
         )
 
-        deliver = plugin._make_reminder_delivery_closure(
-            "rdrake", "#test", "check build", event_name
-        )
+        deliver = due_reminder(plugin, "rdrake", "#test", "check build", event_name)
         deliver()
 
         sent_msg = mock_irc.queueMsg.call_args[0][0]
@@ -1602,27 +1627,29 @@ class TestReminderDeliveryClosure:
     def test_delivery_cleans_up_even_on_error(
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN delivery closure WHEN queueMsg raises THEN still cleans up reminder."""
+        """GIVEN a fire WHEN queueMsg raises THEN the reminder is still settled."""
         mock_world = mocker.patch("llm.plugin.world")
         mock_irc = mocker.MagicMock()
         mock_irc.queueMsg.side_effect = RuntimeError("send failed")
         mock_world.ircs = [mock_irc]
 
         event_name = "llm_remind_test456"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="nick",
-            channel="#chan",
-            message="test msg",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name=event_name,
+                nick="nick",
+                channel="#chan",
+                message="test msg",
+            ),
         )
 
-        deliver = plugin._make_reminder_delivery_closure("nick", "#chan", "test msg", event_name)
+        deliver = due_reminder(plugin, "nick", "#chan", "test msg", event_name)
 
-        with pytest.raises(RuntimeError, match="send failed"):
-            deliver()
+        deliver()  # the wakeup logs a failed fire; it never raises into the scheduler
 
         # Cleanup should still happen despite the error
-        assert event_name not in plugin._reminders
+        assert event_name not in reminder_names(plugin)
         plugin.db.delete_reminder.assert_called_with(event_name)
 
 
@@ -1630,7 +1657,7 @@ class TestReminderActionDelivery:
     """Tests for reminder action delivery through assistant_completion."""
 
     @pytest.fixture
-    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture) -> MagicMock:
+    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path) -> MagicMock:
         """Create a plugin instance."""
         from llm.plugin import LLM
 
@@ -1639,6 +1666,7 @@ class TestReminderActionDelivery:
         mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
         plugin_init_patches(mocker)
         plugin = LLM(mock_irc)
+        back_reminders_with_sqlite(plugin.db, tmp_path / "reminders.db")
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
         return plugin
 
@@ -1661,15 +1689,18 @@ class TestReminderActionDelivery:
         )
 
         event_name = "llm_remind_action_1"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="check build",
-            action_prompt="check build",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name=event_name,
+                nick="alice",
+                channel="#ops",
+                message="check build",
+                action_prompt="check build",
+            ),
         )
-        plugin._make_reminder_delivery_closure(
-            "alice", "#ops", "check build", event_name, action_prompt="check build"
+        due_reminder(
+            plugin, "alice", "#ops", "check build", event_name, action_prompt="check build"
         )()
 
         kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
@@ -1700,15 +1731,19 @@ class TestReminderActionDelivery:
         )
 
         event_name = "llm_remind_action_1"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="check build",
-            action_prompt="check build",
-            account="acct",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name=event_name,
+                nick="alice",
+                channel="#ops",
+                message="check build",
+                action_prompt="check build",
+                account="acct",
+            ),
         )
-        deliver = plugin._make_reminder_delivery_closure(
+        deliver = due_reminder(
+            plugin,
             "alice",
             "#ops",
             "check build",
@@ -1777,14 +1812,18 @@ class TestReminderActionDelivery:
         )
 
         event_name = "llm_remind_action_2"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="check build",
-            action_prompt="check build",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name=event_name,
+                nick="alice",
+                channel="#ops",
+                message="check build",
+                action_prompt="check build",
+            ),
         )
-        deliver = plugin._make_reminder_delivery_closure(
+        deliver = due_reminder(
+            plugin,
             "alice",
             "#ops",
             "check build",
@@ -1815,15 +1854,19 @@ class TestReminderActionDelivery:
         mocker.patch.object(plugin, "_check_rate_limit", return_value=True)
 
         event_name = "llm_remind_action_3"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="check build",
-            action_prompt="check build",
-            account="acct",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name=event_name,
+                nick="alice",
+                channel="#ops",
+                message="check build",
+                action_prompt="check build",
+                account="acct",
+            ),
         )
-        deliver = plugin._make_reminder_delivery_closure(
+        deliver = due_reminder(
+            plugin,
             "alice",
             "#ops",
             "check build",
@@ -1853,15 +1896,19 @@ class TestReminderActionDelivery:
         plugin.llm_service.assistant_completion.side_effect = RuntimeError("boom secret text")
 
         event_name = "llm_remind_action_4"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="check build",
-            action_prompt="check build",
-            account="acct",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name=event_name,
+                nick="alice",
+                channel="#ops",
+                message="check build",
+                action_prompt="check build",
+                account="acct",
+            ),
         )
-        deliver = plugin._make_reminder_delivery_closure(
+        deliver = due_reminder(
+            plugin,
             "alice",
             "#ops",
             "check build",
@@ -1893,7 +1940,8 @@ class TestReminderActionDelivery:
             content="all green", spend=Spend.ZERO
         )
 
-        deliver = plugin._make_reminder_delivery_closure(
+        deliver = due_reminder(
+            plugin,
             "alice",
             "#ops",
             "check build",
@@ -1923,7 +1971,8 @@ class TestReminderActionDelivery:
             content="all green", spend=Spend.ZERO
         )
 
-        deliver = plugin._make_reminder_delivery_closure(
+        deliver = due_reminder(
+            plugin,
             "alice",
             "#ops",
             "check build",
@@ -1957,7 +2006,8 @@ class TestReminderActionDelivery:
         )
         plugin.llm_service.save_markdown_to_http.return_value = "http://h/remind.html"
 
-        deliver = plugin._make_reminder_delivery_closure(
+        deliver = due_reminder(
+            plugin,
             "alice",
             "#ops",
             "check build",
@@ -1994,15 +2044,19 @@ class TestReminderActionDelivery:
         )
 
         event_name = "llm_remind_action_pre"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="check build",
-            action_prompt="check build",
-            account="acct",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name=event_name,
+                nick="alice",
+                channel="#ops",
+                message="check build",
+                action_prompt="check build",
+                account="acct",
+            ),
         )
-        deliver = plugin._make_reminder_delivery_closure(
+        deliver = due_reminder(
+            plugin,
             "alice",
             "#ops",
             "check build",
@@ -2030,13 +2084,17 @@ class TestReminderActionDelivery:
 
         rl_spy = mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
         event_name = "llm_remind_echo_1"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="ping me",
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name=event_name,
+                nick="alice",
+                channel="#ops",
+                message="ping me",
+            ),
         )
-        deliver = plugin._make_reminder_delivery_closure(
+        deliver = due_reminder(
+            plugin,
             "alice",
             "#ops",
             "ping me",
@@ -2067,16 +2125,20 @@ class TestReminderActionDelivery:
         )
 
         event_name = "llm_remind_action_usage"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="check build",
-            action_prompt="check build",
-            account="alice-acct",
-            chain_position=1,
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name=event_name,
+                nick="alice",
+                channel="#ops",
+                message="check build",
+                action_prompt="check build",
+                account="alice-acct",
+                chain_position=1,
+            ),
         )
-        deliver = plugin._make_reminder_delivery_closure(
+        deliver = due_reminder(
+            plugin,
             "alice",
             "#ops",
             "check build",
@@ -2112,16 +2174,20 @@ class TestReminderActionDelivery:
         )
 
         event_name = "llm_remind_action_silent"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="watch CVE",
-            action_prompt="check CVE (watch — only respond on positive result)",
-            account="alice-acct",
-            chain_position=1,
+        put_reminder(
+            plugin,
+            make_reminder_row(
+                event_name=event_name,
+                nick="alice",
+                channel="#ops",
+                message="watch CVE",
+                action_prompt="check CVE (watch — only respond on positive result)",
+                account="alice-acct",
+                chain_position=1,
+            ),
         )
-        deliver = plugin._make_reminder_delivery_closure(
+        deliver = due_reminder(
+            plugin,
             "alice",
             "#ops",
             "watch CVE",
@@ -2205,7 +2271,7 @@ class TestRoutingGateAndMechanicalReschedule:
     """Tests for B3.5 strict transition gate + B4 mechanical reschedule."""
 
     @pytest.fixture
-    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture) -> MagicMock:
+    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path) -> MagicMock:
         """Create a plugin instance with action delivery wiring."""
         from llm.plugin import LLM
 
@@ -2214,6 +2280,7 @@ class TestRoutingGateAndMechanicalReschedule:
         mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
         plugin_init_patches(mocker)
         plugin = LLM(mock_irc)
+        back_reminders_with_sqlite(plugin.db, tmp_path / "reminders.db")
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
         return plugin
 
@@ -2228,175 +2295,110 @@ class TestRoutingGateAndMechanicalReschedule:
         plugin.db.get_instruction.return_value = None
         return active_irc
 
-    def test_structured_row_excludes_set_reminder_and_reschedules_mechanically(
+    def _fire(self, plugin: MagicMock, event_name: str, **fields) -> None:
+        """Store an action reminder due now and run the agenda wakeup."""
+        fields.setdefault("account", "acct")
+        due_reminder(plugin, "alice", "#ops", "watch", event_name, **fields)()
+
+    def test_structured_row_excludes_set_reminder_and_reschedules_in_place(
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN structured row WHEN fired THEN exclude_tools={set_reminder} and mechanical reschedule runs."""
+        """GIVEN a recurring row WHEN fired THEN set_reminder is off the tool
+        surface and the row moves to its next fire, keeping its id."""
         self._wire_active_irc(plugin, mocker)
         plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="ok", spend=Spend.ZERO
         )
         add_event = mocker.patch("llm.plugin.schedule.addEvent")
-        mech_spy = mocker.spy(plugin, "_mechanical_reschedule")
+        before = time.time()
 
-        event_name = "llm_remind_struct_1"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="check build",
-            action_prompt="check build",
-            account="acct",
-            chain_position=1,
-            recurrence_seconds=300,
+        self._fire(
+            plugin, "llm_remind_struct_1", action_prompt="check build", recurrence_seconds=300
         )
-        deliver = plugin._make_reminder_delivery_closure(
-            "alice",
-            "#ops",
-            "check build",
-            event_name,
-            action_prompt="check build",
-            account="acct",
-            chain_position=1,
-            recurrence_seconds=300,
-        )
-        deliver()
-
-        # exclude_tools must include set_reminder for structured fires.
-        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
-        assert kwargs["exclude_tools"] == frozenset({"set_reminder"})
-
-        # Mechanical reschedule must run with chain_position passed through.
-        mech_spy.assert_called_once()
-        mech_kwargs = mech_spy.call_args.kwargs
-        assert mech_kwargs["chain_position"] == 1
-        assert mech_kwargs["recurrence_seconds"] == 300
-
-        # A new schedule.addEvent call registered the next fire.
-        add_event.assert_called_once()
-        new_fire_at = add_event.call_args.args[1]
-        # numeric path: now + 300
-        assert new_fire_at - mech_kwargs["now"] == pytest.approx(300, abs=0.01)
-
-        # Persistence call for the new chain row at position 2.
-        plugin.db.save_reminder.assert_called_once()
-        save_kwargs = plugin.db.save_reminder.call_args.kwargs
-        assert save_kwargs["chain_position"] == 2
-        assert save_kwargs["recurrence_seconds"] == 300
-
-    def test_one_shot_row_runs_neither_path(self, plugin: MagicMock, mocker: MockerFixture) -> None:
-        """GIVEN one-shot row WHEN fired THEN neither mechanical nor LLM-tool reschedule runs."""
-        self._wire_active_irc(plugin, mocker)
-        plugin.llm_service.assistant_completion.return_value = AssistantResult(
-            content="ok", spend=Spend.ZERO
-        )
-        mech_spy = mocker.spy(plugin, "_mechanical_reschedule")
-
-        event_name = "llm_remind_oneshot_1"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="ping",
-            action_prompt="ping me",
-            account="acct",
-            chain_position=1,
-        )
-        deliver = plugin._make_reminder_delivery_closure(
-            "alice",
-            "#ops",
-            "ping",
-            event_name,
-            action_prompt="ping me",
-            account="acct",
-            chain_position=1,
-        )
-        deliver()
 
         kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert kwargs["exclude_tools"] == frozenset({"set_reminder"})
-        mech_spy.assert_not_called()
-        # No new persistence row.
+        row = plugin.db.sqlite_reminders.get_reminder("llm_remind_struct_1")
+        assert row is not None
+        assert row.chain_position == 2
+        assert before + 300 <= row.fire_at <= time.time() + 300
         plugin.db.save_reminder.assert_not_called()
+        # The wakeup is re-armed for the next fire.
+        assert add_event.call_args.args[1] == row.fire_at
 
-    def test_clear_wins_over_mid_fire_skips_mechanical_reschedule(
+    def test_one_shot_row_is_removed_after_its_fire(
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN structured row cleared mid-fire WHEN action completes THEN no mechanical reschedule."""
         self._wire_active_irc(plugin, mocker)
-        add_event = mocker.patch("llm.plugin.schedule.addEvent")
-
-        event_name = "llm_remind_clearwin_1"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="watch",
-            action_prompt="watch X",
-            account="acct",
-            chain_position=1,
-            recurrence_seconds=600,
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
+            content="ok", spend=Spend.ZERO
         )
 
-        # Simulate cancel_all_reminders running mid-fire: pop the event
-        # from _reminders before the assistant_completion returns.
-        def _pop_then_respond(*_a, **_kw) -> AssistantResult:
-            with plugin._reminders_lock:
-                plugin._reminders.pop(event_name, None)
+        self._fire(plugin, "llm_remind_oneshot_1", action_prompt="ping me")
+
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
+        assert kwargs["exclude_tools"] == frozenset({"set_reminder"})
+        assert reminder_names(plugin) == set()
+
+    def test_a_firing_one_shot_does_not_list_itself(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """ibutsu 2026-09-25: "remind me to check if you reminded me" fired as
+        an action, called list_pending_tasks, and found itself still pending."""
+        from llm.plugin import Identity
+
+        self._wire_active_irc(plugin, mocker)
+        seen: list[set[str]] = []
+
+        def _list_then_respond(*_a, **_kw) -> AssistantResult:
+            owner = Identity(raw_nick="alice", account="acct")
+            seen.append({name for name, _row in plugin._get_user_reminders(owner)})
             return AssistantResult(content="ok", spend=Spend.ZERO)
 
-        plugin.llm_service.assistant_completion.side_effect = _pop_then_respond
+        plugin.llm_service.assistant_completion.side_effect = _list_then_respond
 
-        deliver = plugin._make_reminder_delivery_closure(
-            "alice",
-            "#ops",
-            "watch",
-            event_name,
-            action_prompt="watch X",
-            account="acct",
-            chain_position=1,
-            recurrence_seconds=600,
-        )
-        deliver()
+        self._fire(plugin, "llm_remind_self", action_prompt="check")
 
-        # No new event scheduled and no DB persistence for the next fire.
-        add_event.assert_not_called()
-        plugin.db.save_reminder.assert_not_called()
+        assert seen == [set()]
 
-    def test_chain_position_cap_blocks_mechanical_reschedule(
+    def test_clear_wins_over_mid_fire(self, plugin: MagicMock, mocker: MockerFixture) -> None:
+        """GIVEN a recurring row cancelled while its action runs WHEN the
+        action completes THEN the chain stays cancelled."""
+        from llm.plugin import Identity
+
+        self._wire_active_irc(plugin, mocker)
+
+        def _clear_then_respond(*_a, **_kw) -> AssistantResult:
+            plugin._remind_clear_for_assistant(Identity(raw_nick="alice", account="acct"))
+            return AssistantResult(content="ok", spend=Spend.ZERO)
+
+        plugin.llm_service.assistant_completion.side_effect = _clear_then_respond
+
+        self._fire(plugin, "llm_remind_clearwin_1", action_prompt="watch X", recurrence_seconds=600)
+
+        assert reminder_names(plugin) == set()
+        plugin.db.update_reminder_fire_at.assert_not_called()
+
+    def test_chain_position_cap_ends_the_chain(
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN structured row at cap WHEN fired THEN mechanical reschedule no-ops."""
+        from llm.agenda import MAX_CHAIN_POSITION, Kind
+
         self._wire_active_irc(plugin, mocker)
         plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="ok", spend=Spend.ZERO
         )
-        add_event = mocker.patch("llm.plugin.schedule.addEvent")
 
-        event_name = "llm_remind_cap_1"
-        cap = plugin._REMINDER_MAX_CHAIN_POSITION
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="capped",
+        self._fire(
+            plugin,
+            "llm_remind_cap_1",
             action_prompt="capped",
-            chain_position=cap,
+            chain_position=MAX_CHAIN_POSITION[Kind.REMINDER],
             recurrence_seconds=120,
         )
-        deliver = plugin._make_reminder_delivery_closure(
-            "alice",
-            "#ops",
-            "capped",
-            event_name,
-            action_prompt="capped",
-            chain_position=cap,
-            recurrence_seconds=120,
-        )
-        deliver()
 
-        add_event.assert_not_called()
-        plugin.db.save_reminder.assert_not_called()
+        assert reminder_names(plugin) == set()
+        plugin.db.update_reminder_fire_at.assert_not_called()
 
     def test_structured_watch_mode_silent_response_still_reschedules(
         self, plugin: MagicMock, mocker: MockerFixture
@@ -2406,150 +2408,39 @@ class TestRoutingGateAndMechanicalReschedule:
         plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="[silent]", spend=Spend.ZERO
         )
-        add_event = mocker.patch("llm.plugin.schedule.addEvent")
 
-        event_name = "llm_remind_watch_1"
-        plugin._reminders[event_name] = make_reminder_row(
-            event_name=event_name,
-            nick="alice",
-            channel="#ops",
-            message="watch CVE",
+        self._fire(
+            plugin,
+            "llm_remind_watch_1",
             action_prompt="check CVE status",
-            account="acct",
-            chain_position=1,
             recurrence_seconds=900,
             watch_mode=True,
         )
-        deliver = plugin._make_reminder_delivery_closure(
-            "alice",
-            "#ops",
-            "watch CVE",
-            event_name,
-            action_prompt="check CVE status",
-            account="acct",
-            chain_position=1,
-            recurrence_seconds=900,
-            watch_mode=True,
-        )
-        deliver()
 
         # No user-visible message — silent fire.
         active_irc.queueMsg.assert_not_called()
-        # But the watch still keeps watching: a new event is scheduled.
-        add_event.assert_called_once()
-        save_kwargs = plugin.db.save_reminder.call_args.kwargs
-        assert save_kwargs["watch_mode"] is True
+        # But the watch keeps watching, on the same row.
+        row = plugin.db.sqlite_reminders.get_reminder("llm_remind_watch_1")
+        assert row is not None and row.watch_mode is True and row.chain_position == 2
 
-    def test_rrule_reschedule_across_spring_forward(self) -> None:
-        """RRULE reschedule survives DST spring-forward without producing duplicates or skips."""
-        from llm.plugin import LLM
-
-        rule = "FREQ=DAILY;BYHOUR=6;BYMINUTE=30"
-        # 2027-03-13 06:00 UTC, just before North American spring-forward.
-        now_dt = datetime(2027, 3, 13, 6, 0, tzinfo=UTC)
-        now = now_dt.timestamp()
-        next_fire = LLM._next_rrule_fire(rule, now)
-        assert next_fire is not None and next_fire > now
-        # Following invocation moves strictly forward.
-        next_next = LLM._next_rrule_fire(rule, next_fire)
-        assert next_next is not None and next_next > next_fire
-        # And the gap is roughly a day (DAILY rule), well past 23h.
-        assert next_next - next_fire > 23 * 3600
-
-    def test_rrule_reschedule_across_fall_back(self) -> None:
-        """RRULE reschedule across DST fall-back has no duplicate fire."""
-        from llm.plugin import LLM
-
-        rule = "FREQ=DAILY;BYHOUR=5;BYMINUTE=30"
-        # 2027-11-06 05:00 UTC, the morning of fall-back.
-        now_dt = datetime(2027, 11, 6, 5, 0, tzinfo=UTC)
-        now = now_dt.timestamp()
-        fire_a = LLM._next_rrule_fire(rule, now)
-        assert fire_a is not None
-        fire_b = LLM._next_rrule_fire(rule, fire_a)
-        assert fire_b is not None
-        # ~24h apart, never same-day duplicate.
-        assert fire_b - fire_a > 23 * 3600
-
-    def test_rrule_invalid_returns_none(self) -> None:
-        """GIVEN malformed RRULE WHEN parsed THEN _next_rrule_fire returns None."""
-        from llm.plugin import LLM
-
-        assert LLM._next_rrule_fire("FREQ=NONSENSE;BLAH", 1_700_000_000.0) is None
-
-    def test_is_structured_recurring_helper(self) -> None:
-        """GIVEN any combination of recurrence fields WHEN classified THEN matches structured/one-shot."""
-        from llm.plugin import LLM
-
-        assert LLM._is_structured_recurring(recurrence_seconds=60, recurrence_rrule=None)
-        assert LLM._is_structured_recurring(recurrence_seconds=None, recurrence_rrule="FREQ=DAILY")
-        assert not LLM._is_structured_recurring(recurrence_seconds=None, recurrence_rrule=None)
-
-
-class TestReminderReload:
-    """Tests for _reload_reminders persistence-restore behavior."""
-
-    @pytest.fixture
-    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture) -> MagicMock:
-        """Create a plugin instance."""
-        from llm.plugin import LLM
-
-        from .conftest import make_registry_side_effect, plugin_init_patches
-
-        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
-        plugin_init_patches(mocker)
-        return LLM(mock_irc)
-
-    def test_reload_propagates_action_prompt_and_account(
+    def test_recurring_fire_keeps_threading_under_the_request(
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN persisted action reminder WHEN reloaded THEN closure receives both fields.
+        """The row keeps the setter's msgid across fires, so a later fire
+        still threads under the request and a cancel still takes back the ⏰."""
+        self._wire_active_irc(plugin, mocker)
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
+            content="ok", spend=Spend.ZERO
+        )
 
-        Regression: a persisted action reminder must round-trip through
-        bot restart with both ``action_prompt`` and ``account`` intact.
-        Without ``action_prompt`` the closure falls back to echo (silently
-        dropping the LLM action); without ``account`` the rate-limit tier
-        and the account passed to assistant_completion drop to nick-fallback semantics.
-        """
-        import time as _time
+        self._fire(
+            plugin,
+            "llm_remind_thread",
+            action_prompt="check",
+            recurrence_seconds=600,
+            reply_msgid="m1",
+        )
+        plugin._cancel_reminder("llm_remind_thread")
 
-        from llm.persistence import ReminderRow
-
-        _created = _time.time()
-        plugin.db.load_pending_reminders.return_value = [
-            ReminderRow(
-                id=1,
-                event_name="evt_persist",
-                nick="alice",
-                channel="#chan",
-                message="check CVE",
-                fire_at=_time.time() + 3600,
-                created_at=_created,
-                action_prompt="check CVE-2026-31431 status",
-                account="alice-acct",
-                chain_position=1,
-                recurrence_seconds=None,
-                recurrence_rrule=None,
-                watch_mode=False,
-            )
-        ]
-        mocker.patch("llm.plugin.schedule.addEvent")
-        closure_spy = mocker.spy(plugin, "_make_reminder_delivery_closure")
-
-        irc = mocker.MagicMock()
-        plugin._reload_reminders(irc)
-
-        closure_spy.assert_called_once()
-        kwargs = closure_spy.call_args.kwargs
-        assert kwargs["action_prompt"] == "check CVE-2026-31431 status"
-        assert kwargs["account"] == "alice-acct"
-
-        # In-memory dict must hold the user-facing data plus chain bookkeeping
-        # (position) for later @remind list / delete / reschedule operations.
-        stored = plugin._reminders["evt_persist"]
-        assert stored.nick == "alice"
-        assert stored.channel == "#chan"
-        assert stored.message == "check CVE"
-        assert stored.action_prompt == "check CVE-2026-31431 status"
-        assert stored.account == "alice-acct"
-        assert stored.chain_position == 1
+        args = plugin.llm_service.send_reaction.call_args.args
+        assert args[2:] == ("m1", "⏰")

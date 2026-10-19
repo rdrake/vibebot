@@ -3267,11 +3267,9 @@ class TestReminderMetaHelpers:
         plugin.registryValue = mocker.Mock(side_effect=make_registry_side_effect({}))
         plugin.llm_service = mocker.MagicMock()
         plugin.llm_service.sanitize_output.side_effect = lambda s: s
-        plugin.db = mocker.MagicMock()
         plugin.db.get_user_timezone.return_value = None
         plugin.db.get_clock_offset.return_value = None
-        plugin._reminders = {}
-        plugin._reminders_lock = threading.Lock()
+        plugin.db.load_pending_reminders.return_value = []
         plugin._MetaSynchronized_rlock = threading.RLock()
         return plugin
 
@@ -3417,15 +3415,14 @@ class TestReminderMetaHelpers:
     def test_remind_delete_for_assistant_success(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN valid reminder ID WHEN _remind_delete_for_assistant THEN deletes."""
         event_name = "llm_remind_abc123def456"
-        plugin._reminders = {
-            event_name: make_reminder_row(
-                event_name=event_name,
-                nick="testuser",
-                channel="#test",
-                message="check build",
-            )
-        }
-        mocker.patch("llm.plugin.schedule.removeEvent")
+        row = make_reminder_row(
+            event_name=event_name,
+            nick="testuser",
+            channel="#test",
+            message="check build",
+        )
+        plugin.db.load_pending_reminders.return_value = [row]
+        plugin.db.get_reminder.return_value = row
 
         result = plugin._remind_delete_for_assistant(
             Identity(raw_nick="testuser", account=None), "abc123def456"
@@ -3433,11 +3430,10 @@ class TestReminderMetaHelpers:
 
         assert result.ok is True
         assert "delete" in result.message.lower() or "cancel" in result.message.lower()
-        assert event_name not in plugin._reminders
+        plugin.db.delete_reminder.assert_called_once_with(event_name)
 
     def test_remind_delete_for_assistant_not_found(self, plugin) -> None:
         """GIVEN unknown reminder ID WHEN _remind_delete_for_assistant THEN error."""
-        plugin._reminders = {}
 
         result = plugin._remind_delete_for_assistant(
             Identity(raw_nick="testuser", account=None), "nonexistent"
@@ -5282,7 +5278,7 @@ class TestOverlayReadsViaProfiles:
         )
 
         event_name = "llm_remind_action_sentinel"
-        plugin._reminders[event_name] = make_reminder_row(
+        row = make_reminder_row(
             event_name=event_name,
             nick="alice",
             channel="#ops",
@@ -5290,15 +5286,7 @@ class TestOverlayReadsViaProfiles:
             action_prompt="do x",
             account=None,
         )
-        deliver = plugin._make_reminder_delivery_closure(
-            "alice",
-            "#ops",
-            "m",
-            event_name,
-            action_prompt="do x",
-            account=None,
-        )
-        deliver()
+        plugin._fire_reminder(row, 1_800_000_000.0)
 
         # Sentinel key was looked up; hardcoded key was NOT.
         assert "SENTINEL_REMIND_OVERLAY" in registry_calls

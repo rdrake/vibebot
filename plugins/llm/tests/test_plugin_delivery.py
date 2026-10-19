@@ -1329,63 +1329,94 @@ class TestPendingTaskFns:
         stand_in._remind_delete_for_assistant.assert_called_once()
 
 
-class TestMechanicalRescheduleEdgeCases:
-    """Coverage for invalid/exhausted-rrule and missing-recurrence guards."""
+class TestAgendaWakeup:
+    """The one wakeup timer for reminders and scheduled tasks (real SQLite)."""
 
     @pytest.fixture
-    def plugin(self, mock_irc, mocker: MockerFixture):
+    def plugin(self, mock_irc, mocker: MockerFixture, tmp_path):
         from llm.plugin import LLM
 
         from .conftest import plugin_init_patches
 
-        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
-        plugin_init_patches(mocker)
-        return LLM(mock_irc)
-
-    def test_invalid_rrule_aborts_without_scheduling(self, plugin, mocker: MockerFixture) -> None:
-        """An rrule that yields no future fire returns without registering an event."""
-        add_event = mocker.patch("llm.plugin.schedule.addEvent")
-        mocker.patch.object(plugin, "_next_rrule_fire", return_value=None)
-
-        plugin._mechanical_reschedule(
-            nick="alice",
-            channel="#t",
-            message="m",
-            event_name="llm_remind_x",
-            action_prompt="p",
-            account=None,
-            chain_position=1,
-            recurrence_seconds=None,
-            recurrence_rrule="FREQ=DAILY;UNTIL=19990101T000000Z",
-            watch_mode=False,
-            now=time.time(),
+        mocker.patch.object(
+            LLM,
+            "registryValue",
+            side_effect=make_registry_side_effect({"databasePath": str(tmp_path / "llm.db")}),
         )
+        plugin_init_patches(mocker, mock_database=False)
+        plugin = LLM(mock_irc)
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+        return plugin
 
-        add_event.assert_not_called()
-        plugin.db.save_reminder.assert_not_called()
+    @staticmethod
+    def _armed(add_event) -> list[float]:
+        return [
+            c.args[1]
+            for c in add_event.call_args_list
+            if c.kwargs.get("name") == "llm_agenda_wakeup"
+        ]
 
-    def test_no_recurrence_set_returns_without_scheduling(
-        self, plugin, mocker: MockerFixture
-    ) -> None:
-        """When neither recurrence_seconds nor recurrence_rrule is set, the helper exits cleanly."""
+    def test_nothing_pending_arms_nothing(self, plugin, mocker: MockerFixture) -> None:
         add_event = mocker.patch("llm.plugin.schedule.addEvent")
+        plugin._arm_agenda()
+        assert self._armed(add_event) == []
 
-        plugin._mechanical_reschedule(
-            nick="alice",
-            channel="#t",
-            message="m",
-            event_name="llm_remind_x",
-            action_prompt="p",
-            account=None,
-            chain_position=1,
-            recurrence_seconds=None,
-            recurrence_rrule=None,
-            watch_mode=False,
-            now=time.time(),
-        )
+    def test_only_ever_moves_earlier(self, plugin, mocker: MockerFixture) -> None:
+        """A later entry leaves the armed wakeup alone; an earlier one replaces it."""
+        add_event = mocker.patch("llm.plugin.schedule.addEvent")
+        now = time.time()
+        plugin.db.save_reminder("llm_remind_a", "u", "#t", "a", now + 600)
+        plugin._arm_agenda()
+        plugin.db.save_reminder("llm_remind_b", "u", "#t", "b", now + 900)
+        plugin._arm_agenda()
+        plugin.db.save_reminder("llm_remind_c", "u", "#t", "c", now + 300)
+        plugin._arm_agenda()
+        assert self._armed(add_event) == [now + 600, now + 300]
 
-        add_event.assert_not_called()
-        plugin.db.save_reminder.assert_not_called()
+    def test_check_remove_add_is_serialised(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN another thread mid-arm WHEN a second caller arrives THEN it
+        waits, so an earlier wakeup is never lost and addEvent never trips
+        Limnoria's duplicate-name assert (the race a5ea4a9 fixed for the queue)."""
+        plugin.db.save_reminder("llm_remind_a", "u", "#t", "a", time.time() + 600)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_add(*_args, **_kwargs):
+            entered.set()
+            release.wait(5)
+
+        add_event = mocker.patch("llm.plugin.schedule.addEvent", side_effect=slow_add)
+        first = threading.Thread(target=plugin._arm_agenda)
+        first.start()
+        assert entered.wait(5)
+        second = threading.Thread(target=plugin._arm_agenda)
+        second.start()
+        second.join(0.2)
+        assert second.is_alive()  # blocked on the lock, not racing addEvent
+        release.set()
+        first.join(5)
+        second.join(5)
+        assert add_event.call_count == 1
+
+    def test_a_fire_that_raises_is_still_settled(self, plugin, mocker: MockerFixture) -> None:
+        """A one-shot whose delivery blows up on the scheduler thread is
+        removed rather than retried every second forever."""
+        plugin.db.save_reminder("llm_remind_a", "u", "#t", "a", time.time() - 5)
+        mocker.patch.object(plugin, "_fire_reminder", side_effect=RuntimeError("boom"))
+
+        plugin._agenda_tick()
+
+        assert plugin.db.get_reminder("llm_remind_a") is None
+
+    def test_tick_does_nothing_while_closing(self, plugin, mocker: MockerFixture) -> None:
+        plugin.db.save_reminder("llm_remind_a", "u", "#t", "a", time.time() - 5)
+        fire = mocker.patch.object(plugin, "_fire_reminder")
+        plugin._llm_executor.closing = True
+
+        plugin._agenda_tick()
+
+        fire.assert_not_called()
+        assert plugin.db.get_reminder("llm_remind_a") is not None
 
 
 class TestPendingUsageBookedOnce:

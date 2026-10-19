@@ -1,6 +1,6 @@
-"""Property-based tests for ``LLM._next_rrule_fire`` (``plugin.py:3349``).
+"""Property-based tests for ``agenda.next_rrule_fire``.
 
-Augments the DST-specific cases in ``test_reminders.py:2027-2056``
+Augments the DST-specific cases in ``test_agenda.py``
 (spring-forward / fall-back) with two general-purpose invariants:
 
 1. The next fire is strictly after ``now`` -- never equal, never in
@@ -28,7 +28,7 @@ from hypothesis.strategies import (
     one_of,
     sampled_from,
 )
-from llm.plugin import LLM
+from llm.agenda import next_rrule_fire
 
 _FREQS = ["MINUTELY", "HOURLY", "DAILY", "WEEKLY"]
 _BYDAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
@@ -76,7 +76,7 @@ def test_next_rrule_fire_is_strictly_forward_and_bounded(
 ) -> None:
     """Valid RRULE ⇒ ``now < result <= now + 8 days``."""
     rule = _build_rule(freq, byhour, byminute, byday)
-    result = LLM._next_rrule_fire(rule, _NOW)
+    result = next_rrule_fire(rule, _NOW)
     # ``rrulestr`` may reject some shrunken combinations (e.g. an
     # invalid BYDAY for the given freq); skip those.
     assume(result is not None)
@@ -104,7 +104,7 @@ def test_next_rrule_fire_is_idempotent_under_self_iteration(
     byday: list[str],
     use_first_fire: bool,
 ) -> None:
-    """Calling ``_next_rrule_fire`` with the previous fire as ``now`` advances strictly forward.
+    """Calling ``next_rrule_fire`` with the previous fire as ``now`` advances strictly forward.
 
     Mirrors the DST reschedule pattern at ``test_reminders.py:2027-2056``
     where the runtime reschedules by feeding the just-fired timestamp
@@ -112,11 +112,11 @@ def test_next_rrule_fire_is_idempotent_under_self_iteration(
     runtime would either double-fire (==) or rewind (<).
     """
     rule = _build_rule(freq, byhour, byminute, byday)
-    first = LLM._next_rrule_fire(rule, _NOW)
+    first = next_rrule_fire(rule, _NOW)
     assume(first is not None)
     assert first is not None
     second_anchor = first if use_first_fire else _NOW + 1.0
-    second = LLM._next_rrule_fire(rule, second_anchor)
+    second = next_rrule_fire(rule, second_anchor)
     assume(second is not None)
     assert second is not None
     assert second > second_anchor
@@ -124,5 +124,5 @@ def test_next_rrule_fire_is_idempotent_under_self_iteration(
 
 def test_malformed_rrule_returns_none() -> None:
     """Pinning the contract that the function swallows parse errors."""
-    assert LLM._next_rrule_fire("FREQ=NONSENSE;BLAH", _NOW) is None
-    assert LLM._next_rrule_fire("not-an-rrule", _NOW) is None
+    assert next_rrule_fire("FREQ=NONSENSE;BLAH", _NOW) is None
+    assert next_rrule_fire("not-an-rrule", _NOW) is None
