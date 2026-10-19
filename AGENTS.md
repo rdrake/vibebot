@@ -117,6 +117,20 @@ Keep those boundaries intact:
 - `mkdocs.yml` and `docs/guide/`: published guide source
 - `docs/plans/`: design and implementation plans; shipped plans move to `docs/plans/archive/`. Check the active list in [`docs/plans/README.md`](docs/plans/README.md) before starting work on a subsystem — it is where open follow-ups that are waiting on production traffic are parked, and the measurement they are waiting for is easy to do accidentally and then lose.
 
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on `rdrake/vibebot-v8`, managed with the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default labels are used as-is: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. Neither exists yet; they're created as needed. See `docs/agents/domain.md`.
+
 ## Go rewrite (v9)
 
 The Go rewrite lives in `go/` with its own Makefile: build and test with `cd go && make all`. Specs and plans live under `docs/superpowers/`. The Python tree in `plugins/` remains the production bot.
