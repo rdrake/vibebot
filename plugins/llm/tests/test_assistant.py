@@ -5277,7 +5277,7 @@ class TestOverlayReadsViaProfiles:
         mocker.patch.object(plugin, "_gather_history", return_value=([], []))
         mocker.patch.object(plugin, "_get_user_memories", return_value=[])
         plugin.db.get_instruction.return_value = ""
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="done", spend=Spend.ZERO
         )
 
@@ -5304,8 +5304,8 @@ class TestOverlayReadsViaProfiles:
         assert "SENTINEL_REMIND_OVERLAY" in registry_calls
         assert "assistantSystemPrompt" not in registry_calls
         # And the sentinel-keyed value actually reached the system prompt.
-        plugin.llm_service.assistant_request.assert_called_once()
-        sys_prompt = plugin.llm_service.assistant_request.call_args.kwargs["system_prompt"]
+        plugin.llm_service.assistant_completion.assert_called_once()
+        sys_prompt = plugin.llm_service.assistant_completion.call_args.kwargs["system_prompt"]
         assert sys_prompt == "SENTINEL_OVERLAY_VALUE"
 
     def test_ask_path_overlay_uses_effective_profile(
@@ -5344,8 +5344,8 @@ class TestOverlayReadsViaProfiles:
         plugin.registryValue.side_effect = spy
 
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="ok", spend=Spend.ZERO
         )
 
@@ -5420,7 +5420,7 @@ class TestOverlayReadsViaProfiles:
         mocker.patch("llm.service.ircdb.checkCapability", return_value=True)
         mocker.patch.object(
             service,
-            "assistant_request",
+            "assistant_completion",
             return_value=mocker.MagicMock(
                 content="ok",
                 model="m",

@@ -1128,7 +1128,7 @@ class TestWrapCapabilityGate:
         getattr(plugin, command)(mock_irc, mock_msg, args)
 
         # Rejected: the LLM dispatch path never ran.
-        plugin.llm_service.assistant_request.assert_not_called()
+        plugin.llm_service.assistant_completion.assert_not_called()
         # The wrap checkCapability converter surfaced the denial.
         assert mock_irc.errorNoCapability.called
 

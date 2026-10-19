@@ -1627,7 +1627,7 @@ class TestReminderDeliveryClosure:
 
 
 class TestReminderActionDelivery:
-    """Tests for reminder action delivery through assistant_request."""
+    """Tests for reminder action delivery through assistant_completion."""
 
     @pytest.fixture
     def plugin(self, mock_irc: MagicMock, mocker: MockerFixture) -> MagicMock:
@@ -1656,7 +1656,7 @@ class TestReminderActionDelivery:
         mocker.patch.object(plugin, "_gather_history", return_value=([], []))
         memories = mocker.patch.object(plugin, "_get_user_memories", return_value=["secret"])
         plugin.db.get_instruction.return_value = "secret instruction"
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="ok", spend=Spend.ZERO
         )
 
@@ -1672,7 +1672,7 @@ class TestReminderActionDelivery:
             "alice", "#ops", "check build", event_name, action_prompt="check build"
         )()
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert kwargs["memories"] == []
         assert kwargs["user_instruction"] is None
         memories.assert_not_called()
@@ -1681,7 +1681,7 @@ class TestReminderActionDelivery:
     def test_action_delivery_invokes_assistant_with_full_callbacks(
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN action reminder WHEN delivered THEN assistant_request receives full callback set."""
+        """GIVEN action reminder WHEN delivered THEN assistant_completion receives full callback set."""
         mock_world = mocker.patch("llm.plugin.world")
         active_irc = mocker.MagicMock()
         active_irc.nick = "testbot"
@@ -1695,7 +1695,7 @@ class TestReminderActionDelivery:
         )
         mocker.patch.object(plugin, "_get_user_memories", return_value=["prefers concise"])
         plugin.db.get_instruction.return_value = "Be direct."
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="Build is green.", spend=Spend.ZERO
         )
 
@@ -1718,23 +1718,22 @@ class TestReminderActionDelivery:
         )
         deliver()
 
-        plugin.llm_service.assistant_request.assert_called_once()
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        plugin.llm_service.assistant_completion.assert_called_once()
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         # The model is told this turn IS the reminder firing, so "check if
         # you reminded me" gets "yes, this is it" instead of a task list.
         assert kwargs["prompt"].endswith("\n\ncheck build")
         assert "alice's reminder" in kwargs["prompt"]
         assert "firing now" in kwargs["prompt"]
-        ctx = kwargs["request_context"]
-        assert ctx.entry_route == "remind_action"
-        assert ctx.profile == "remind_action"
-        assert ctx.caller.identity.raw_nick == "alice"
-        assert ctx.caller.identity.account == "acct"
-        assert ctx.caller.channel == "#ops"
-        assert ctx.caller.is_private is False
-        assert ctx.is_owner is False
+        assert kwargs["entry_route"] == "remind_action"
+        assert kwargs["route_profile"] == "remind_action"
+        # Authenticated, so the storage key is the account.
+        assert kwargs["nick"] == "acct"
+        assert kwargs["account"] == "acct"
+        assert kwargs["channel"] == "#ops"
+        assert kwargs["is_owner"] is False
         # llm.ask/draw/code only — no admin/owner capabilities at fire time.
-        assert ctx.capabilities == frozenset({"llm.ask", "llm.draw", "llm.code"})
+        assert kwargs["capabilities"] == frozenset({"llm.ask", "llm.draw", "llm.code"})
 
         synthetic_msg = kwargs["msg"]
         assert synthetic_msg.prefix == "alice!~remind@scheduled"
@@ -1773,7 +1772,7 @@ class TestReminderActionDelivery:
         mock_world.ircs = [active_irc]
 
         rl_spy = mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="done", spend=Spend.ZERO
         )
 
@@ -1834,7 +1833,7 @@ class TestReminderActionDelivery:
         )
         deliver()
 
-        plugin.llm_service.assistant_request.assert_not_called()
+        plugin.llm_service.assistant_completion.assert_not_called()
         sent = active_irc.queueMsg.call_args[0][0]
         assert (
             sent.args[1]
@@ -1851,7 +1850,7 @@ class TestReminderActionDelivery:
         mock_world.ircs = [active_irc]
 
         mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
-        plugin.llm_service.assistant_request.side_effect = RuntimeError("boom secret text")
+        plugin.llm_service.assistant_completion.side_effect = RuntimeError("boom secret text")
 
         event_name = "llm_remind_action_4"
         plugin._reminders[event_name] = make_reminder_row(
@@ -1890,7 +1889,7 @@ class TestReminderActionDelivery:
         active_irc.state.capabilities_ack = {"message-tags"}
         mock_world.ircs = [active_irc]
         mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="all green", spend=Spend.ZERO
         )
 
@@ -1920,7 +1919,7 @@ class TestReminderActionDelivery:
         active_irc.state.capabilities_ack = set()
         mock_world.ircs = [active_irc]
         mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="all green", spend=Spend.ZERO
         )
 
@@ -1953,7 +1952,7 @@ class TestReminderActionDelivery:
         mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
         long_reply = " ".join(f"word{i}" for i in range(150))  # ~900 chars
         assert len(long_reply) > 850
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content=long_reply, spend=Spend.ZERO
         )
         plugin.llm_service.save_markdown_to_http.return_value = "http://h/remind.html"
@@ -1977,9 +1976,9 @@ class TestReminderActionDelivery:
     def test_action_delivery_falls_back_on_pre_request_exception(
         self, plugin: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN exception BEFORE assistant_request WHEN action reminder fires THEN fallback sent.
+        """GIVEN exception BEFORE assistant_completion WHEN action reminder fires THEN fallback sent.
 
-        Regression: a narrow try/except around only assistant_request would
+        Regression: a narrow try/except around only assistant_completion would
         let history/registry/IrcMsg/rate-limit failures silently lose the
         reminder. The handler must wrap the whole per-irc action body.
         """
@@ -1989,7 +1988,7 @@ class TestReminderActionDelivery:
         mock_world.ircs = [active_irc]
 
         mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
-        # _gather_history runs BEFORE assistant_request — make it raise.
+        # _gather_history runs BEFORE assistant_completion — make it raise.
         plugin._gather_history = mocker.MagicMock(
             side_effect=RuntimeError("internal token leak XYZ")
         )
@@ -2013,7 +2012,7 @@ class TestReminderActionDelivery:
         )
         deliver()
 
-        plugin.llm_service.assistant_request.assert_not_called()
+        plugin.llm_service.assistant_completion.assert_not_called()
         sent = active_irc.queueMsg.call_args[0][0]
         assert (
             sent.args[1]
@@ -2047,7 +2046,7 @@ class TestReminderActionDelivery:
         )
         deliver()
 
-        plugin.llm_service.assistant_request.assert_not_called()
+        plugin.llm_service.assistant_completion.assert_not_called()
         rl_spy.assert_not_called()
         sent = active_irc.queueMsg.call_args[0][0]
         assert sent.args[1] == "alice: Reminder: ping me"
@@ -2061,7 +2060,7 @@ class TestReminderActionDelivery:
         active_irc.nick = "testbot"
         mock_world.ircs = [active_irc]
         mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="status: green",
             model="gemini/gemini-2.0-flash-lite",
             spend=Spend(prompt_tokens=42, completion_tokens=8, cost=0.0001),
@@ -2106,7 +2105,7 @@ class TestReminderActionDelivery:
         active_irc.nick = "testbot"
         mock_world.ircs = [active_irc]
         mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="[silent]",
             model="gemini/gemini-2.0-flash-lite",
             spend=Spend(prompt_tokens=30, completion_tokens=2, cost=0.00005),
@@ -2234,7 +2233,7 @@ class TestRoutingGateAndMechanicalReschedule:
     ) -> None:
         """GIVEN structured row WHEN fired THEN exclude_tools={set_reminder} and mechanical reschedule runs."""
         self._wire_active_irc(plugin, mocker)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="ok", spend=Spend.ZERO
         )
         add_event = mocker.patch("llm.plugin.schedule.addEvent")
@@ -2264,7 +2263,7 @@ class TestRoutingGateAndMechanicalReschedule:
         deliver()
 
         # exclude_tools must include set_reminder for structured fires.
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert kwargs["exclude_tools"] == frozenset({"set_reminder"})
 
         # Mechanical reschedule must run with chain_position passed through.
@@ -2288,7 +2287,7 @@ class TestRoutingGateAndMechanicalReschedule:
     def test_one_shot_row_runs_neither_path(self, plugin: MagicMock, mocker: MockerFixture) -> None:
         """GIVEN one-shot row WHEN fired THEN neither mechanical nor LLM-tool reschedule runs."""
         self._wire_active_irc(plugin, mocker)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="ok", spend=Spend.ZERO
         )
         mech_spy = mocker.spy(plugin, "_mechanical_reschedule")
@@ -2314,7 +2313,7 @@ class TestRoutingGateAndMechanicalReschedule:
         )
         deliver()
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert kwargs["exclude_tools"] == frozenset({"set_reminder"})
         mech_spy.assert_not_called()
         # No new persistence row.
@@ -2340,13 +2339,13 @@ class TestRoutingGateAndMechanicalReschedule:
         )
 
         # Simulate cancel_all_reminders running mid-fire: pop the event
-        # from _reminders before the assistant_request returns.
+        # from _reminders before the assistant_completion returns.
         def _pop_then_respond(*_a, **_kw) -> AssistantResult:
             with plugin._reminders_lock:
                 plugin._reminders.pop(event_name, None)
             return AssistantResult(content="ok", spend=Spend.ZERO)
 
-        plugin.llm_service.assistant_request.side_effect = _pop_then_respond
+        plugin.llm_service.assistant_completion.side_effect = _pop_then_respond
 
         deliver = plugin._make_reminder_delivery_closure(
             "alice",
@@ -2369,7 +2368,7 @@ class TestRoutingGateAndMechanicalReschedule:
     ) -> None:
         """GIVEN structured row at cap WHEN fired THEN mechanical reschedule no-ops."""
         self._wire_active_irc(plugin, mocker)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="ok", spend=Spend.ZERO
         )
         add_event = mocker.patch("llm.plugin.schedule.addEvent")
@@ -2404,7 +2403,7 @@ class TestRoutingGateAndMechanicalReschedule:
     ) -> None:
         """GIVEN structured watch row WHEN response is [silent] THEN watch keeps watching."""
         active_irc = self._wire_active_irc(plugin, mocker)
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="[silent]", spend=Spend.ZERO
         )
         add_event = mocker.patch("llm.plugin.schedule.addEvent")
@@ -2510,7 +2509,7 @@ class TestReminderReload:
         bot restart with both ``action_prompt`` and ``account`` intact.
         Without ``action_prompt`` the closure falls back to echo (silently
         dropping the LLM action); without ``account`` the rate-limit tier
-        and request_context.account drop to nick-fallback semantics.
+        and the account passed to assistant_completion drop to nick-fallback semantics.
         """
         import time as _time
 

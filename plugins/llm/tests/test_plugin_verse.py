@@ -1714,7 +1714,7 @@ class TestVerseRouteForGating:
     def test_ask_dispatch_still_reaches_chat_path(self, plugin_env, mocker: MockerFixture) -> None:
         """GIVEN _verse_route_for returns None WHEN @ask sent THEN chat path fires unchanged.
 
-        Regression guard: the dispatch hook must be a no-op — assistant_request
+        Regression guard: the dispatch hook must be a no-op — assistant_completion
         must still be called exactly once (verseEnabled=False in plugin_env default).
         """
         from llm.service import AssistantResult, Spend
@@ -1722,8 +1722,8 @@ class TestVerseRouteForGating:
         plugin, mock_irc, mock_msg = plugin_env
 
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = AssistantResult(
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="normal reply",
             grounding_used=False,
             spend=Spend(prompt_tokens=5, completion_tokens=3, cost=0.0),
@@ -1733,7 +1733,7 @@ class TestVerseRouteForGating:
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         # The chat path must have fired.
-        plugin.llm_service.assistant_request.assert_called_once()
+        plugin.llm_service.assistant_completion.assert_called_once()
 
 
 # =============================================================================
@@ -1892,7 +1892,7 @@ class TestAskWithVerseRoute:
 
     @pytest.fixture
     def verse_ask_env(self, plugin_env, tmp_path, mocker):
-        """plugin_env with verse enabled, alice opted in, and assistant_request stubbed."""
+        """plugin_env with verse enabled, alice opted in, and assistant_completion stubbed."""
         from llm.verse.store import VerseStore
 
         plugin, irc, msg = plugin_env
@@ -1931,10 +1931,10 @@ class TestAskWithVerseRoute:
         plugin.verseopt(irc, msg, ["in"])
         irc.reply.reset_mock()
 
-        # Stub assistant_request for the @ask call.
+        # Stub assistant_completion for the @ask call.
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_result()
 
         msg.args = ("#afnet", "@ask hello")
 
@@ -1954,8 +1954,8 @@ class TestAskWithVerseRoute:
 
         plugin.rp(irc, msg, ["hello"])
 
-        plugin.llm_service.assistant_request.assert_called_once()
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        plugin.llm_service.assistant_completion.assert_called_once()
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         system_prompt = kwargs.get("system_prompt", "") or ""
         # Channel overlay (the sentinel) must appear — its energy is what
         # drove long-form output in chat mode.
@@ -1969,7 +1969,7 @@ class TestAskWithVerseRoute:
 
         plugin.rp(irc, msg, ["hello"])
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         system_prompt = kwargs.get("system_prompt", "")
         assert "alice" in (system_prompt or "")
 
@@ -1979,7 +1979,7 @@ class TestAskWithVerseRoute:
 
         plugin.rp(irc, msg, ["hello"])
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         extra_tools = kwargs.get("extra_tools") or []
         tool_names = {t["function"]["name"] for t in extra_tools}
         expected = {
@@ -1992,11 +1992,11 @@ class TestAskWithVerseRoute:
         assert expected.issubset(tool_names)
 
     def test_ask_in_verse_bypasses_token_cap(self, verse_ask_env, mocker: MockerFixture) -> None:
-        """GIVEN verse route WHEN @ask THEN request_context uses PROFILE_VERSE.
+        """GIVEN verse route WHEN @ask THEN route_profile is PROFILE_VERSE.
 
         PROFILE_VERSE is the only profile not in the profile_max_output dict
         in assistant.py, so it bypasses the token cap applied to PROFILE_CHAT.
-        We verify by checking the profile on the request_context passed to assistant_request.
+        We verify by checking the route_profile passed to assistant_completion.
         """
         from llm.profile import PROFILE_VERSE
 
@@ -2004,10 +2004,8 @@ class TestAskWithVerseRoute:
 
         plugin.rp(irc, msg, ["hello"])
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
-        request_context = kwargs.get("request_context")
-        assert request_context is not None
-        assert request_context.profile == PROFILE_VERSE
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
+        assert kwargs["route_profile"] == PROFILE_VERSE
 
     def test_ask_in_verse_empty_verse_model_falls_back_to_none(
         self, verse_ask_env, mocker: MockerFixture
@@ -2032,14 +2030,14 @@ class TestAskWithVerseRoute:
 
         plugin.rp(irc, msg, ["hello"])
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert kwargs.get("model_override") is None
 
     def test_ask_in_verse_passes_verse_model_override(
         self, verse_ask_env, mocker: MockerFixture
     ) -> None:
         """GIVEN a configured verseModel WHEN @ask in verse THEN that exact model
-        reaches assistant_request as model_override.
+        reaches assistant_completion as model_override.
 
         This is the load-bearing coupling: bumping the chat assistantModel must
         not silently leave verse on it — verse rides its own (non-reasoning,
@@ -2058,7 +2056,7 @@ class TestAskWithVerseRoute:
 
         plugin.rp(irc, msg, ["hello"])
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         assert kwargs.get("model_override") == "openrouter/grok-3-non-reasoning"
 
     def test_verse_model_empty_warns_once_per_channel(
@@ -2138,19 +2136,19 @@ class TestAskOnVerseChannelWithoutOptIn:
         msg.server_tags = {}
 
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_request.side_effect = None
-        plugin.llm_service.assistant_request.return_value = self._make_result()
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = self._make_result()
 
         return plugin, irc, msg
 
     def test_extra_tools_include_all_verse_schemas(self, env) -> None:
         """GIVEN verse-enabled channel + non-opted-in speaker WHEN @ask THEN
-        the five verse tool schemas are passed to assistant_request so the
+        the five verse tool schemas are passed to assistant_completion so the
         prefix bytes match the opted-in cohort."""
         plugin, irc, msg = env
         plugin.ask(irc, msg, ["hello"])
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         extra_tools = kwargs.get("extra_tools") or []
         names = {t["function"]["name"] for t in extra_tools}
         assert {
@@ -2170,7 +2168,7 @@ class TestAskOnVerseChannelWithoutOptIn:
         plugin, irc, msg = env
         plugin.ask(irc, msg, ["hello"])
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         handlers = kwargs.get("extra_handlers") or {}
         for name in (
             "verse_act",
@@ -2194,10 +2192,8 @@ class TestAskOnVerseChannelWithoutOptIn:
         plugin, irc, msg = env
         plugin.ask(irc, msg, ["hello"])
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
-        request_context = kwargs.get("request_context")
-        assert request_context is not None
-        assert request_context.profile == PROFILE_CHAT
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
+        assert kwargs["route_profile"] == PROFILE_CHAT
 
 
 class TestCompactionTimerWiring:

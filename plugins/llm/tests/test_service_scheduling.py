@@ -546,14 +546,14 @@ def test_fired_task_cannot_schedule_a_nested_task(llm_service, db, mocker: Mocke
     plugin._pending_task_fns.return_value = {}
     # The fire plumbing lives in plugin._run_unattended_assistant (shared
     # with reminder action fires); bind the real helpers to the mock plugin
-    # so the dispatch path reaches the patched assistant_request.
+    # so the dispatch path reaches the patched assistant_completion.
     plugin.llm_service = llm_service
     plugin._unattended_ask_rate_limited = LLM._unattended_ask_rate_limited.__get__(plugin)
     plugin._run_unattended_assistant = LLM._run_unattended_assistant.__get__(plugin)
 
     captured: dict[str, object] = {}
 
-    def fake_assistant_request(*, msg, **_kwargs):
+    def fake_assistant_completion(*, msg, **_kwargs):
         captured["depth"] = msg.tagged("llm_schedule_depth")
         nested = llm_service.schedule_llm_task(
             irc=irc,
@@ -575,7 +575,7 @@ def test_fired_task_cannot_schedule_a_nested_task(llm_service, db, mocker: Mocke
             error=None,
         )
 
-    mocker.patch.object(llm_service, "assistant_request", side_effect=fake_assistant_request)
+    mocker.patch.object(llm_service, "assistant_completion", side_effect=fake_assistant_completion)
 
     fire_callable()
 
@@ -829,7 +829,7 @@ def test_reply_target_overrides_dispatch_target(llm_service, db, mocker: MockerF
 
     mocker.patch.object(
         llm_service,
-        "assistant_request",
+        "assistant_completion",
         return_value=mocker.MagicMock(
             content="hi from the future",
             model="m",
@@ -899,7 +899,7 @@ def _fire_with_answer(llm_service, mocker: MockerFixture, content: str):
     _bind_real_delivery(plugin)
     mocker.patch.object(
         llm_service,
-        "assistant_request",
+        "assistant_completion",
         return_value=mocker.MagicMock(
             content=content, model="m", prompt_tokens=0, completion_tokens=0, cost=0.0, error=None
         ),
@@ -947,7 +947,7 @@ def test_fired_answer_neutralizes_irc_injection(llm_service, db, mocker: MockerF
 
 def test_fire_auto_cancels_when_creator_lost_llm_ask(llm_service, db, mocker: MockerFixture):
     """If the creator no longer holds llm.ask at fire time the row is deleted
-    and assistant_request is never called."""
+    and assistant_completion is never called."""
     add_event = mocker.patch("llm.service.schedule.addEvent")
     irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
     msg = _msg_mock(mocker)
@@ -972,7 +972,7 @@ def test_fire_auto_cancels_when_creator_lost_llm_ask(llm_service, db, mocker: Mo
     fake_world.ircs = [irc]
     mocker.patch("llm.service.ircdb.checkCapability", return_value=False)
 
-    assistant = mocker.patch.object(llm_service, "assistant_request")
+    assistant = mocker.patch.object(llm_service, "assistant_completion")
 
     fire_callable()
 
@@ -1258,7 +1258,7 @@ def test_scheduled_fire_submits_via_executor(llm_service, db, mocker: MockerFixt
     mocker.patch("llm.service.ircdb.checkCapability", return_value=True)
     mocker.patch.object(
         llm_service,
-        "assistant_request",
+        "assistant_completion",
         return_value=mocker.MagicMock(
             content="ok", model="m", prompt_tokens=0, completion_tokens=0, cost=0.0, error=None
         ),

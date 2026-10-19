@@ -82,7 +82,7 @@ class TestCommandsRefuse:
         plugin.llm_service.draw_unavailable_reason.return_value = "Drawing is off."
         plugin.draw(irc, msg, ["a", "sunset"])
         irc.reply.assert_called_once_with("Drawing is off.")
-        plugin.llm_service.assistant_request.assert_not_called()
+        plugin.llm_service.assistant_completion.assert_not_called()
 
     def test_animate_command_replies_when_off(self, plugin_env) -> None:
         plugin, irc, msg = plugin_env
@@ -90,4 +90,4 @@ class TestCommandsRefuse:
         plugin.llm_service.animate_available.return_value = True
         plugin.animate(irc, msg, ["a", "clip"])
         irc.reply.assert_called_once_with("Video is turned off in this channel.")
-        plugin.llm_service.assistant_request.assert_not_called()
+        plugin.llm_service.assistant_completion.assert_not_called()

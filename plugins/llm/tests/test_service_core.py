@@ -7,12 +7,8 @@ from typing import TYPE_CHECKING
 import pytest
 from hypothesis import given
 from hypothesis.strategies import characters, ip_addresses, lists, sampled_from, text, tuples
-from llm.identity import Caller, Identity
 from llm.service import (
-    AssistantRequestContext,
-    AssistantResult,
     LLMService,
-    Spend,
     validate_external_url,
 )
 
@@ -36,115 +32,6 @@ class TestLLMService:
     def test_service_initialization(self) -> None:
         """GIVEN plugin WHEN service initialized THEN stores plugin reference."""
         assert self.service.plugin == self.mock_plugin
-
-    def test_assistant_request_chat_dispatches_to_assistant_completion(self) -> None:
-        """GIVEN a chat request WHEN assistant_request is used THEN it dispatches to assistant_completion()."""
-        request_context = AssistantRequestContext(
-            entry_route="ask",
-            profile="chat",
-            caller=Caller(Identity("testuser", None), "#test"),
-            is_owner=False,
-            capabilities=frozenset({"llm.ask"}),
-        )
-        expected = AssistantResult(
-            content="Hello from assistant facade", spend=Spend.ZERO, grounding_used=True
-        )
-        self.service.assistant_completion = self.mocker.Mock(return_value=expected)
-
-        result = self.service.assistant_request(
-            "hello there",
-            request_context=request_context,
-            db=self.mocker.Mock(),
-            context=self.mocker.Mock(),
-            bot_nick="Bot",
-        )
-
-        assert result == expected
-        assert isinstance(result, AssistantResult)
-        call_kwargs = self.service.assistant_completion.call_args.kwargs
-        assert call_kwargs["route_profile"] == "chat"
-        assert call_kwargs["nick"] == "!testuser"
-        assert call_kwargs["channel"] == "#test"
-
-    def test_assistant_request_forwards_manage_typing_flag(self) -> None:
-        """GIVEN caller owns typing lifetime WHEN assistant_request THEN flag is forwarded."""
-        request_context = AssistantRequestContext(
-            entry_route="ask",
-            profile="chat",
-            caller=Caller(Identity("testuser", None), "#test"),
-            is_owner=False,
-            capabilities=frozenset({"llm.ask"}),
-        )
-        self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="ok", spend=Spend.ZERO),
-        )
-
-        self.service.assistant_request(
-            "hello",
-            request_context=request_context,
-            db=self.mocker.Mock(),
-            context=self.mocker.Mock(),
-            bot_nick="Bot",
-            manage_typing=False,
-        )
-
-        call_kwargs = self.service.assistant_completion.call_args.kwargs
-        assert call_kwargs["manage_typing"] is False
-
-    def test_assistant_request_forwards_profile_without_replacing_system_prompt(
-        self,
-    ) -> None:
-        """assistant_request forwards route_profile and leaves system_prompt
-        unset when no personality overlay is provided. The structural framework
-        is selected by ``assistant_completion`` via ``route_profile``."""
-        request_context = AssistantRequestContext(
-            entry_route="meta",
-            profile="unknown",
-            caller=Caller(Identity("testuser", None), "#test"),
-            is_owner=False,
-            capabilities=frozenset({"llm.ask"}),
-        )
-        self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="ok", spend=Spend.ZERO),
-        )
-
-        self.service.assistant_request(
-            "hello",
-            request_context=request_context,
-            db=self.mocker.Mock(),
-            context=self.mocker.Mock(),
-            bot_nick="Bot",
-        )
-
-        call_kwargs = self.service.assistant_completion.call_args.kwargs
-        assert call_kwargs["route_profile"] == "unknown"
-        assert call_kwargs["system_prompt"] is None
-
-    def test_assistant_request_remind_action_forwards_profile(self) -> None:
-        """remind_action profile is forwarded so assistant_completion picks
-        REMIND_ACTION_SYSTEM_PROMPT as the structural framework."""
-        request_context = AssistantRequestContext(
-            entry_route="remind_action",
-            profile="remind_action",
-            caller=Caller(Identity("testuser", None), "#test"),
-            is_owner=False,
-            capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
-        )
-        self.service.assistant_completion = self.mocker.Mock(
-            return_value=AssistantResult(content="ok", spend=Spend.ZERO),
-        )
-
-        self.service.assistant_request(
-            "check the build (recurring: every hour)",
-            request_context=request_context,
-            db=self.mocker.Mock(),
-            context=self.mocker.Mock(),
-            bot_nick="Bot",
-        )
-
-        call_kwargs = self.service.assistant_completion.call_args.kwargs
-        assert call_kwargs["route_profile"] == "remind_action"
-        assert call_kwargs["system_prompt"] is None
 
     def test_validate_prompt_rejects_empty(self) -> None:
         """GIVEN empty prompt WHEN validated THEN rejected."""

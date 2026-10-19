@@ -195,7 +195,7 @@ class TestPrivateMessagesAreKeyedPerSender:
         make_caller(irc, msg, NICK)
         plugin.ask(irc, msg, ["what", "did", "I", "say?"])
 
-        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         seen = [*(kwargs["history"] or []), *(kwargs["channel_history"] or [])]
         assert not any("secret" in m["content"] for m in seen)
         assert kwargs["channel_history"] == []

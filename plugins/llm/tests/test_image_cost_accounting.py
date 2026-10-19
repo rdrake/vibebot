@@ -8,7 +8,7 @@ lost before it reached the usage table:
 
 * **The tool boundary.** `_draw_for_assistant` knew the cost and had nowhere to
   put it, so nothing recorded it at all. From 2026-04-11, when @draw was
-  converted to run through assistant_request and every path to an image started
+  converted to run through assistant_completion and every path to an image started
   going through that callback, until 2026-08-16, every image the bot drew was
   booked at $0.00. The prod usage table shows it plainly: draw rows carry
   `xai/grok-imagine-image-pro` (since renamed -quality) at $0.069 average through 2026-04-11, then switch
