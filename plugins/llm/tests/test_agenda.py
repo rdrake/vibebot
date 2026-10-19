@@ -294,3 +294,59 @@ class TestPendingReminders:
         _reminder(test_db, "chain", T0, recurrence_seconds=600)
         agenda.claim_due()
         assert [r.event_name for r in agenda.pending_reminders()] == ["chain"]
+
+
+class TestClaimHeldUntilSettled:
+    """A wakeup between "fire finished" and "row moved" must not refire it."""
+
+    def test_reschedule_holds_the_claim_until_the_row_moves(self, test_db, clock) -> None:
+        _reminder(test_db, "r", T0, recurrence_seconds=600)
+        nested: list[list[str]] = []
+        real_update = test_db.update_reminder_fire_at
+        agenda: Agenda
+
+        def update_with_a_wakeup_in_between(*args, **kwargs):
+            nested.append([d.row.event_name for d in agenda.claim_due().due])
+            real_update(*args, **kwargs)
+
+        test_db.update_reminder_fire_at = update_with_a_wakeup_in_between
+        agenda = Agenda(test_db, clock=clock)
+        agenda.claim_due()
+
+        agenda.finish(Kind.REMINDER, "r", fired_at=T0)
+
+        assert nested == [[]]
+        assert not agenda.firing(Kind.REMINDER, "r")
+
+    def test_delete_holds_the_claim_until_the_row_goes(self, test_db, clock) -> None:
+        _reminder(test_db, "r", T0)
+        nested: list[list[str]] = []
+        real_delete = test_db.delete_reminder
+        agenda: Agenda
+
+        def delete_with_a_wakeup_in_between(name):
+            nested.append([d.row.event_name for d in agenda.claim_due().due])
+            return real_delete(name)
+
+        test_db.delete_reminder = delete_with_a_wakeup_in_between
+        agenda = Agenda(test_db, clock=clock)
+        agenda.claim_due()
+
+        agenda.finish(Kind.REMINDER, "r", fired_at=T0)
+
+        assert nested == [[]]
+
+    def test_a_raising_store_still_releases_the_claim(self, test_db, clock) -> None:
+        _reminder(test_db, "r", T0)
+
+        def broken_delete(_name):
+            raise RuntimeError("database is locked")
+
+        test_db.delete_reminder = broken_delete
+        agenda = Agenda(test_db, clock=clock)
+        agenda.claim_due()
+
+        with pytest.raises(RuntimeError):
+            agenda.finish(Kind.REMINDER, "r", fired_at=T0)
+
+        assert not agenda.firing(Kind.REMINDER, "r")

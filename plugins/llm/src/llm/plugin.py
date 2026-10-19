@@ -3835,6 +3835,7 @@ class LLM(callbacks.Plugin):
             done = self.agenda.finish(kind, event_name, fired_at=fired_at)
         except Exception:
             self.log.exception("agenda_finish_failed kind=%s event=%s", kind, event_name)
+            self._arm_agenda()
             return
         if done.outcome is agenda.Outcome.RESCHEDULED:
             self.log.info(

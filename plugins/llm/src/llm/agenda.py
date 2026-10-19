@@ -252,6 +252,9 @@ class Agenda:
         }
         self._lock = threading.Lock()
         self._firing: set[tuple[Kind, str]] = set()
+        # Claimed entries whose finish is under way, so two finishes of one
+        # fire cannot both settle it.
+        self._settling: set[tuple[Kind, str]] = set()
 
     def claim_due(self) -> Claim:
         """Claim every entry whose fire time has come and that is not firing.
@@ -291,9 +294,20 @@ class Agenda:
         """
         key = (kind, event_name)
         with self._lock:
-            if key not in self._firing:
+            if key not in self._firing or key in self._settling:
                 return Finished(Outcome.NOT_FIRING)
-            self._firing.discard(key)
+            self._settling.add(key)
+        # The claim holds until the row has moved or gone: released any
+        # earlier, a wakeup in between would see the old fire_at and start
+        # this fire again.
+        try:
+            return self._settle(kind, event_name, fired_at)
+        finally:
+            with self._lock:
+                self._firing.discard(key)
+                self._settling.discard(key)
+
+    def _settle(self, kind: Kind, event_name: str, fired_at: float) -> Finished:
         table = self._tables[kind]
         row = table.get(event_name)
         if row is None:
