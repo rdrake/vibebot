@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from llm.identity import Caller, Identity
-from llm.service import AssistantResult, StorybookResult, VideoResult
+from llm.service import AssistantResult, CompletionResult, StorybookResult, VideoResult
 
 from .conftest import make_caller, make_registry_side_effect
 
@@ -171,9 +171,45 @@ class TestPrivateMessagesAreKeyedPerSender:
         result = mocker.MagicMock(error=None, content="noted", cost=0.0)
 
         plugin._store_context_and_log_usage(alice, "ask", "my secret", "noted", result, irc)
-        _personal, channel_history = plugin._gather_history(bob.identity.key, bob.reply_target)
+        _personal, channel_history = plugin._gather_history(bob)
 
         assert not any("secret" in m["content"] for m in channel_history)
+
+    def test_nick_squatter_pm_sees_none_of_the_owners_pm(self, plugin_env) -> None:
+        """GIVEN alice (authenticated) PMs the bot, then someone unauthenticated
+        takes the nick alice and PMs it WHEN the second request is built THEN
+        neither its history nor its channel history holds alice's line. The PM
+        location is the nick, so the shared channel buffer must stay out of
+        PMs entirely, and personal history is keyed on the storage key."""
+        plugin, irc, msg = plugin_env
+        plugin.llm_service.completion.return_value = CompletionResult(
+            content="noted", grounding_used=False, model="gpt-4"
+        )
+        make_caller(irc, msg, NICK, account=ACCOUNT)
+        plugin.ask(irc, msg, ["my", "secret", "plan"])
+        assert any(
+            "secret" in m["content"]
+            for m in plugin._gather_history(Caller(Identity(NICK, ACCOUNT), None))[0]
+        ), "the owner's own thread keeps the line"
+
+        make_caller(irc, msg, NICK)
+        plugin.ask(irc, msg, ["what", "did", "I", "say?"])
+
+        kwargs = plugin.llm_service.assistant_request.call_args.kwargs
+        seen = [*(kwargs["history"] or []), *(kwargs["channel_history"] or [])]
+        assert not any("secret" in m["content"] for m in seen)
+        assert kwargs["channel_history"] == []
+
+    def test_channel_lines_still_reach_the_shared_buffer(self, plugin_env, mocker) -> None:
+        plugin, irc, _msg = plugin_env
+        alice = Caller(Identity(NICK, ACCOUNT), "#test")
+        bob = Caller(Identity("bob", None), "#test")
+        result = mocker.MagicMock(error=None, content="noted", cost=0.0)
+
+        plugin._store_context_and_log_usage(alice, "ask", "hello all", "noted", result, irc)
+        _personal, channel_history = plugin._gather_history(bob)
+
+        assert any("hello all" in m["content"] for m in channel_history)
 
     def test_duplicate_filter_is_per_sender(self, plugin_env, mocker: MockerFixture) -> None:
         from llm.plugin import PreflightResult

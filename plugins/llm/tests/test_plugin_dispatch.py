@@ -9,6 +9,8 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
+from llm.identity import Caller, Identity
+from llm.plugin import PreflightResult
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -639,12 +641,7 @@ class TestInvalidCommand:
 
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin._run_preflight = mocker.MagicMock(
-            return_value=mocker.MagicMock(
-                blocked=False,
-                nick="testuser",
-                channel="#channel",
-                account=None,
-            )
+            return_value=PreflightResult(False, Caller(Identity("testuser", None), "#channel"))
         )
         plugin._ask_impl = mocker.MagicMock()
         plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
@@ -672,12 +669,7 @@ class TestInvalidCommand:
 
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin._run_preflight = mocker.MagicMock(
-            return_value=mocker.MagicMock(
-                blocked=False,
-                nick="rdrake",
-                channel="#afternet",
-                account=None,
-            )
+            return_value=PreflightResult(False, Caller(Identity("rdrake", None), "#afternet"))
         )
         fake_route = VerseRoute(
             avatar_id=1,
@@ -711,7 +703,7 @@ class TestInvalidCommand:
         )
         plugin._verse_route_for = mocker.MagicMock(return_value=None)
         plugin._ask_impl = mocker.MagicMock()
-        preflight = mocker.MagicMock(channel="#afternet", nick="forest", account=None)
+        preflight = PreflightResult(False, Caller(Identity("forest", None), "#afternet"))
 
         plugin._dispatch_with_verse_routing(
             mock_irc,
@@ -738,7 +730,7 @@ class TestInvalidCommand:
         )
         plugin._verse_route_for = mocker.MagicMock(return_value=None)
         plugin._ask_impl = mocker.MagicMock()
-        preflight = mocker.MagicMock(channel="#linux", nick="forest", account=None)
+        preflight = PreflightResult(False, Caller(Identity("forest", None), "#linux"))
 
         plugin._dispatch_with_verse_routing(
             mock_irc,
@@ -765,7 +757,7 @@ class TestInvalidCommand:
         )
         plugin._verse_route_for = mocker.MagicMock(return_value=None)
         plugin._ask_impl = mocker.MagicMock()
-        preflight = mocker.MagicMock(channel="#afternet", nick="forest", account=None)
+        preflight = PreflightResult(False, Caller(Identity("forest", None), "#afternet"))
 
         plugin._dispatch_with_verse_routing(
             mock_irc,
@@ -799,7 +791,7 @@ class TestInvalidCommand:
         plugin._ask_impl = mocker.MagicMock()
         plugin._ambient_storybook_brief = mocker.MagicMock(return_value="brief")
         plugin._submit_storybook_job = mocker.MagicMock()
-        preflight = mocker.MagicMock(channel="#afternet", nick="forest", account="forest")
+        preflight = PreflightResult(False, Caller(Identity("forest", "forest"), "#afternet"))
 
         plugin._dispatch_with_verse_routing(
             mock_irc,
@@ -829,7 +821,7 @@ class TestInvalidCommand:
         plugin._verse_route_for = mocker.MagicMock(return_value=None)
         plugin._ask_impl = mocker.MagicMock()
         plugin._ambient_inline_story = mocker.MagicMock(return_value=True)
-        preflight = mocker.MagicMock(channel="#afternet", nick="forest", account="forest")
+        preflight = PreflightResult(False, Caller(Identity("forest", "forest"), "#afternet"))
 
         plugin._dispatch_with_verse_routing(
             mock_irc,
@@ -850,12 +842,7 @@ class TestInvalidCommand:
 
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin._run_preflight = mocker.MagicMock(
-            return_value=mocker.MagicMock(
-                blocked=False,
-                nick="testuser",
-                channel="#channel",
-                account=None,
-            )
+            return_value=PreflightResult(False, Caller(Identity("testuser", None), "#channel"))
         )
         plugin._run_meta = mocker.MagicMock()
         plugin._ask_impl = mocker.MagicMock()

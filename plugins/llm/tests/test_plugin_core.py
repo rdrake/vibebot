@@ -3127,6 +3127,6 @@ def test_unattended_assistant_reads_state_under_account_key(mocker: MockerFixtur
         entry_route="reminder_action",
     )
 
-    plugin._gather_history.assert_called_once_with("alice", "#test")
+    plugin._gather_history.assert_called_once_with(Caller(Identity("alice_away", "alice"), "#test"))
     plugin._get_user_memories.assert_called_once_with("alice")
     plugin.db.get_instruction.assert_called_once_with("alice")
