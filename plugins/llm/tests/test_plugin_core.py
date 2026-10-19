@@ -289,12 +289,7 @@ class TestPluginHelperMethods:
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
-        plugin._migrated_nicks = set()
-        plugin._migrated_nicks_lock = threading.Lock()
         plugin.db = mocker.MagicMock()
-        plugin.db.migrate_nick.return_value = 0
-        plugin.db.migrate_conversations.return_value = 0
-        plugin.db.migrate_user_data.return_value = 0
         plugin.context = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
         result = plugin._resolve_caller(mock_irc, mock_msg).identity
@@ -307,7 +302,7 @@ class TestPluginHelperMethods:
     def test_resolve_caller_falls_back_to_nick_when_no_account(
         self, mock_msg: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN user not logged in WHEN _resolve_caller called THEN key is nick."""
+        """GIVEN user not logged in WHEN _resolve_caller called THEN key is the "!"-prefixed nick."""
         from llm.plugin import LLM
 
         mock_irc = mocker.MagicMock()
@@ -317,7 +312,7 @@ class TestPluginHelperMethods:
         plugin = LLM.__new__(LLM)
         result = plugin._resolve_caller(mock_irc, mock_msg).identity
 
-        assert result.key == "testnick"
+        assert result.key == "!testnick"
         assert result.account is None
         assert result.personal_key is None
         assert result.raw_nick == "testnick"
@@ -325,7 +320,7 @@ class TestPluginHelperMethods:
     def test_resolve_caller_falls_back_to_nick_on_keyerror(
         self, mock_msg: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN nickToAccount raises KeyError WHEN _resolve_caller called THEN key is nick."""
+        """GIVEN nickToAccount raises KeyError WHEN _resolve_caller called THEN key is the "!"-prefixed nick."""
         from llm.plugin import LLM
 
         mock_irc = mocker.MagicMock()
@@ -335,7 +330,7 @@ class TestPluginHelperMethods:
         plugin = LLM.__new__(LLM)
         result = plugin._resolve_caller(mock_irc, mock_msg).identity
 
-        assert result.key == "testnick"
+        assert result.key == "!testnick"
         assert result.account is None
 
     def test_resolve_caller_in_channel_replies_to_channel(
@@ -367,8 +362,6 @@ class TestPluginHelperMethods:
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
         caller = make_caller(mock_irc, mock_msg, "rdrake", account="rdrake_acct")
-        plugin._migrated_nicks = set()
-        plugin._migrated_nicks_lock = threading.Lock()
         plugin.db = mocker.MagicMock()
         plugin.context = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
@@ -2109,7 +2102,6 @@ class TestRequireCaller:
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
-        mocker.patch.object(plugin, "_maybe_migrate_nick")
 
         mock_irc = mocker.MagicMock()
         mock_irc.state.nickToAccount = mocker.MagicMock(return_value="alice_account")
@@ -2380,8 +2372,6 @@ class TestRunPreflight:
         p.log = mocker.MagicMock()
         p._rate_buckets = {}
         p._rate_buckets_lock = threading.Lock()
-        p._migrated_nicks = set()
-        p._migrated_nicks_lock = threading.Lock()
         p._llm_executor = mocker.MagicMock(closing=False)
         p._irc_send_lock = threading.Lock()
         p.registryValue = mocker.MagicMock(
@@ -2667,21 +2657,6 @@ class TestPreflightOptionalAccountTag:
             mock_irc, mock_msg, text="hi", command="ask", require_account=False
         )
         assert result.caller.identity.account == "tag_acct"
-
-
-class TestMaybeMigrateNickCasemap:
-    def test_rfc1459_brackets_treated_as_same(self, plugin_env, mocker: MockerFixture):
-        plugin, _, _ = plugin_env
-        plugin.db.migrate_nick = mocker.MagicMock(return_value=0)
-        # In RFC1459, "[" lowers to "{". toLower("Foo[") == "foo{".
-        plugin._maybe_migrate_nick("Foo[", "foo{")
-        plugin.db.migrate_nick.assert_not_called()
-
-    def test_distinct_account_still_migrates(self, plugin_env, mocker: MockerFixture):
-        plugin, _, _ = plugin_env
-        plugin.db.migrate_nick = mocker.MagicMock(return_value=1)
-        plugin._maybe_migrate_nick("Foo", "BarAccount")
-        plugin.db.migrate_nick.assert_called_once_with("Foo", "BarAccount")
 
 
 class TestChatProfileBridgeWiring:

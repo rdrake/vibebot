@@ -813,78 +813,6 @@ class TestUsageRanking:
         assert rank == UsageRank(rank=0, total=0)
 
 
-class TestMigrateNick:
-    """Test nick-to-account migration for usage rows."""
-
-    def test_migrate_updates_matching_rows(self, test_db: LLMDatabase) -> None:
-        """GIVEN usage under old nick WHEN migrating THEN rows updated to account."""
-        test_db.log_usage("Rubin[F]", "#test", "ask", "gpt-4", 100, 50, 0.01)
-        test_db.log_usage("Rubin[F]", "#test", "code", "gpt-4", 200, 100, 0.02)
-
-        count = test_db.migrate_nick("Rubin[F]", "Rubin")
-        assert count == 2
-
-        # Old nick should have no rows
-        summary_old = test_db.get_usage_summary_for_nick("Rubin[F]")
-        assert summary_old.total_requests == 0
-
-        # Account should have all rows
-        summary_new = test_db.get_usage_summary_for_nick("Rubin")
-        assert summary_new.total_requests == 2
-        assert summary_new.total_cost == pytest.approx(0.03)
-
-    def test_migrate_case_insensitive(self, test_db: LLMDatabase) -> None:
-        """GIVEN usage under different casings WHEN migrating THEN all casings updated."""
-        test_db.log_usage("rubin", "#test", "ask", "gpt-4", 100, 50, 0.01)
-        test_db.log_usage("RUBIN", "#test", "code", "gpt-4", 200, 100, 0.02)
-
-        count = test_db.migrate_nick("Rubin", "RubinAccount")
-        assert count == 2
-
-        summary = test_db.get_usage_summary_for_nick("RubinAccount")
-        assert summary.total_requests == 2
-
-    def test_migrate_skips_already_migrated(self, test_db: LLMDatabase) -> None:
-        """GIVEN rows already under account WHEN migrating THEN those rows untouched."""
-        test_db.log_usage("Rubin", "#test", "ask", "gpt-4", 100, 50, 0.01)  # already correct
-        test_db.log_usage("Rubin[F]", "#test", "code", "gpt-4", 200, 100, 0.02)  # needs migration
-
-        count = test_db.migrate_nick("Rubin[F]", "Rubin")
-        assert count == 1
-
-        summary = test_db.get_usage_summary_for_nick("Rubin")
-        assert summary.total_requests == 2
-
-    def test_migrate_returns_zero_when_nothing_to_migrate(self, test_db: LLMDatabase) -> None:
-        """GIVEN no matching rows WHEN migrating THEN returns zero."""
-        test_db.log_usage("alice", "#test", "ask", "gpt-4", 100, 50, 0.01)
-
-        count = test_db.migrate_nick("nonexistent", "SomeAccount")
-        assert count == 0
-
-    def test_migrate_idempotent(self, test_db: LLMDatabase) -> None:
-        """GIVEN already-migrated rows WHEN migrating again THEN zero updates."""
-        test_db.log_usage("OldNick", "#test", "ask", "gpt-4", 100, 50, 0.01)
-
-        first = test_db.migrate_nick("OldNick", "Account")
-        assert first == 1
-
-        second = test_db.migrate_nick("OldNick", "Account")
-        assert second == 0
-
-    def test_migrate_preserves_other_nicks(self, test_db: LLMDatabase) -> None:
-        """GIVEN usage from multiple nicks WHEN migrating one THEN others untouched."""
-        test_db.log_usage("alice", "#test", "ask", "gpt-4", 100, 50, 0.01)
-        test_db.log_usage("bob", "#test", "ask", "gpt-4", 200, 100, 0.02)
-
-        test_db.migrate_nick("alice", "AliceAccount")
-
-        # alice's rows migrated
-        assert test_db.get_usage_summary_for_nick("AliceAccount").total_requests == 1
-        # bob's rows untouched
-        assert test_db.get_usage_summary_for_nick("bob").total_requests == 1
-
-
 # NOTE: lifecycle invariants (claim mutual-exclusion, lease-deadline,
 # attempt_count delta with/without increment, expired-row deletion) are
 # now covered by test_persistence_pending_task_properties.py. What
@@ -2681,58 +2609,6 @@ class TestNickCasingUnification:
         conn = db2._connect()
         rows = conn.execute("SELECT nick FROM user_instructions").fetchall()
         assert [r[0] for r in rows] == ["bob"]
-
-
-class TestMigrateUserData:
-    """Identify-time migration covers the memory family, not just usage/convos."""
-
-    def test_moves_memories_and_candidates(self, test_db: LLMDatabase) -> None:
-        test_db.save_memory("tempnick", "likes tea", "#c")
-        test_db.add_memory_candidate("tempnick", "maybe likes coffee", "#c")
-
-        moved = test_db.migrate_user_data("tempnick", "account")
-
-        assert moved >= 2
-        assert any("tea" in m.fact for m in test_db.get_memories("account"))
-        assert test_db.get_memories("tempnick") == []
-        assert any("coffee" in c.fact for c in test_db.get_memory_candidates("account"))
-
-    def test_destination_instruction_wins(self, test_db: LLMDatabase) -> None:
-        test_db.save_instruction("tempnick", "from before identify")
-        test_db.save_instruction("account", "canonical")
-
-        test_db.migrate_user_data("tempnick", "account")
-
-        assert test_db.get_instruction("account") == "canonical"
-        assert test_db.get_instruction("tempnick") is None
-
-    def test_instruction_moves_when_no_conflict(self, test_db: LLMDatabase) -> None:
-        test_db.save_avatar_persona("tempnick", "a fox")
-
-        test_db.migrate_user_data("tempnick", "account")
-
-        assert test_db.get_avatar_persona("account") == "a fox"
-
-    def test_timezone_moves_when_no_conflict(self, test_db: LLMDatabase) -> None:
-        test_db.save_user_timezone("tempnick", "America/Toronto")
-
-        test_db.migrate_user_data("tempnick", "account")
-
-        assert test_db.get_user_timezone("account") == "America/Toronto"
-        assert test_db.get_user_timezone("tempnick") is None
-
-    def test_clock_offset_moves_when_no_conflict(self, test_db: LLMDatabase) -> None:
-        test_db.save_clock_offset("tempnick", -4 * 3600)
-
-        test_db.migrate_user_data("tempnick", "account")
-
-        assert test_db.get_clock_offset("account")[0] == -4 * 3600
-        assert test_db.get_clock_offset("tempnick") is None
-
-    def test_same_identity_is_noop(self, test_db: LLMDatabase) -> None:
-        test_db.save_instruction("bob", "x")
-        assert test_db.migrate_user_data("Bob", "bob") == 0
-        assert test_db.get_instruction("bob") == "x"
 
 
 class TestActiveAnimateTargets:

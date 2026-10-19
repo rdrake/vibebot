@@ -85,31 +85,6 @@ class ConversationContextMachine(RuleBasedStateMachine):
         self.personal.clear()
         self.channel.clear()
 
-    @rule(old_nick=sampled_from(NICKS), new_nick=sampled_from(NICKS))
-    def migrate_user(self, old_nick: str, new_nick: str) -> None:
-        self.ctx.migrate_user(old_nick, new_nick)
-        old = old_nick.lower()
-        new = new_nick.lower()
-        if old == new:
-            return
-        # Mirror migrate_user semantics: rekey (old, c) -> (new, c).
-        # When destination key already exists, destination wins, source is dropped.
-        new_personal: dict[tuple[str, str], list[tuple[str, str]]] = {}
-        for (n, c), msgs in self.personal.items():
-            if n != old:
-                new_personal[(n, c)] = msgs
-                continue
-            dst = (new, c)
-            if dst in self.personal:
-                # destination wins, source dropped (do not re-add (old, c))
-                continue
-            new_personal[dst] = msgs
-        # Carry over any pre-existing destination entries that weren't touched above.
-        for key, msgs in self.personal.items():
-            if key[0] == new and key not in new_personal:
-                new_personal[key] = msgs
-        self.personal = new_personal
-
     # ---- invariants ----
 
     @invariant()

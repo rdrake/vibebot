@@ -47,7 +47,7 @@ from . import (
 from .assistant import PENDING_TASK_TOOLS
 from .context import ContextConfig, ConversationContext, Role
 from .executor import LLMExecutor, RecursiveSubmitError
-from .identity import Caller, Identity
+from .identity import UNAUTHENTICATED_KEY_PREFIX, Caller, Identity
 from .persistence import LLMDatabase, PendingTaskRow, ReminderRow, ScheduledLlmTaskRow
 from .profile import (
     PROFILE_ANIMATE,
@@ -973,10 +973,6 @@ class LLM(callbacks.Plugin):
 
         # Initialize conversation context (loads persisted conversations from DB)
         self._init_context()
-
-        # Track nicks already migrated to account-based identity this session
-        self._migrated_nicks: set[str] = set()
-        self._migrated_nicks_lock = threading.Lock()
 
         # In-memory per-command rate-limit buckets: "{command}:{account}" -> deque of timestamps
         self._rate_buckets: dict[str, collections.deque[float]] = {}
@@ -3900,7 +3896,7 @@ class LLM(callbacks.Plugin):
         """
         try:
             self.db.log_usage(
-                account or nick,
+                Identity(nick, account).key,
                 channel,
                 command,
                 result.model,
@@ -4565,100 +4561,29 @@ class LLM(callbacks.Plugin):
             return None
 
     def _resolve_nick_to_identity(self, irc: callbacks.Irc, nick: str) -> str:
-        """Resolve a plain nick to its NickServ account, falling back to nick.
+        """Resolve a plain nick to the storage key its usage and history live under.
 
-        AfterNet supports ``account-notify``, so Limnoria caches NickServ
-        account names in ``irc.state.nicksToAccounts``.  Using the account
-        name means usage stats, conversation context, and reminders follow
-        the user across nick changes.
-
-        When the account differs from the nick, old usage rows logged under
-        the raw nick are lazily migrated to the account name (once per nick
-        per session) so that ``@usage`` reports include historical data.
+        AfterNet supports ``account-notify``, so Limnoria caches account names
+        in ``irc.state.nicksToAccounts``. A nick authenticated to an account
+        resolves to the account. A nick the cache knows to be logged out
+        resolves to its unauthenticated storage key (``!nick``), so a
+        squatter's rows are never read as the account's. A nick the cache
+        hasn't seen (offline, or no shared channel) is taken as typed: an
+        operator looking up someone who isn't online names their account.
 
         Args:
             irc: IRC connection (provides account lookup via ``state``)
             nick: Plain IRC nick (no hostmask)
 
         Returns:
-            NickServ account name, or the original nick as fallback.
+            The account, ``!nick`` for a logged-out nick, or ``nick`` unchanged
+            when the cache has no answer.
         """
         try:
             account = irc.state.nickToAccount(nick)
-            if account:
-                self._maybe_migrate_nick(nick, account)
-                return account
         except (KeyError, AttributeError):
-            pass
-        return nick
-
-    def _maybe_migrate_nick(self, old_nick: str, account: str) -> None:
-        """Migrate old nick-based rows to the account, once per session.
-
-        Covers ``usage``, ``conversations``, and the memory family
-        (memories, candidates, instruction, persona) so historical cost
-        data, conversation history, and stored facts all follow the user
-        once they identify.  In-memory ``ConversationContext`` is also
-        rekeyed so the next turn resumes the same thread.
-
-        Skips entirely when the nick and account are the same
-        (case-insensitive) or when we've already attempted migration
-        for this nick this session.
-
-        Args:
-            old_nick: The user's current IRC nick.
-            account: The resolved NickServ account name.
-        """
-        if ircutils.toLower(old_nick) == ircutils.toLower(account):
-            return
-        key = ircutils.toLower(old_nick)
-        # Atomically claim the migration so concurrent request threads (the
-        # @-command CommandThread, the addressed-dispatch SupyThread, and
-        # executor workers all reach this) can't both run the body below.
-        # The DB work stays outside the lock — only the claim needs to be
-        # serialized.
-        with self._migrated_nicks_lock:
-            if key in self._migrated_nicks:
-                return
-            self._migrated_nicks.add(key)
-        # If any step below raises (e.g. a locked DB), a partial migration would
-        # otherwise leave the key marked forever — later steps (memories,
-        # instruction, persona, context rekey) would never retry this session
-        # and the identity's data would silently go dark. It would also
-        # propagate up into the triggering @ask/@code/@draw and error it. So on
-        # failure we un-claim the key (allowing a retry on the next message) and
-        # swallow — migration is best-effort and must not break the request.
-        try:
-            usage_count = self.db.migrate_nick(old_nick, account)
-            if usage_count > 0:
-                self.log.info(
-                    "Migrated %i usage row(s) from %s to %s", usage_count, old_nick, account
-                )
-            convo_count = self.db.migrate_conversations(old_nick, account)
-            if convo_count > 0:
-                self.log.info(
-                    "Migrated %i conversation row(s) from %s to %s",
-                    convo_count,
-                    old_nick,
-                    account,
-                )
-            # Memories, candidates, instruction, and persona follow the identity
-            # too — otherwise facts saved while unidentified go dark on identify.
-            data_count = self.db.migrate_user_data(old_nick, account)
-            if data_count > 0:
-                self.log.info(
-                    "Migrated %i memory/instruction row(s) from %s to %s",
-                    data_count,
-                    old_nick,
-                    account,
-                )
-            # Also rekey in-memory conversation context so the live thread
-            # carries over without waiting for DB reload.
-            self.context.migrate_user(old_nick, account)
-        except Exception:
-            with self._migrated_nicks_lock:
-                self._migrated_nicks.discard(key)
-            self.log.exception("Nick migration from %s to %s failed; will retry", old_nick, account)
+            return nick
+        return Identity(nick, account or None).key
 
     def _log_pending_delivery_usage(
         self, result: PendingTaskResult, nick: str, target: str
@@ -6240,8 +6165,8 @@ class LLM(callbacks.Plugin):
         # (where the mention still injects canon facts).
         if not force_roleplay:
             return None
-        # Account-or-nick key: unauthenticated, it could be someone else's persona.
-        persona = (self.db.get_avatar_persona(nick) or "") if account else ""
+        # Personal data: only an authenticated caller has a persona.
+        persona = (self.db.get_avatar_persona(account) or "") if account else ""
         system_prompt = build_verse_system_prompt(
             store,
             avatar_id,
@@ -6279,7 +6204,7 @@ class LLM(callbacks.Plugin):
         try:
             store = self._get_or_create_verse_store(channel)
             avatar_id = self._find_caller_avatar(
-                store, preflight.caller.identity.account, preflight.caller.identity.key
+                store, preflight.caller.identity.account, preflight.caller.identity.raw_nick
             )
             # Retrieval trigger: only inject when the message actually references
             # canon. -1 stands in for a non-avatar speaker (no self to exclude),
@@ -6433,7 +6358,7 @@ class LLM(callbacks.Plugin):
         try:
             store = self._get_or_create_verse_store(channel)
             avatar_id = self._find_caller_avatar(
-                store, preflight.caller.identity.account, preflight.caller.identity.key
+                store, preflight.caller.identity.account, preflight.caller.identity.raw_nick
             )
             if not self._verse_triggered(
                 channel, store, avatar_id if avatar_id is not None else -1, text
@@ -6480,7 +6405,7 @@ class LLM(callbacks.Plugin):
         try:
             store = self._get_or_create_verse_store(channel)
             avatar_id = self._find_caller_avatar(
-                store, preflight.caller.identity.account, preflight.caller.identity.key
+                store, preflight.caller.identity.account, preflight.caller.identity.raw_nick
             )
             if avatar_id is None:
                 return False
@@ -6509,7 +6434,7 @@ class LLM(callbacks.Plugin):
         try:
             store = self._get_or_create_verse_store(channel)
             avatar_id = self._find_caller_avatar(
-                store, preflight.caller.identity.account, preflight.caller.identity.key
+                store, preflight.caller.identity.account, preflight.caller.identity.raw_nick
             )
             if avatar_id is None:
                 return None
@@ -7230,15 +7155,11 @@ class LLM(callbacks.Plugin):
 
         The one resolver: the account comes from the IRCv3 account-tag (or
         the session cache) via :meth:`_account_from_msg`, the nick and the
-        channel from ``msg`` via :meth:`Caller.from_msg`. Triggers a one-time
-        DB migration of nick→account rows on first successful resolution per
-        session, covering both ``usage`` and ``conversations`` tables.
+        channel from ``msg`` via :meth:`Caller.from_msg`. Nothing is moved
+        between storage keys: rows written under a nick stay there, so an
+        account can't claim what someone else wrote under its name.
         """
-        account = self._account_from_msg(irc, msg)
-        caller = Caller.from_msg(msg, account)
-        if account:
-            self._maybe_migrate_nick(caller.identity.raw_nick, account)
-        return caller
+        return Caller.from_msg(msg, self._account_from_msg(irc, msg))
 
     def _require_caller(self, irc: callbacks.Irc, msg: IrcMsg) -> Caller | None:
         """Resolve the Caller, refusing one that isn't authenticated.
@@ -7609,9 +7530,10 @@ class LLM(callbacks.Plugin):
         )
         if caller.channel is None:
             return history, []
+        # The shared buffer labels lines with the nick people see, not the key.
         channel_history = self.context.get_channel_messages(
             caller.channel,
-            exclude_nick=nick,
+            exclude_nick=caller.identity.raw_nick,
             config=ctx_cfg,
             max_age_seconds=max_age_seconds,
         )
@@ -7869,7 +7791,9 @@ class LLM(callbacks.Plugin):
             # (see _gather_history).
             if caller.channel is not None:
                 shared = caller.channel
-                self.context.add_channel_message(shared, nick, Role.USER, text, config=ctx_cfg)
+                self.context.add_channel_message(
+                    shared, caller.identity.raw_nick, Role.USER, text, config=ctx_cfg
+                )
                 self.context.add_channel_message(
                     shared, irc.nick, Role.ASSISTANT, response, config=ctx_cfg
                 )
@@ -8055,7 +7979,7 @@ class LLM(callbacks.Plugin):
                 force_roleplay = True
             route = self._verse_route_for(
                 channel,
-                caller.identity.key,
+                caller.identity.raw_nick,
                 caller.identity.account,
                 text,
                 msg.prefix,
@@ -10344,7 +10268,11 @@ class LLM(callbacks.Plugin):
         parts.append(f"This month: ${month.total_cost:.4f} ({month.total_requests} requests)")
 
         if top_users:
-            user_parts = [f"{u.name} ${u.total_cost:.4f}" for u in top_users]
+            # Show the nick, not the unauthenticated storage key's "!" prefix.
+            user_parts = [
+                f"{u.name.removeprefix(UNAUTHENTICATED_KEY_PREFIX)} ${u.total_cost:.4f}"
+                for u in top_users
+            ]
             parts.append(f"Top users: {', '.join(user_parts)}")
 
         if top_channels:

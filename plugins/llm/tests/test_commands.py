@@ -19,7 +19,7 @@ import pytest
 from llm.assistant import PENDING_TASK_TOOLS
 from llm.context import Role
 from llm.identity import Caller, Identity
-from llm.persistence import UsageBreakdown, UsageSummary
+from llm.persistence import UsageBreakdown, UsageRank, UsageSummary
 from llm.plugin import LLM, PreflightResult
 from llm.service import AssistantResult, CompletionResult, ReminderParseResult
 
@@ -110,7 +110,7 @@ class TestAskCommand:
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         # Context should have both user and assistant messages
-        messages = plugin.context.get_messages("testnick", "#test")
+        messages = plugin.context.get_messages("!testnick", "#test")
         assert len(messages) == 2
         assert messages[0]["role"] == "user"
         assert messages[1]["role"] == "assistant"
@@ -131,7 +131,7 @@ class TestAskCommand:
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         plugin.db.log_usage.assert_called_once_with(
-            "testnick",
+            "!testnick",
             "#test",
             "ask",
             "gpt-4",
@@ -368,7 +368,7 @@ class TestAskCommand:
         mocker.patch("llm.plugin.ircmsgs.action")
         plugin.ask(mock_irc, mock_msg, ["hmm"])
 
-        messages = plugin.context.get_messages("testnick", "#test")
+        messages = plugin.context.get_messages("!testnick", "#test")
         assert len(messages) == 2
         assert messages[1]["role"] == "assistant"
         assert messages[1]["content"] == "* testbot thinks about it"
@@ -485,7 +485,7 @@ class TestCodeCommand:
 
         plugin.code(mock_irc, mock_msg, ["generate", "something"])
 
-        messages = plugin.context.get_messages("testnick", "#test")
+        messages = plugin.context.get_messages("!testnick", "#test")
         assert len(messages) == 2
         assert messages[0]["role"] == "user"
         assert messages[1]["role"] == "assistant"
@@ -504,7 +504,7 @@ class TestCodeCommand:
         plugin.code(mock_irc, mock_msg, ["assign"])
 
         plugin.db.log_usage.assert_called_once_with(
-            "testnick",
+            "!testnick",
             "#test",
             "code",
             "gpt-4",
@@ -1518,7 +1518,7 @@ class TestDispatchAssistantReply:
 
         plugin.ask(mock_irc, mock_msg, ["think", "about", "it"])
 
-        messages = plugin.context.get_messages("testnick", "#test")
+        messages = plugin.context.get_messages("!testnick", "#test")
         assert len(messages) == 2
         assert messages[1]["role"] == "assistant"
         # The stored form must be the IRC action emote, not the /me prefix.
@@ -1569,8 +1569,8 @@ class TestForgetCommand:
         plugin, mock_irc, mock_msg = plugin_env
 
         # Pre-populate context
-        plugin.context.add_message("testnick", "#test", "user", "hi")
-        plugin.context.add_message("testnick", "#test", "assistant", "hello")
+        plugin.context.add_message("!testnick", "#test", "user", "hi")
+        plugin.context.add_message("!testnick", "#test", "assistant", "hello")
 
         plugin.forget(mock_irc, mock_msg, [])
 
@@ -1579,7 +1579,7 @@ class TestForgetCommand:
         assert "cleared" in reply_text.lower() or "fresh" in reply_text.lower()
 
         # Context should be empty
-        assert len(plugin.context.get_messages("testnick", "#test")) == 0
+        assert len(plugin.context.get_messages("!testnick", "#test")) == 0
 
     def test_forget_clears_shared_channel_context(self, plugin_env):
         """GIVEN channel context has stale bot text WHEN forget called THEN channel context cleared."""
@@ -1608,19 +1608,19 @@ class TestForgetCommand:
         plugin, mock_irc, mock_msg = plugin_env
 
         # Add context for the current channel (#test from fixture)
-        plugin.context.add_message("testnick", "#test", "user", "hello")
-        plugin.context.add_message("testnick", "#test", "assistant", "hi")
-        assert len(plugin.context.get_messages("testnick", "#test")) == 2
+        plugin.context.add_message("!testnick", "#test", "user", "hello")
+        plugin.context.add_message("!testnick", "#test", "assistant", "hi")
+        assert len(plugin.context.get_messages("!testnick", "#test")) == 2
 
         # Also add context for another channel (should not be affected)
-        plugin.context.add_message("testnick", "#other", "user", "keep me")
+        plugin.context.add_message("!testnick", "#other", "user", "keep me")
 
         plugin.forget(mock_irc, mock_msg, [])
 
         # Current channel context should be cleared
-        assert len(plugin.context.get_messages("testnick", "#test")) == 0
+        assert len(plugin.context.get_messages("!testnick", "#test")) == 0
         # Other channel context should be untouched
-        assert len(plugin.context.get_messages("testnick", "#other")) == 1
+        assert len(plugin.context.get_messages("!testnick", "#other")) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1701,7 +1701,7 @@ class TestUsageCommand:
         )
         plugin.db.get_usage_by_nick.return_value = [
             UsageBreakdown(
-                name="testnick",
+                name="!testnick",
                 total_requests=5,
                 total_prompt_tokens=500,
                 total_completion_tokens=250,
@@ -1725,6 +1725,9 @@ class TestUsageCommand:
         assert "Today:" in reply_text
         assert "This month:" in reply_text
         assert "Top users:" in reply_text
+        # An unauthenticated user's storage key shows as the nick.
+        assert "Top users: testnick $0.0300" in reply_text
+        assert "!testnick" not in reply_text
         assert "Top channels:" in reply_text
         assert "Context:" in reply_text
         assert "conversations" in reply_text
@@ -1855,8 +1858,8 @@ class TestUsageCommand:
         plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=5)
 
         # Add some messages to the user's context
-        plugin.context.add_message("testnick", "#test", "user", "Hello")
-        plugin.context.add_message("testnick", "#test", "assistant", "Hi there")
+        plugin.context.add_message("!testnick", "#test", "user", "Hello")
+        plugin.context.add_message("!testnick", "#test", "assistant", "Hi there")
 
         plugin.usage(mock_irc, mock_msg, [])
 
@@ -1877,8 +1880,8 @@ class TestUsageCommand:
 
         plugin.usage(mock_irc, mock_msg, ["@Larry"])
 
-        # Should query for "Larry", not "@Larry"
-        assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "Larry"
+        # Should query for Larry's key, not "@Larry"
+        assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "!Larry"
         assert "Larry" in mock_irc.reply.call_args[0][0]
 
     def test_usage_handles_nick_with_brackets(self, plugin_env, mocker: MockerFixture):
@@ -1892,7 +1895,7 @@ class TestUsageCommand:
         plugin.usage(mock_irc, mock_msg, ["Rubin[F]"])
 
         # Should query DB with the full bracket nick
-        assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "Rubin[F]"
+        assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "!Rubin[F]"
         assert "Rubin[F]" in mock_irc.reply.call_args[0][0]
 
     def test_usage_resolves_target_nick_to_account(self, plugin_env, mocker: MockerFixture):
@@ -1937,7 +1940,7 @@ class TestUsageCommand:
         # Scoped to current channel
         plugin.db.get_usage_summary_for_nick.assert_called_once()
         call_kwargs = plugin.db.get_usage_summary_for_nick.call_args
-        assert call_kwargs[0][0] == "othernick"
+        assert call_kwargs[0][0] == "!othernick"
         assert call_kwargs[1]["channel"] == "#test"
 
     def test_usage_with_nick_via_pm(self, plugin_env, mocker: MockerFixture):
@@ -3033,7 +3036,7 @@ class TestAccountBasedIdentity:
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         plugin.db.log_usage.assert_called_once_with(
-            "testnick",
+            "!testnick",
             "#test",
             "ask",
             "gpt-4",
@@ -3062,7 +3065,7 @@ class TestAccountBasedIdentity:
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         plugin.db.log_usage.assert_called_once_with(
-            "testnick",
+            "!testnick",
             "#test",
             "ask",
             "gpt-4",
@@ -3089,7 +3092,7 @@ class TestAccountBasedIdentity:
 
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
-        messages = plugin.context.get_messages("testnick", "#test")
+        messages = plugin.context.get_messages("!testnick", "#test")
         assert len(messages) == 2
 
     def test_forget_clears_context_under_account(self, account_env):
@@ -3106,46 +3109,104 @@ class TestAccountBasedIdentity:
         assert "cleared" in reply_text.lower() or "fresh" in reply_text.lower()
         assert len(plugin.context.get_messages("MyAccount", "#test")) == 0
 
-    # -- Lazy nick→account migration --
+    # -- Nick squatter on an account's name --
 
-    def test_migrate_called_when_nick_differs_from_account(self, account_env):
-        """GIVEN nick != account WHEN identity resolved THEN migrate_nick called."""
-        plugin, mock_irc, _ = account_env
-        plugin.db.migrate_nick.return_value = 3
-
-        identity = plugin._resolve_nick_to_identity(mock_irc, "testnick")
-
-        assert identity == "MyAccount"
-        plugin.db.migrate_nick.assert_called_once_with("testnick", "MyAccount")
-
-    def test_migrate_not_called_when_nick_matches_account(self, plugin_env, mocker: MockerFixture):
-        """GIVEN nick == account (case-insensitive) WHEN resolved THEN no migration."""
+    @pytest.mark.parametrize("channel", ["#test", None], ids=["channel", "pm"])
+    def test_squatter_and_account_keep_separate_context(self, plugin_env, channel):
+        """GIVEN account alice and an unauthenticated "alice", in a channel or a PM
+        WHEN the account's turn is stored
+        THEN the squatter's history is empty and the account's is not."""
         plugin, mock_irc, _ = plugin_env
-        mock_irc.state.nickToAccount = mocker.MagicMock(return_value="testnick")
+        owner = Caller(Identity("alice", "alice"), channel)
+        squatter = Caller(Identity("alice", None), channel)
+        result = CompletionResult(content="ok", model="m")
 
-        identity = plugin._resolve_nick_to_identity(mock_irc, "testnick")
+        plugin._store_context_and_log_usage(owner, "ask", "my secret", "ok", result, mock_irc)
 
-        assert identity == "testnick"
-        plugin.db.migrate_nick.assert_not_called()
+        assert len(plugin._gather_history(owner)[0]) == 2
+        assert plugin._gather_history(squatter)[0] == []
 
-    def test_migrate_called_only_once_per_nick(self, account_env):
-        """GIVEN nick already migrated WHEN resolved again THEN no second DB call."""
-        plugin, mock_irc, _ = account_env
-        plugin.db.migrate_nick.return_value = 0
-
-        plugin._resolve_nick_to_identity(mock_irc, "testnick")
-        plugin._resolve_nick_to_identity(mock_irc, "testnick")
-
-        plugin.db.migrate_nick.assert_called_once()
-
-    def test_migrate_not_called_when_no_account(self, plugin_env):
-        """GIVEN nickToAccount returns None WHEN resolved THEN no migration."""
+    def test_channel_buffer_labels_lines_with_the_nick(self, plugin_env):
+        """GIVEN an unauthenticated caller WHEN their turn is stored
+        THEN the shared buffer shows their nick, and their own lines are
+        excluded from their channel history."""
         plugin, mock_irc, _ = plugin_env
+        caller = Caller(Identity("alice", None), "#test")
+        result = CompletionResult(content="ok", model="m")
 
-        identity = plugin._resolve_nick_to_identity(mock_irc, "testnick")
+        plugin._store_context_and_log_usage(caller, "ask", "hello", "ok", result, mock_irc)
 
-        assert identity == "testnick"
-        plugin.db.migrate_nick.assert_not_called()
+        speakers = [m["nick"] for m in plugin.context.get_channel_messages("#test")]
+        assert "alice" in speakers
+        assert "!alice" not in speakers
+        assert all(m["nick"] != "alice" for m in plugin._gather_history(caller)[1])
+
+    def test_squatter_has_its_own_rate_limit_bucket(self, plugin_env, mocker: MockerFixture):
+        """GIVEN account testnick's ask bucket is full
+        WHEN an unauthenticated "testnick" asks
+        THEN the squatter isn't rate limited by the account's bucket."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = None
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect(
+                {
+                    "enforceRateLimits": True,
+                    "askUnregRateLimitCount": 2,
+                    "askUnregRateLimitWindow": 60,
+                }
+            )
+        )
+        now = time.time()
+        for _ in range(3):
+            plugin._record_rate_limit_hit("ask", Identity("testnick", "testnick").key, now - 1)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+
+        pf = plugin._run_preflight(mock_irc, mock_msg, "hello", "ask", require_account=False)
+
+        assert not pf.blocked
+        assert pf.caller.identity.key == "!testnick"
+
+    def test_squatter_does_not_inherit_sticky_roleplay(self, plugin_env):
+        """GIVEN account alice turned on sticky @rp WHEN an unauthenticated
+        "alice" talks in the same channel THEN no roleplay session is live."""
+        plugin, _, _ = plugin_env
+        owner = PreflightResult(False, Caller(Identity("alice", "alice"), "#test"))
+        squatter = PreflightResult(False, Caller(Identity("alice", None), "#test"))
+
+        plugin._roleplay_sticky_set(owner, True)
+
+        assert plugin._roleplay_sticky_active(owner) is True
+        assert plugin._roleplay_sticky_active(squatter) is False
+
+    def test_usage_for_logged_out_nick_reads_its_own_key(self, plugin_env):
+        """GIVEN "alice" is logged out WHEN @usage alice
+        THEN the squatter's key is queried and the reply says "alice"."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = None
+        plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(1, 10, 5, 0.01)
+        plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=1)
+
+        plugin.usage(mock_irc, mock_msg, ["alice"])
+
+        assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "!alice"
+        reply = mock_irc.reply.call_args[0][0]
+        assert reply.startswith("alice")
+        assert "!alice" not in reply
+
+    def test_usage_for_unseen_nick_reads_it_as_an_account(self, plugin_env):
+        """GIVEN the bot hasn't seen "alice" (offline) WHEN @usage alice
+        THEN the name is taken as an account."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.side_effect = KeyError("alice")
+        plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(1, 10, 5, 0.01)
+        plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=1)
+
+        plugin.usage(mock_irc, mock_msg, ["alice"])
+
+        assert plugin.db.get_usage_summary_for_nick.call_args[0][0] == "alice"
 
 
 # ---------------------------------------------------------------------------
@@ -3523,8 +3584,8 @@ class TestRateLimitIntegration:
             )
         )
         now = time.time()
-        # Use nick as bucket key for unregistered users
-        nick = "testnick"
+        # Unregistered users' bucket is their unauthenticated storage key
+        nick = "!testnick"
         for _ in range(3):
             plugin._record_rate_limit_hit("ask", nick, now - 1)
 
@@ -4144,9 +4205,9 @@ class TestVerseStorybook:
         plugin.registryValue = mocker.MagicMock(side_effect=base)
         pf = PreflightResult(False, Caller(Identity("alice", None), "#test"))
         plugin._roleplay_sticky_set(pf, True)
-        plugin._roleplay_sticky[("#test", "alice")] = _t.time() - 1  # force lapse
+        plugin._roleplay_sticky[("#test", "!alice")] = _t.time() - 1  # force lapse
         assert plugin._roleplay_sticky_active(pf) is False
-        assert ("#test", "alice") not in plugin._roleplay_sticky
+        assert ("#test", "!alice") not in plugin._roleplay_sticky
 
     def test_roleplay_sticky_never_expires_when_ttl_zero(self, plugin_env, mocker):
         import math
@@ -4156,7 +4217,7 @@ class TestVerseStorybook:
         plugin.registryValue = mocker.MagicMock(side_effect=base)
         pf = PreflightResult(False, Caller(Identity("alice", None), "#test"))
         plugin._roleplay_sticky_set(pf, True)
-        assert plugin._roleplay_sticky[("#test", "alice")] == math.inf
+        assert plugin._roleplay_sticky[("#test", "!alice")] == math.inf
         assert plugin._roleplay_sticky_active(pf) is True
 
     def test_roleplay_sticky_keyed_by_account_over_nick(self, plugin_env, mocker):

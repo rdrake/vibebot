@@ -643,12 +643,6 @@ def plugin_env(mocker: MockerFixture):
 
     plugin.llm_service.assistant_request.side_effect = _assistant_request_bridge
 
-    # migrate_nick / migrate_conversations / migrate_user_data return an int
-    # (0 = nothing to migrate) by default.
-    plugin.db.migrate_nick.return_value = 0
-    plugin.db.migrate_conversations.return_value = 0
-    plugin.db.migrate_user_data.return_value = 0
-
     try:
         yield plugin, mock_irc, mock_msg
     finally:

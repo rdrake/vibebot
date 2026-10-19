@@ -60,12 +60,7 @@ A fact you ask the bot to remember is stored at once — it skips the candidate 
 
 ### Memories and your account
 
-Your memories are filed under your account once you authenticate, and under your current nick before that. The first time you talk to the bot in a session while authenticated, it moves everything held under that nick across: memories, candidates that haven't been promoted yet, your `@instruct` text, and your `@avatar` persona. Facts the bot learned before you authenticated are not lost.
-
-Two consequences:
-
-- Memories and candidates merge. An instruction or a persona already set on the account wins, and the nick's copy is dropped.
-- Facts saved under a nick you never authenticate with stay attached to the nick until you authenticate on it.
+Your memories are filed under your authenticated account, and only there. The bot never moves data between a nick and an account: authenticating on a nick doesn't pick up anything stored under that nick, and someone authenticated under a different name can't pull in yours by using your nick.
 
 `@memories`, `@instruct`, and `@avatar` need an authenticated account, and the bot reads neither your memories nor your instruction while you aren't authenticated. Holding someone's nick doesn't give you their data.
 

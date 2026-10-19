@@ -18,6 +18,12 @@ if TYPE_CHECKING:
     from supybot.ircmsgs import IrcMsg
 
 
+# Marks a storage key that belongs to an unauthenticated nick. '!' is the
+# nick!user@host separator, so it can't appear in a nick or an account name.
+# Not '~': rfc1459 casemapping folds '^' to '~'.
+UNAUTHENTICATED_KEY_PREFIX = "!"
+
+
 @dataclass(frozen=True)
 class Identity:
     """A person on IRC: their live nick and their authenticated account.
@@ -26,8 +32,12 @@ class Identity:
       Use it for replies, displays, and IRC-protocol operations.
     * ``account`` — the authenticated account, or ``None`` when the person
       isn't authenticated.
-    * ``key`` (storage key) — ``account or raw_nick``. Rate limits,
-      conversation history, and usage logging use it.
+    * ``key`` (storage key) — the account when authenticated, otherwise
+      ``"!" + raw_nick``. Rate limits, conversation history, sticky @rp, and
+      usage logging use it. The ``!`` can't appear in an IRC nick or an
+      account name, so an unauthenticated nick never shares a key with an
+      account of the same name. It's a key, not a name: display
+      ``raw_nick`` instead.
     * ``personal_key`` — the account, or ``None``. Memories, avatar persona,
       time zone, @instruct, and background memory extraction are read and
       written only through it, so an unauthenticated nick never reaches an
@@ -43,8 +53,8 @@ class Identity:
 
     @property
     def key(self) -> str:
-        """Storage key: the account when authenticated, the raw nick otherwise."""
-        return self.account or self.raw_nick
+        """Storage key: the account when authenticated, ``"!" + raw_nick`` otherwise."""
+        return self.account or UNAUTHENTICATED_KEY_PREFIX + self.raw_nick
 
     @property
     def personal_key(self) -> str | None:
