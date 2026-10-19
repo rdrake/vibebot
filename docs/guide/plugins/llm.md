@@ -61,6 +61,7 @@ plugins/llm/src/llm/
 ├── prompts.py         # Shared system-prompt fragments
 ├── executor.py        # LLMExecutor: global concurrency cap
 ├── persistence.py     # SQLite store (memories, reminders, schedules, usage)
+├── agenda.py          # When reminders and scheduled tasks fire: cadence, caps, restart
 ├── limnoria_bridge.py # Allowlisted "Limnoria as tools" surface
 ├── statuspage.py      # Statuspage v2 polling, parsing, and rendering
 ├── context.py         # Conversation history with TTL

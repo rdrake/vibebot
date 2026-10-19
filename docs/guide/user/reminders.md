@@ -69,7 +69,7 @@ VibeBot, every 2 hours check the status of #1234 and ping me if it changed
 VibeBot, every weekday at 9 a.m. summarize the overnight CVE feed
 ```
 
-Anything that needs tools at fire time becomes a [scheduled task](scheduled-tasks.md). Plain echo reminders also recur: `@remind every Friday at 5 p.m. switch laundry over` schedules a chain of one-shot reminders that re-arm themselves, up to 50 times, before you have to set them again.
+Anything that needs tools at fire time becomes a [scheduled task](scheduled-tasks.md). Plain echo reminders also recur: `@remind every Friday at 5 p.m. switch laundry over` schedules one reminder that re-arms itself after each fire, up to 50 times, before you have to set it again. It keeps the same id the whole way, so the id `@remind list` showed you still cancels it after it has fired.
 
 None of it can be listed or cancelled by talking to the bot — creating is all chat can do. Everything you own, reminders and scheduled tasks alike, comes back through `@remind list` and `@remind delete`, below.
 
@@ -97,7 +97,7 @@ Things to know:
 
 ## Delivery
 
-The bot delivers a reminder to the channel where you set it, or by private message if you set it by PM. If the bot was offline when a reminder came due, it delivers the reminder shortly after it comes back. A reminder that came due more than 24 hours before the bot returned is dropped, not delivered.
+The bot delivers a reminder to the channel where you set it, or by private message if you set it by PM. If the bot was offline when a reminder came due, it delivers the reminder shortly after it comes back. A one-off reminder that came due more than 24 hours before the bot returned is dropped, not delivered. A recurring reminder is never dropped for being late: it fires once when the bot returns and carries on from there.
 
 ## Owner admin
 
