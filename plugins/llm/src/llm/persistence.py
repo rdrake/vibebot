@@ -886,6 +886,37 @@ class LLMDatabase:
             )
             return cursor.rowcount > 0
 
+    _REMINDER_COLUMNS = (
+        "id, event_name, nick, channel, message, action_prompt, account, "
+        "fire_at, created_at, chain_position, "
+        "recurrence_seconds, recurrence_rrule, watch_mode, reply_msgid"
+    )
+
+    # A row is still live while it is less than a day overdue, or recurring.
+    # Recurring rows load however overdue they are, so a long outage does not
+    # end a chain (see agenda.py).
+    _LIVE_WHERE = "(fire_at > ? OR recurrence_seconds IS NOT NULL OR recurrence_rrule IS NOT NULL)"
+
+    @staticmethod
+    def _row_to_reminder(row: tuple) -> ReminderRow:
+        # watch_mode is stored as INTEGER 0/1; expose as bool on the row.
+        return ReminderRow(
+            id=row[0],
+            event_name=row[1],
+            nick=row[2],
+            channel=row[3],
+            message=row[4],
+            action_prompt=row[5],
+            account=row[6],
+            fire_at=row[7],
+            created_at=row[8],
+            chain_position=row[9],
+            recurrence_seconds=row[10],
+            recurrence_rrule=row[11],
+            watch_mode=bool(row[12]),
+            reply_msgid=row[13],
+        )
+
     def load_pending_reminders(self) -> list[ReminderRow]:
         """Load reminders that are still pending delivery.
 
@@ -900,49 +931,55 @@ class LLMDatabase:
         cutoff = time.time() - EXPIRY_THRESHOLD_SECONDS
         conn = self._connect()
         rows = conn.execute(
-            "SELECT id, event_name, nick, channel, message, action_prompt, account, "
-            "fire_at, created_at, chain_position, "
-            "recurrence_seconds, recurrence_rrule, watch_mode, reply_msgid "
-            "FROM reminders WHERE fire_at > ? "
-            "OR recurrence_seconds IS NOT NULL OR recurrence_rrule IS NOT NULL "
-            "ORDER BY fire_at",
+            f"SELECT {self._REMINDER_COLUMNS} FROM reminders "
+            f"WHERE {self._LIVE_WHERE} ORDER BY fire_at",
             (cutoff,),
         ).fetchall()
-        # watch_mode is stored as INTEGER 0/1; expose as bool on the row.
-        return [
-            ReminderRow(
-                id=row[0],
-                event_name=row[1],
-                nick=row[2],
-                channel=row[3],
-                message=row[4],
-                action_prompt=row[5],
-                account=row[6],
-                fire_at=row[7],
-                created_at=row[8],
-                chain_position=row[9],
-                recurrence_seconds=row[10],
-                recurrence_rrule=row[11],
-                watch_mode=bool(row[12]),
-                reply_msgid=row[13],
+        return [self._row_to_reminder(row) for row in rows]
+
+    def get_reminder(self, event_name: str) -> ReminderRow | None:
+        """Indexed point-lookup by event_name."""
+        row = (
+            self._connect()
+            .execute(
+                f"SELECT {self._REMINDER_COLUMNS} FROM reminders WHERE event_name = ?",
+                (event_name,),
             )
-            for row in rows
-        ]
+            .fetchone()
+        )
+        return self._row_to_reminder(row) if row else None
 
-    def delete_expired_reminders(self) -> int:
-        """Delete one-shot reminders that are more than 24 hours overdue.
+    def load_due_reminders(self, now: float) -> list[ReminderRow]:
+        """Every reminder whose fire_at has come, however overdue, oldest first."""
+        rows = (
+            self._connect()
+            .execute(
+                f"SELECT {self._REMINDER_COLUMNS} FROM reminders "
+                "WHERE fire_at <= ? ORDER BY fire_at",
+                (now,),
+            )
+            .fetchall()
+        )
+        return [self._row_to_reminder(row) for row in rows]
 
-        Returns:
-            Number of reminders deleted.
-        """
-        cutoff = time.time() - EXPIRY_THRESHOLD_SECONDS
+    def reminder_fire_times(self) -> list[tuple[str, float]]:
+        """``(event_name, fire_at)`` for every reminder, soonest first."""
+        rows = (
+            self._connect()
+            .execute("SELECT event_name, fire_at FROM reminders ORDER BY fire_at")
+            .fetchall()
+        )
+        return [(name, at) for name, at in rows]
+
+    def update_reminder_fire_at(
+        self, event_name: str, fire_at: float, *, chain_position: int
+    ) -> None:
+        """Move a recurring reminder to its next fire, keeping its row and id."""
         with self._write_txn() as conn:
-            cursor = conn.execute(
-                "DELETE FROM reminders WHERE fire_at <= ? "
-                "AND recurrence_seconds IS NULL AND recurrence_rrule IS NULL",
-                (cutoff,),
+            conn.execute(
+                "UPDATE reminders SET fire_at = ?, chain_position = ? WHERE event_name = ?",
+                (fire_at, chain_position, event_name),
             )
-            return cursor.rowcount
 
     # ------------------------------------------------------------------
     # Scheduled LLM task operations
@@ -1068,16 +1105,27 @@ class LLMDatabase:
             )
             return cursor.rowcount > 0
 
-    def load_active_scheduled_llm_tasks(self) -> list[ScheduledLlmTaskRow]:
-        """Load rows whose fire_at is within the last 24 hours or in the future."""
-        cutoff = time.time() - EXPIRY_THRESHOLD_SECONDS
-        conn = self._connect()
-        rows = conn.execute(
-            f"SELECT {self._SCHEDULED_LLM_TASK_COLUMNS} "
-            "FROM scheduled_llm_tasks WHERE fire_at > ? ORDER BY fire_at",
-            (cutoff,),
-        ).fetchall()
+    def load_due_scheduled_llm_tasks(self, now: float) -> list[ScheduledLlmTaskRow]:
+        """Every task whose fire_at has come, however overdue, oldest first."""
+        rows = (
+            self._connect()
+            .execute(
+                f"SELECT {self._SCHEDULED_LLM_TASK_COLUMNS} FROM scheduled_llm_tasks "
+                "WHERE fire_at <= ? ORDER BY fire_at",
+                (now,),
+            )
+            .fetchall()
+        )
         return [self._row_to_scheduled_llm_task(r) for r in rows]
+
+    def scheduled_llm_task_fire_times(self) -> list[tuple[str, float]]:
+        """``(event_name, fire_at)`` for every scheduled task, soonest first."""
+        rows = (
+            self._connect()
+            .execute("SELECT event_name, fire_at FROM scheduled_llm_tasks ORDER BY fire_at")
+            .fetchall()
+        )
+        return [(name, at) for name, at in rows]
 
     def get_scheduled_llm_task(self, event_name: str) -> ScheduledLlmTaskRow | None:
         """Indexed point-lookup by event_name."""
@@ -1102,7 +1150,7 @@ class LLMDatabase:
             f"SELECT {self._SCHEDULED_LLM_TASK_COLUMNS} "
             "FROM scheduled_llm_tasks "
             "WHERE (lower(creator_nick) = lower(?) OR lower(account) = lower(?)) "
-            "AND fire_at > ? ORDER BY fire_at",
+            f"AND {self._LIVE_WHERE} ORDER BY fire_at",
             (target, target, cutoff),
         ).fetchall()
         return [self._row_to_scheduled_llm_task(r) for r in rows]
@@ -1117,7 +1165,7 @@ class LLMDatabase:
         rows = conn.execute(
             f"SELECT {self._SCHEDULED_LLM_TASK_COLUMNS} "
             "FROM scheduled_llm_tasks "
-            f"WHERE {where} AND fire_at > ? ORDER BY fire_at",
+            f"WHERE {where} AND {self._LIVE_WHERE} ORDER BY fire_at",
             (*params, cutoff),
         ).fetchall()
         return [self._row_to_scheduled_llm_task(r) for r in rows]
@@ -1135,7 +1183,7 @@ class LLMDatabase:
             self._connect()
             .execute(
                 "SELECT COUNT(*) FROM scheduled_llm_tasks "
-                f"WHERE {where} AND channel = ? AND fire_at > ?",
+                f"WHERE {where} AND channel = ? AND {self._LIVE_WHERE}",
                 (*params, channel, cutoff),
             )
             .fetchone()

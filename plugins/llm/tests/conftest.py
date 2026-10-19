@@ -365,6 +365,85 @@ def make_reminder_row(
     )
 
 
+# The database calls the reminder commands and the agenda make. A plugin
+# fixture with a mocked database routes these to a real SQLite store, so
+# reminder state lives where it does in production (the row is the only
+# truth) while the mock still records every call.
+_REMINDER_STORE_CALLS = (
+    "save_reminder",
+    "get_reminder",
+    "delete_reminder",
+    "load_pending_reminders",
+    "load_due_reminders",
+    "reminder_fire_times",
+    "update_reminder_fire_at",
+)
+
+
+def back_reminders_with_sqlite(db_mock: MagicMock, path: Path) -> LLMDatabase:
+    """Route ``db_mock``'s reminder calls to a real database at ``path``."""
+    store = LLMDatabase(str(path))
+    for name in _REMINDER_STORE_CALLS:
+        getattr(db_mock, name).side_effect = getattr(store, name)
+    db_mock.sqlite_reminders = store
+    return store
+
+
+def put_reminder(plugin: Any, row: ReminderRow) -> None:
+    """Store ``row`` as a pending reminder, without recording a save call.
+
+    A ``fire_at`` of 0 (the builder's default) means "an hour from now";
+    a non-zero ``created_at`` is kept, for tests of the amend window.
+    """
+    store: LLMDatabase = plugin.db.sqlite_reminders
+    store.save_reminder(
+        row.event_name,
+        row.nick,
+        row.channel,
+        row.message,
+        row.fire_at or time.time() + 3600,
+        action_prompt=row.action_prompt,
+        account=row.account,
+        chain_position=row.chain_position,
+        recurrence_seconds=row.recurrence_seconds,
+        recurrence_rrule=row.recurrence_rrule,
+        watch_mode=row.watch_mode,
+        reply_msgid=row.reply_msgid,
+    )
+    if row.created_at:
+        with store._write_txn() as conn:
+            conn.execute(
+                "UPDATE reminders SET created_at = ? WHERE event_name = ?",
+                (row.created_at, row.event_name),
+            )
+
+
+def due_reminder(
+    plugin: Any, nick: str, channel: str, message: str, event_name: str, **fields: Any
+) -> Callable[[], None]:
+    """Store a reminder that is due now. Calling the result fires it, as the
+    agenda wakeup does: claim, deliver, and settle the row."""
+    plugin.db.sqlite_reminders.delete_reminder(event_name)
+    put_reminder(
+        plugin,
+        make_reminder_row(
+            event_name=event_name,
+            nick=nick,
+            channel=channel,
+            message=message,
+            fire_at=time.time() - 1,
+            **fields,
+        ),
+    )
+    return plugin._agenda_tick
+
+
+def reminder_names(plugin: Any) -> set[str]:
+    """Event names of every stored reminder."""
+    store: LLMDatabase = plugin.db.sqlite_reminders
+    return {name for name, _at in store.reminder_fire_times()}
+
+
 # =============================================================================
 # litellm completion-response builders
 # =============================================================================
@@ -503,7 +582,7 @@ def mock_irc(mocker: MockerFixture) -> MagicMock:
 
 
 @pytest.fixture
-def plugin_env(mocker: MockerFixture):
+def plugin_env(mocker: MockerFixture, tmp_path: Path):
     """Create an LLM plugin instance wired to mocked dependencies.
 
     Returns (plugin, mock_irc, mock_msg) ready for command invocation.
@@ -565,6 +644,8 @@ def plugin_env(mocker: MockerFixture):
     plugin.db.get_clock_offset.return_value = None
     plugin._probe_ctcp_tz = mocker.MagicMock(return_value=None)
     plugin.db.count_pending_animate_for.return_value = 0
+    # Reminder rows live in real SQLite: the row is the only cancel truth.
+    back_reminders_with_sqlite(plugin.db, tmp_path / "reminders.db")
 
     # The typing registry is real even though the service is mocked: the
     # render refresher's whole job is to reconcile a hold group, and a mock

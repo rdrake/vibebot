@@ -33,6 +33,13 @@ def _msg_mock(mocker: MockerFixture, *, depth: int | None = None):
     return msg
 
 
+def _stored_fire(llm_service):
+    """The fire the agenda wakeup would run for the one stored task."""
+    [(name, _at)] = llm_service.plugin.db.scheduled_llm_task_fire_times()
+    row = llm_service.plugin.db.get_scheduled_llm_task(name)
+    return lambda: llm_service.fire_scheduled_llm_task(row, _time.time())
+
+
 def _irc_mock(mocker: MockerFixture):
     irc = mocker.MagicMock()
     irc.network = "afternet"
@@ -42,9 +49,7 @@ def _irc_mock(mocker: MockerFixture):
 def test_schedule_llm_task_creates_db_row_and_schedules_event(
     llm_service, db, mocker: MockerFixture
 ):
-    """B1: a one-shot schedule writes a DB row and registers the event with
-    supybot.schedule.addEvent."""
-    add_event = mocker.patch("llm.service.schedule.addEvent")
+    """B1: a one-shot schedule writes a DB row and re-arms the agenda wakeup."""
 
     msg = _msg_mock(mocker)
     irc = _irc_mock(mocker)
@@ -80,7 +85,7 @@ def test_schedule_llm_task_creates_db_row_and_schedules_event(
 
     assert result.status == "ok"
     assert result.event_name.startswith("llm_task_")
-    rows = db.load_active_scheduled_llm_tasks()
+    rows = db.load_due_scheduled_llm_tasks(float("inf"))
     [row] = [r for r in rows if r.event_name == result.event_name]
     assert row.creator_nick == "rdrake"
     assert row.account == "rdrake_a"
@@ -90,20 +95,14 @@ def test_schedule_llm_task_creates_db_row_and_schedules_event(
     assert row.recurrence_seconds is None
     assert row.recurrence_rrule is None
 
-    add_event.assert_called_once()
-    args = add_event.call_args
-    callback = args[0][0]
-    fire_at = args[0][1]
-    name_kwarg = args.kwargs.get("name") or args[0][2]
-    assert callable(callback)
-    assert name_kwarg == result.event_name
-    assert fire_at == pytest.approx(_time.time() + 60, abs=2)
+    # The row is the schedule; the plugin's one agenda wakeup is re-armed.
+    llm_service.plugin._arm_agenda.assert_called_once()
+    assert row.fire_at == pytest.approx(_time.time() + 60, abs=2)
 
 
 def test_schedule_llm_task_recurrence_seconds(llm_service, db, mocker: MockerFixture):
     """B1: numeric-cadence recurrence stores recurrence_seconds and schedules
     the FIRST fire at parser.seconds."""
-    mocker.patch("llm.service.schedule.addEvent")
     msg = _msg_mock(mocker)
     irc = _irc_mock(mocker)
     mocker.patch.object(
@@ -134,14 +133,17 @@ def test_schedule_llm_task_recurrence_seconds(llm_service, db, mocker: MockerFix
         prompt="ping me",
     )
     assert result.status == "ok"
-    [row] = [r for r in db.load_active_scheduled_llm_tasks() if r.event_name == result.event_name]
+    [row] = [
+        r
+        for r in db.load_due_scheduled_llm_tasks(float("inf"))
+        if r.event_name == result.event_name
+    ]
     assert row.recurrence_seconds == 300
     assert row.recurrence_rrule is None
 
 
 def test_schedule_llm_task_recurrence_rrule(llm_service, db, mocker: MockerFixture):
     """B1: RRULE recurrence stored as-is; recurrence_seconds remains null."""
-    mocker.patch("llm.service.schedule.addEvent")
     msg = _msg_mock(mocker)
     irc = _irc_mock(mocker)
     mocker.patch.object(
@@ -172,7 +174,11 @@ def test_schedule_llm_task_recurrence_rrule(llm_service, db, mocker: MockerFixtu
         prompt="post the weekly summary",
     )
     assert result.status == "ok"
-    [row] = [r for r in db.load_active_scheduled_llm_tasks() if r.event_name == result.event_name]
+    [row] = [
+        r
+        for r in db.load_due_scheduled_llm_tasks(float("inf"))
+        if r.event_name == result.event_name
+    ]
     assert row.recurrence_rrule.startswith("FREQ=WEEKLY")
 
 
@@ -357,7 +363,6 @@ def test_list_scheduled_llm_tasks_filters_by_owner(llm_service, db):
 
 def test_cancel_scheduled_llm_task_owner_scoped(llm_service, db, mocker: MockerFixture):
     """B2: cancelling your own task removes it; cancelling someone else's refuses."""
-    remove_event = mocker.patch("llm.service.schedule.removeEvent")
     db.save_scheduled_llm_task(
         event_name="mine",
         creator_nick="rdrake",
@@ -385,14 +390,11 @@ def test_cancel_scheduled_llm_task_owner_scoped(llm_service, db, mocker: MockerF
     assert ok.status == "ok"
     # Cancel deleted the row, so a follow-up delete returns False.
     assert db.delete_scheduled_llm_task("mine") is False
-    remove_event.assert_called_once_with("mine")
 
-    remove_event.reset_mock()
     foreign = llm_service.cancel_scheduled_llm_task(
         event_name="theirs", creator_nick="rdrake", account="rdrake_a"
     )
     assert foreign.status == "error"
-    remove_event.assert_not_called()
 
 
 def test_cancel_scheduled_llm_task_refuses_unidentified_nick_squatter(
@@ -406,7 +408,6 @@ def test_cancel_scheduled_llm_task_refuses_unidentified_nick_squatter(
     ``load_scheduled_llm_tasks_for`` scopes an accountless caller to rows
     with a NULL account.
     """
-    remove_event = mocker.patch("llm.service.schedule.removeEvent")
     db.save_scheduled_llm_task(
         event_name="alices",
         creator_nick="alice",
@@ -424,7 +425,6 @@ def test_cancel_scheduled_llm_task_refuses_unidentified_nick_squatter(
 
     assert squatter.status == "error"
     assert "someone else" in squatter.message
-    remove_event.assert_not_called()
     # The row survives: delete_scheduled_llm_task returns True only if it
     # actually removed something.
     assert db.delete_scheduled_llm_task("alices") is True
@@ -438,55 +438,6 @@ def test_cancel_scheduled_llm_task_unknown_returns_error(llm_service):
 
 
 # =============================================================================
-# Phase 2 Task 3 / B3 — restore_scheduled_llm_tasks
-# =============================================================================
-
-
-def test_restore_scheduled_llm_tasks_reregisters_events(llm_service, db, mocker: MockerFixture):
-    """B3: restore reads active rows, registers each with schedule.addEvent;
-    overdue rows fire ~immediately."""
-    add_event = mocker.patch("llm.service.schedule.addEvent")
-    now = _time.time()
-    db.save_scheduled_llm_task(
-        event_name="future_ev",
-        creator_nick="n",
-        account=None,
-        channel="#t",
-        network="afternet",
-        wire_msg=":n!u@h PRIVMSG #t :@ask hi",
-        prompt="p",
-        fire_at=now + 600,
-    )
-    db.save_scheduled_llm_task(
-        event_name="overdue_ev",
-        creator_nick="n",
-        account=None,
-        channel="#t",
-        network="afternet",
-        wire_msg=":n!u@h PRIVMSG #t :@ask hi",
-        prompt="p",
-        fire_at=now - 60,
-    )
-
-    restored, skipped = llm_service.restore_scheduled_llm_tasks()
-    assert restored == 2
-    assert skipped == 0
-
-    names = set()
-    for call in add_event.call_args_list:
-        name = call.kwargs.get("name") or call.args[2]
-        names.add(name)
-    assert names == {"future_ev", "overdue_ev"}
-
-    # Overdue events fire ~immediately (clamped to now+1).
-    for call in add_event.call_args_list:
-        name = call.kwargs.get("name") or call.args[2]
-        fire_at = call.args[1]
-        if name == "overdue_ev":
-            assert fire_at <= now + 5
-
-
-# =============================================================================
 # Phase 2 Task 3 / D4 — depth-cap end-to-end on fired schedule
 # =============================================================================
 
@@ -494,7 +445,6 @@ def test_restore_scheduled_llm_tasks_reregisters_events(llm_service, db, mocker:
 def test_fired_task_cannot_schedule_a_nested_task(llm_service, db, mocker: MockerFixture):
     """End-to-end: schedule a task; trigger the fire callback; observe that
     within the fired @ask, schedule_llm_task refuses (llm_schedule_depth=1)."""
-    add_event = mocker.patch("llm.service.schedule.addEvent")
     msg = _msg_mock(mocker)
     irc = _irc_mock(mocker)
     mocker.patch.object(
@@ -527,8 +477,7 @@ def test_fired_task_cannot_schedule_a_nested_task(llm_service, db, mocker: Mocke
     )
     assert res.status == "ok"
 
-    # Capture the registered closure so we can fire it manually.
-    fire_callable = add_event.call_args.args[0]
+    fire_callable = _stored_fire(llm_service)
 
     fake_world = mocker.patch("llm.service.world", autospec=False, create=True)
     fake_world.getIrc.return_value = irc
@@ -640,7 +589,6 @@ def test_reply_target_channel_membership_ok_persists_override(
 ):
     """Cross-channel target where bot+creator are present and bridge is enabled
     persists `reply_target` on the row."""
-    mocker.patch("llm.service.schedule.addEvent")
     irc = _irc_with_channels(mocker, {"#deliver": ["rdrake", "bot"], "#t": ["rdrake"]})
     msg = _msg_mock(mocker)
     _patch_parser(llm_service, mocker)
@@ -662,12 +610,13 @@ def test_reply_target_channel_membership_ok_persists_override(
         reply_target="#deliver",
     )
     assert res.status == "ok"
-    [row] = [r for r in db.load_active_scheduled_llm_tasks() if r.event_name == res.event_name]
+    [row] = [
+        r for r in db.load_due_scheduled_llm_tasks(float("inf")) if r.event_name == res.event_name
+    ]
     assert row.reply_target == "#deliver"
 
 
 def test_reply_target_channel_bot_absent_refused(llm_service, mocker: MockerFixture):
-    mocker.patch("llm.service.schedule.addEvent")
     irc = _irc_with_channels(mocker, {"#t": ["rdrake"]})  # bot not in #other
     msg = _msg_mock(mocker)
     _patch_parser(llm_service, mocker)
@@ -692,7 +641,6 @@ def test_reply_target_channel_bot_absent_refused(llm_service, mocker: MockerFixt
 
 
 def test_reply_target_channel_creator_absent_refused(llm_service, mocker: MockerFixture):
-    mocker.patch("llm.service.schedule.addEvent")
     irc = _irc_with_channels(mocker, {"#deliver": ["bot"], "#t": ["rdrake", "bot"]})
     msg = _msg_mock(mocker)
     _patch_parser(llm_service, mocker)
@@ -718,7 +666,6 @@ def test_reply_target_channel_creator_absent_refused(llm_service, mocker: Mocker
 
 
 def test_reply_target_channel_bridge_disabled_refused(llm_service, mocker: MockerFixture):
-    mocker.patch("llm.service.schedule.addEvent")
     irc = _irc_with_channels(mocker, {"#deliver": ["rdrake", "bot"], "#t": ["rdrake"]})
     msg = _msg_mock(mocker)
     _patch_parser(llm_service, mocker)
@@ -744,7 +691,6 @@ def test_reply_target_channel_bridge_disabled_refused(llm_service, mocker: Mocke
 
 
 def test_reply_target_pm_self_ok(llm_service, db, mocker: MockerFixture):
-    mocker.patch("llm.service.schedule.addEvent")
     irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
     msg = _msg_mock(mocker)
     _patch_parser(llm_service, mocker)
@@ -761,12 +707,13 @@ def test_reply_target_pm_self_ok(llm_service, db, mocker: MockerFixture):
         reply_target="rdrake",
     )
     assert res.status == "ok"
-    [row] = [r for r in db.load_active_scheduled_llm_tasks() if r.event_name == res.event_name]
+    [row] = [
+        r for r in db.load_due_scheduled_llm_tasks(float("inf")) if r.event_name == res.event_name
+    ]
     assert row.reply_target == "rdrake"
 
 
 def test_reply_target_pm_other_refused(llm_service, mocker: MockerFixture):
-    mocker.patch("llm.service.schedule.addEvent")
     irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
     msg = _msg_mock(mocker)
     _patch_parser(llm_service, mocker)
@@ -788,7 +735,6 @@ def test_reply_target_pm_other_refused(llm_service, mocker: MockerFixture):
 
 def test_reply_target_overrides_dispatch_target(llm_service, db, mocker: MockerFixture):
     """At fire time the privmsg goes to row.reply_target, not row.channel."""
-    add_event = mocker.patch("llm.service.schedule.addEvent")
     irc = _irc_with_channels(mocker, {"#deliver": ["rdrake", "bot"], "#origin": ["rdrake", "bot"]})
     msg = _msg_mock(mocker)
     _patch_parser(llm_service, mocker)
@@ -811,7 +757,7 @@ def test_reply_target_overrides_dispatch_target(llm_service, db, mocker: MockerF
     )
     assert res.status == "ok"
 
-    fire_callable = add_event.call_args.args[0]
+    fire_callable = _stored_fire(llm_service)
     fake_world = mocker.patch("llm.service.world", autospec=False, create=True)
     fake_world.getIrc.return_value = irc
     fake_world.ircs = [irc]
@@ -865,7 +811,6 @@ def _bind_real_delivery(plugin) -> None:
 
 def _fire_with_answer(llm_service, mocker: MockerFixture, content: str):
     """Schedule a one-shot task in #deliver, fire it with ``content``, return the irc."""
-    add_event = mocker.patch("llm.service.schedule.addEvent")
     irc = _irc_with_channels(mocker, {"#deliver": ["rdrake", "bot"]})
     _patch_parser(llm_service, mocker)
     llm_service.plugin.registryValue.side_effect = _registry(
@@ -904,7 +849,7 @@ def _fire_with_answer(llm_service, mocker: MockerFixture, content: str):
             content=content, model="m", prompt_tokens=0, completion_tokens=0, cost=0.0, error=None
         ),
     )
-    add_event.call_args.args[0]()
+    _stored_fire(llm_service)()
     return irc
 
 
@@ -948,7 +893,6 @@ def test_fired_answer_neutralizes_irc_injection(llm_service, db, mocker: MockerF
 def test_fire_auto_cancels_when_creator_lost_llm_ask(llm_service, db, mocker: MockerFixture):
     """If the creator no longer holds llm.ask at fire time the row is deleted
     and assistant_completion is never called."""
-    add_event = mocker.patch("llm.service.schedule.addEvent")
     irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
     msg = _msg_mock(mocker)
     _patch_parser(llm_service, mocker)
@@ -966,7 +910,7 @@ def test_fire_auto_cancels_when_creator_lost_llm_ask(llm_service, db, mocker: Mo
     assert res.status == "ok"
     event_name = res.event_name
 
-    fire_callable = add_event.call_args.args[0]
+    fire_callable = _stored_fire(llm_service)
     fake_world = mocker.patch("llm.service.world", autospec=False, create=True)
     fake_world.getIrc.return_value = irc
     fake_world.ircs = [irc]
@@ -987,47 +931,7 @@ def test_fire_auto_cancels_when_creator_lost_llm_ask(llm_service, db, mocker: Mo
 
 
 class TestScheduleLlmTaskFailurePaths:
-    """Coverage for IntegrityError + addEvent failure cleanup."""
-
-    def test_schedule_llm_task_add_event_failure_deletes_db_row(
-        self, llm_service, db, mocker: MockerFixture
-    ) -> None:
-        """If schedule.addEvent raises, the inserted DB row is rolled back."""
-        mocker.patch("llm.service.schedule.addEvent", side_effect=RuntimeError("scheduler down"))
-        msg = _msg_mock(mocker)
-        irc = _irc_mock(mocker)
-        mocker.patch.object(
-            llm_service,
-            "parse_reminder",
-            return_value=ReminderParseResult(
-                action="schedule",
-                seconds=60,
-                message="x",
-                confirmation="ok",
-                note=None,
-                action_prompt="x",
-                recurrence_seconds=None,
-                recurrence_rrule=None,
-                watch_mode=False,
-            ),
-        )
-        llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
-            5 if k == "bridgeScheduledTaskLimit" else None
-        )
-
-        result = llm_service.schedule_llm_task(
-            irc=irc,
-            msg=msg,
-            creator_nick="rdrake",
-            account="rdrake_a",
-            channel="#test",
-            when_natural="in 60s",
-            prompt="x",
-        )
-        assert result.status == "error"
-        assert "register" in result.message.lower()
-        # No orphan rows.
-        assert db.load_active_scheduled_llm_tasks() == []
+    """Coverage for IntegrityError cleanup."""
 
     def test_schedule_llm_task_integrity_error_returns_collision_message(
         self, llm_service, mocker: MockerFixture
@@ -1075,132 +979,6 @@ class TestScheduleLlmTaskFailurePaths:
         assert "collision" in result.message
 
 
-class TestMaybeRescheduleOrClean:
-    """Coverage for _maybe_reschedule_or_clean cancel-mid-fire and exhausted-rrule."""
-
-    def _make_row(self, **overrides):
-        from llm.persistence import ScheduledLlmTaskRow
-
-        defaults = {
-            "id": 1,
-            "event_name": "ev1",
-            "creator_nick": "n",
-            "account": None,
-            "channel": "#t",
-            "network": "afternet",
-            "wire_msg": ":n!u@h PRIVMSG #t :@ask hi",
-            "prompt": "p",
-            "fire_at": 1.0,
-            "created_at": 0.0,
-            "recurrence_seconds": 300,
-            "recurrence_rrule": None,
-            "chain_position": 1,
-            "watch_mode": False,
-            "reply_target": None,
-        }
-        defaults.update(overrides)
-        return ScheduledLlmTaskRow(**defaults)
-
-    def test_one_shot_row_is_deleted_after_fire(self, llm_service, mocker: MockerFixture) -> None:
-        """Row with no recurrence is deleted, not rescheduled."""
-        add_event = mocker.patch("llm.service.schedule.addEvent")
-        bad_db = mocker.MagicMock()
-        row = self._make_row(recurrence_seconds=None, recurrence_rrule=None)
-        llm_service._maybe_reschedule_or_clean(row, bad_db, 0.0)
-        bad_db.delete_scheduled_llm_task.assert_called_once_with("ev1")
-        add_event.assert_not_called()
-
-    def test_cancelled_mid_fire_skips_reschedule(self, llm_service, mocker: MockerFixture) -> None:
-        """If the row is gone (cancelled mid-fire) reschedule is skipped."""
-        add_event = mocker.patch("llm.service.schedule.addEvent")
-        bad_db = mocker.MagicMock()
-        bad_db.get_scheduled_llm_task.return_value = None  # Cancelled mid-fire.
-        row = self._make_row()
-        llm_service._maybe_reschedule_or_clean(row, bad_db, 0.0)
-        add_event.assert_not_called()
-
-    def test_exhausted_rrule_deletes_row(self, llm_service, mocker: MockerFixture) -> None:
-        """recurrence_rrule with no future occurrence triggers row delete."""
-        mocker.patch("llm.service.schedule.addEvent")
-        bad_db = mocker.MagicMock()
-        bad_db.get_scheduled_llm_task.return_value = "row-still-there"
-        row = self._make_row(recurrence_seconds=None, recurrence_rrule="FREQ=DAILY")
-        # _next_rrule_fire returns None when the rule is exhausted.
-        llm_service.plugin._next_rrule_fire = mocker.Mock(return_value=None)
-        llm_service._maybe_reschedule_or_clean(row, bad_db, 0.0)
-        bad_db.delete_scheduled_llm_task.assert_called_once_with("ev1")
-
-    def test_chain_position_cap_stops_recurring_task(
-        self, llm_service, mocker: MockerFixture
-    ) -> None:
-        """A recurring task at the cap is deleted, not rescheduled."""
-        add_event = mocker.patch("llm.service.schedule.addEvent")
-        bad_db = mocker.MagicMock()
-        bad_db.get_scheduled_llm_task.return_value = "row-still-there"
-        cap = llm_service._SCHEDULED_LLM_TASK_MAX_CHAIN_POSITION
-        row = self._make_row(chain_position=cap)
-        llm_service._maybe_reschedule_or_clean(row, bad_db, 0.0)
-        bad_db.delete_scheduled_llm_task.assert_called_once_with("ev1")
-        bad_db.update_scheduled_llm_task_fire_at.assert_not_called()
-        add_event.assert_not_called()
-
-    def test_below_cap_still_reschedules(self, llm_service, mocker: MockerFixture) -> None:
-        """One fire short of the cap still reschedules normally."""
-        add_event = mocker.patch("llm.service.schedule.addEvent")
-        bad_db = mocker.MagicMock()
-        bad_db.get_scheduled_llm_task.return_value = "row-still-there"
-        cap = llm_service._SCHEDULED_LLM_TASK_MAX_CHAIN_POSITION
-        row = self._make_row(chain_position=cap - 1)
-        llm_service._maybe_reschedule_or_clean(row, bad_db, 0.0)
-        bad_db.update_scheduled_llm_task_fire_at.assert_called_once()
-        _, kwargs = bad_db.update_scheduled_llm_task_fire_at.call_args
-        assert kwargs["chain_position"] == cap
-        add_event.assert_called_once()
-        bad_db.delete_scheduled_llm_task.assert_not_called()
-
-    def test_next_fire_anchors_to_fire_start_not_turn_end(
-        self, llm_service, mocker: MockerFixture
-    ) -> None:
-        """A 100s LLM turn does not push an every-5-minutes task 100s later."""
-        mocker.patch("llm.service.schedule.addEvent")
-        mocker.patch("llm.service.time.time", return_value=10_100.0)
-        bad_db = mocker.MagicMock()
-        bad_db.get_scheduled_llm_task.return_value = "row-still-there"
-        llm_service._maybe_reschedule_or_clean(self._make_row(), bad_db, 10_000.0)
-        assert bad_db.update_scheduled_llm_task_fire_at.call_args.args[1] == 10_300.0
-
-    def test_next_fire_never_in_the_past(self, llm_service, mocker: MockerFixture) -> None:
-        """A turn longer than the interval reschedules from now, not behind it."""
-        mocker.patch("llm.service.schedule.addEvent")
-        mocker.patch("llm.service.time.time", return_value=10_500.0)
-        bad_db = mocker.MagicMock()
-        bad_db.get_scheduled_llm_task.return_value = "row-still-there"
-        llm_service._maybe_reschedule_or_clean(self._make_row(), bad_db, 10_000.0)
-        assert bad_db.update_scheduled_llm_task_fire_at.call_args.args[1] >= 10_500.0
-
-
-def test_cancel_scheduled_llm_task_swallows_keyerror(
-    llm_service, db, mocker: MockerFixture
-) -> None:
-    """If the event is already gone from the scheduler, cancel still succeeds."""
-    mocker.patch("llm.service.schedule.removeEvent", side_effect=KeyError("gone"))
-    db.save_scheduled_llm_task(
-        event_name="mine",
-        creator_nick="rdrake",
-        account="rdrake_a",
-        channel="#t",
-        network="afternet",
-        wire_msg=":rdrake!u@h PRIVMSG #t :@ask hi",
-        prompt="p",
-        fire_at=_time.time() + 60,
-    )
-    result = llm_service.cancel_scheduled_llm_task(
-        event_name="mine", creator_nick="rdrake", account="rdrake_a"
-    )
-    assert result.status == "ok"
-    assert db.get_scheduled_llm_task("mine") is None
-
-
 # =============================================================================
 # _channel_target helper
 # =============================================================================
@@ -1227,7 +1005,6 @@ def test_channel_target_returns_none_for_nicks_and_falsy() -> None:
 def test_scheduled_fire_submits_via_executor(llm_service, db, mocker: MockerFixture):
     """fire() submits the dispatch worker through plugin._llm_executor with a
     scheduled_task: label."""
-    add_event = mocker.patch("llm.service.schedule.addEvent")
     irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
     msg = _msg_mock(mocker)
     _patch_parser(llm_service, mocker)
@@ -1244,7 +1021,7 @@ def test_scheduled_fire_submits_via_executor(llm_service, db, mocker: MockerFixt
     )
     assert res.status == "ok"
 
-    fire_callable = add_event.call_args.args[0]
+    fire_callable = _stored_fire(llm_service)
     fake_world = mocker.patch("llm.service.world", autospec=False, create=True)
     fake_world.getIrc.return_value = irc
     fake_world.ircs = [irc]
@@ -1271,7 +1048,6 @@ def test_scheduled_fire_submits_via_executor(llm_service, db, mocker: MockerFixt
 
 
 def test_scheduled_fire_short_circuits_when_closing(llm_service, db, mocker: MockerFixture):
-    add_event = mocker.patch("llm.service.schedule.addEvent")
     irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
     msg = _msg_mock(mocker)
     _patch_parser(llm_service, mocker)
@@ -1286,7 +1062,7 @@ def test_scheduled_fire_short_circuits_when_closing(llm_service, db, mocker: Moc
         when_natural="in 60s",
         prompt="x",
     )
-    fire_callable = add_event.call_args.args[0]
+    fire_callable = _stored_fire(llm_service)
 
     plugin = llm_service.plugin
     plugin._llm_executor.closing = True
@@ -1295,19 +1071,51 @@ def test_scheduled_fire_short_circuits_when_closing(llm_service, db, mocker: Moc
     plugin._llm_executor.submit.assert_not_called()
 
 
-def test_stored_sub_minute_cadence_is_floored_at_fire_time(
-    llm_service, mocker: MockerFixture
+def _stored_task(db, *, fire_at: float = 0.0):
+    db.save_scheduled_llm_task(
+        event_name="llm_task_abc",
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#t",
+        network="afternet",
+        wire_msg=":rdrake!u@h PRIVMSG #t :@ask hi",
+        prompt="p",
+        fire_at=fire_at,
+    )
+    return db.get_scheduled_llm_task("llm_task_abc")
+
+
+def test_scheduled_fire_settles_with_the_agenda_after_the_turn(
+    llm_service, db, mocker: MockerFixture
 ) -> None:
-    """Rows stored before the parse-time floor still fire at most once a minute."""
-    row = mocker.MagicMock(recurrence_seconds=5, recurrence_rrule=None)
-    assert llm_service._compute_next_fire(row, 1_000.0) == 1_060.0
+    """GIVEN a fire whose turn raises THEN the worker still hands the fire
+    back to the agenda, which reschedules or removes the row."""
+    from llm.agenda import Kind
+
+    row = _stored_task(db)
+    fake_world = mocker.patch("llm.service.world")
+    fake_world.getIrc.return_value = _irc_mock(mocker)
+    mocker.patch.object(llm_service, "_dispatch_scheduled_task", side_effect=RuntimeError("boom"))
+
+    llm_service.fire_scheduled_llm_task(row, 123.0)
+
+    llm_service.plugin._finish_agenda.assert_called_once_with(Kind.TASK, "llm_task_abc", 123.0)
 
 
-def test_secondly_rrule_is_floored_at_fire_time() -> None:
-    """The parse check sees one gap; the fire-time floor covers every later one."""
-    from llm.plugin import LLM
+def test_scheduled_fire_without_irc_settles_without_a_worker(
+    llm_service, db, mocker: MockerFixture
+) -> None:
+    from llm.agenda import Kind
 
-    assert LLM._next_rrule_fire("FREQ=SECONDLY", 1_000.0) == 1_060.0
+    row = _stored_task(db)
+    fake_world = mocker.patch("llm.service.world")
+    fake_world.getIrc.return_value = None
+    fake_world.ircs = []
+
+    llm_service.fire_scheduled_llm_task(row, 123.0)
+
+    llm_service.plugin._llm_executor.submit.assert_not_called()
+    llm_service.plugin._finish_agenda.assert_called_once_with(Kind.TASK, "llm_task_abc", 123.0)
 
 
 def test_scheduled_fire_books_usage_while_closing(llm_service, mocker: MockerFixture) -> None:

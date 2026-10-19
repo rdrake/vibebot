@@ -30,13 +30,12 @@ import supybot.ircdb as ircdb
 import supybot.ircmsgs as ircmsgs
 import supybot.ircutils as ircutils
 import supybot.log as log
-import supybot.schedule as schedule
 import supybot.world as world
 from pygments.formatters import HtmlFormatter
 from supybot.i18n import PluginInternationalization
 from supybot.utils.file import AtomicFile
 
-from . import apikeys, github, meme_render
+from . import agenda, apikeys, github, meme_render
 from .context import Role
 from .identity import Caller
 from .persistence import ScheduledLlmTaskRow, lease_until
@@ -205,8 +204,6 @@ PENDING_MAX_BACKOFF_SECONDS = 300
 ANIMATE_POLL_INTERVAL_SECONDS = 10
 PENDING_CLAIM_LIMIT = 8
 PENDING_LEASE_SECONDS = 120
-# Floor between two fires of one recurring chain: each action fire bills an LLM turn.
-MIN_RECURRENCE_SECONDS = 60
 
 
 def _no_redirect_opener() -> Any:
@@ -2152,14 +2149,6 @@ class LLMService:
     - Image URLs validated to block malicious schemes
     - Path traversal attempts blocked
     """
-
-    # Tighter than the reminder cap (LLM.plugin._REMINDER_MAX_CHAIN_POSITION = 50)
-    # because scheduled_llm_tasks fire LLM completions and can target other
-    # channels/users via reply_target — recurring abuse becomes harassment fast.
-    # 5 fires forces the user to re-arm long before "every few minutes" becomes
-    # "ran for hours". Parser-level duration parsing ("for 3 minutes") is the
-    # cleaner fix for legitimate bounded recurrences and is tracked separately.
-    _SCHEDULED_LLM_TASK_MAX_CHAIN_POSITION = 5
 
     def __init__(self, plugin_instance: LLM) -> None:
         """Initialize service with plugin reference.
@@ -5147,27 +5136,22 @@ Examples (echo → action_prompt: ""):
 
                 # Validate rrule at parse time (defense-in-depth — invalid rules
                 # should fail loudly here, not silently at fire time).
-                gap = recurrence_seconds
-                if recurrence_rrule is not None:
-                    try:
-                        from dateutil.rrule import rrulestr
-
-                        first_two = rrulestr(recurrence_rrule)[:2]
-                        if len(first_two) == 2:
-                            gap = (first_two[1] - first_two[0]).total_seconds()
-                    except (ValueError, TypeError) as exc:
-                        self.log.warning(
-                            "parser returned invalid rrule %r: %s",
-                            recurrence_rrule,
-                            exc,
-                        )
-                        # fall back to one-shot rather than rejecting whole reminder
-                        recurrence_rrule = None
+                try:
+                    too_short = agenda.cadence_too_short(recurrence_seconds, recurrence_rrule)
+                except ValueError as exc:
+                    self.log.warning(
+                        "parser returned invalid rrule %r: %s",
+                        recurrence_rrule,
+                        exc,
+                    )
+                    # fall back to one-shot rather than rejecting whole reminder
+                    recurrence_rrule = None
+                    too_short = agenda.cadence_too_short(recurrence_seconds, None)
 
                 # Every fire of an action chain bills an LLM turn; this parser
                 # is the only way a cadence reaches storage (reminders and
-                # scheduled tasks alike), so the floor lives here.
-                if gap is not None and gap < MIN_RECURRENCE_SECONDS:
+                # scheduled tasks alike), so the floor is checked here.
+                if too_short:
                     return ReminderParseResult(
                         action="clarify",
                         confirmation=_("The minimum repeat interval is one minute."),
@@ -9188,16 +9172,9 @@ Examples (echo → action_prompt: ""):
                 message="event-name collision; please retry",
             )
 
-        callback = self._make_scheduled_llm_task_callback(event_name)
-        try:
-            schedule.addEvent(callback, fire_at, name=event_name)
-        except Exception:
-            db.delete_scheduled_llm_task(event_name)
-            self.log.exception("schedule_llm_task addEvent failed: %s", event_name)
-            return ScheduleLlmTaskResult(
-                status="error",
-                message="Could not register the scheduled task.",
-            )
+        # The row is the schedule; this only brings the wakeup forward if the
+        # new task is the next thing due.
+        self.plugin._arm_agenda()
 
         return ScheduleLlmTaskResult(
             status="ok",
@@ -9233,52 +9210,43 @@ Examples (echo → action_prompt: ""):
             return None
         return f"reply_target {reply_target}: PM delivery is only allowed to your own nick."
 
-    def _make_scheduled_llm_task_callback(self, event_name: str):
-        """Build the no-arg fire closure for ``schedule.addEvent``.
+    def fire_scheduled_llm_task(self, row: ScheduledLlmTaskRow, fired_at: float) -> None:
+        """Fire a due task: runs on the scheduler thread, from the agenda wakeup.
 
         Rebuilds a fresh ``IrcMsg`` from the persisted wire string, tags it with
         ``llm_schedule_depth=1``, and dispatches via ``assistant_completion``
-        directly (not via the wrapped ``ask`` command, which would bypass normal
-        Limnoria dispatch from the scheduler thread).
+        on a worker (not via the wrapped ``ask`` command, which would bypass
+        normal Limnoria dispatch from the scheduler thread). The agenda
+        settles the row (reschedule in place, or delete) when the worker
+        finishes, or here when the fire never reaches one.
         """
-        db = self.plugin.db
+        plugin = self.plugin
+        if plugin._llm_executor.closing:
+            return
+        event_name = row.event_name
 
-        def fire() -> None:
-            fired_at = time.time()
-            if self.plugin._llm_executor.closing:
-                return
-            row = db.get_scheduled_llm_task(event_name)
-            if row is None:
-                self.log.info("scheduled_llm_task fire: %s cancelled", event_name)
-                return
+        # Resolve irc on the main (scheduler) thread. The captured
+        # connection may go stale if IRC reconnects between fire()
+        # and worker dispatch — `_safe_queue` will silently drop
+        # writes through the dead connection rather than crash.
+        irc = world.getIrc(row.network) or (world.ircs[0] if world.ircs else None)
+        if irc is None:
+            self.log.warning("scheduled_llm_task fire: %s no irc; skipping this fire", event_name)
+            plugin._finish_agenda(agenda.Kind.TASK, event_name, fired_at)
+            return
 
-            # Resolve irc on the main (scheduler) thread. The captured
-            # connection may go stale if IRC reconnects between fire()
-            # and worker dispatch — `_safe_queue` will silently drop
-            # writes through the dead connection rather than crash.
-            irc = world.getIrc(row.network) or (world.ircs[0] if world.ircs else None)
-            if irc is None:
-                self.log.warning(
-                    "scheduled_llm_task fire: %s no irc; skipping (no reschedule)",
-                    event_name,
-                )
-                return
+        msg = row.rehydrate_msg()
+        msg.tag("llm_schedule_depth", 1)
 
-            msg = row.rehydrate_msg()
-            msg.tag("llm_schedule_depth", 1)
+        def _worker() -> None:
+            try:
+                self._dispatch_scheduled_task(irc, msg, row)
+            except Exception:
+                self.log.exception("scheduled_llm_task fire failed: %s", event_name)
+            finally:
+                plugin._finish_agenda(agenda.Kind.TASK, event_name, fired_at)
 
-            def _worker() -> None:
-                try:
-                    self._dispatch_scheduled_task(irc, msg, row)
-                except Exception:
-                    self.log.exception("scheduled_llm_task fire failed: %s", event_name)
-                finally:
-                    if not self.plugin._llm_executor.closing:
-                        self._maybe_reschedule_or_clean(row, db, fired_at)
-
-            self.plugin._llm_executor.submit(f"scheduled_task:{event_name}", _worker)
-
-        return fire
+        plugin._llm_executor.submit(f"scheduled_task:{event_name}", _worker)
 
     def _dispatch_scheduled_task(
         self,
@@ -9374,62 +9342,6 @@ Examples (echo → action_prompt: ""):
         line = self.plugin._format_pending_completed_reply(row.creator_nick, safe_response, target)
         self.plugin._safe_queue(irc, self.plugin._safe_privmsg(target, line))
 
-    def _maybe_reschedule_or_clean(
-        self,
-        row: ScheduledLlmTaskRow,
-        db: LLMDatabase,
-        fired_at: float,
-    ) -> None:
-        """Reschedule recurring tasks; delete one-shots after fire.
-
-        The next fire is anchored to ``fired_at`` (when this fire started) so
-        the LLM turn's duration does not drift the cadence.
-
-        Rechecks the DB row before rescheduling so a cancel during an in-flight
-        recurring fire wins (mirrors the reminder clear-vs-mid-fire guard).
-        """
-        if row.recurrence_seconds is None and row.recurrence_rrule is None:
-            db.delete_scheduled_llm_task(row.event_name)
-            return
-        if db.get_scheduled_llm_task(row.event_name) is None:
-            self.log.info(
-                "scheduled_llm_task reschedule skipped: %s cancelled mid-fire",
-                row.event_name,
-            )
-            return
-        next_position = row.chain_position + 1
-        if next_position > self._SCHEDULED_LLM_TASK_MAX_CHAIN_POSITION:
-            self.log.info(
-                "scheduled_llm_task reschedule skipped: %s reached cap %i/%i",
-                row.event_name,
-                next_position,
-                self._SCHEDULED_LLM_TASK_MAX_CHAIN_POSITION,
-            )
-            db.delete_scheduled_llm_task(row.event_name)
-            return
-        next_fire = self._compute_next_fire(row, fired_at)
-        if next_fire is None:
-            db.delete_scheduled_llm_task(row.event_name)
-            return
-        next_fire = max(next_fire, time.time() + 1)  # a turn longer than the interval
-        db.update_scheduled_llm_task_fire_at(
-            row.event_name, next_fire, chain_position=next_position
-        )
-        callback = self._make_scheduled_llm_task_callback(row.event_name)
-        schedule.addEvent(callback, next_fire, name=row.event_name)
-
-    def _compute_next_fire(self, row: ScheduledLlmTaskRow, now: float) -> float | None:
-        """Next fire time for a recurring task; ``None`` exhausts the schedule."""
-        if row.recurrence_seconds:
-            return now + max(row.recurrence_seconds, MIN_RECURRENCE_SECONDS)
-        if row.recurrence_rrule:
-            return self.plugin._next_rrule_fire(
-                row.recurrence_rrule,
-                now,
-                self.plugin._owner_tz(row.creator_nick, row.account),
-            )
-        return None
-
     def list_scheduled_llm_tasks(
         self, *, creator_nick: str, account: str | None
     ) -> list[ScheduledLlmTaskRow]:
@@ -9440,37 +9352,6 @@ Examples (echo → action_prompt: ""):
         """
         return self.plugin.db.load_scheduled_llm_tasks_for(account=account, nick=creator_nick)
 
-    def restore_scheduled_llm_tasks(self) -> tuple[int, int]:
-        """Re-register every active scheduled task with the schedule module.
-
-        Past-due rows fire ~immediately (next ``schedule.run`` tick). Mirrors
-        ``_reload_reminders``. Returns ``(restored, skipped)``.
-        """
-        db = self.plugin.db
-        now = time.time()
-        rows = db.load_active_scheduled_llm_tasks()
-        restored = 0
-        skipped = 0
-        for row in rows:
-            callback = self._make_scheduled_llm_task_callback(row.event_name)
-            fire_at = max(row.fire_at, now + 1)  # past-due → fire ~immediately
-            try:
-                schedule.addEvent(callback, fire_at, name=row.event_name)
-                restored += 1
-            except AssertionError:
-                skipped += 1
-                self.log.warning(
-                    "restore_scheduled_llm_tasks: %s already scheduled; skip",
-                    row.event_name,
-                )
-        if rows:
-            self.log.info(
-                "restore_scheduled_llm_tasks: restored=%s skipped=%s",
-                restored,
-                skipped,
-            )
-        return restored, skipped
-
     def cancel_scheduled_llm_task(
         self,
         *,
@@ -9480,7 +9361,7 @@ Examples (echo → action_prompt: ""):
     ) -> ScheduleLlmTaskResult:
         """Cancel a single task (owner-scoped).
 
-        On success removes the schedule event AND deletes the DB row.
+        On success deletes the DB row, which is what the agenda fires from.
 
         Ownership is **account-to-account only**, deliberately stricter than
         the reminder system's ``Identity.matches``. Creation refuses without
@@ -9513,15 +9394,8 @@ Examples (echo → action_prompt: ""):
                 message=f"Scheduled task {event_name} belongs to someone else.",
             )
 
-        try:
-            schedule.removeEvent(event_name)
-        except KeyError:
-            # Already fired or already cancelled in the scheduler — DB row is
-            # the authoritative state, keep going and delete it.
-            self.log.info(
-                "cancel_scheduled_llm_task: %s not in scheduler (already fired?)",
-                event_name,
-            )
+        # The row is the only cancel truth: a fire in flight finds it gone
+        # and does not reschedule.
         db.delete_scheduled_llm_task(event_name)
         return ScheduleLlmTaskResult(
             status="ok",

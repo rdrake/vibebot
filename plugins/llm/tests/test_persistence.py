@@ -390,7 +390,7 @@ class TestSchemaMigration:
 # The cases here are kept as executable specifications and to cover
 # paths the property tests intentionally do not parameterize: the 24h
 # EXPIRY_THRESHOLD cutoff, the IntegrityError on duplicate event_name,
-# and the delete_expired_reminders return-count contract.
+# and the agenda's point lookups and in-place reschedule.
 class TestReminderPersistence:
     """Test reminder CRUD operations."""
 
@@ -455,21 +455,20 @@ class TestReminderPersistence:
         assert reminders[1].event_name == "middle"
         assert reminders[2].event_name == "later"
 
-    def test_delete_expired_reminders_only_removes_old(self, test_db: LLMDatabase) -> None:
-        """GIVEN old and new reminders WHEN deleting expired THEN only old ones removed."""
+    def test_agenda_lookups_and_in_place_move(self, test_db: LLMDatabase) -> None:
+        """GIVEN reminders WHEN the agenda reads and moves them THEN rows keep their id."""
         now = time.time()
-        # Old reminder: fire_at was 25 hours ago
-        test_db.save_reminder("old", "alice", "#chan", "old", now - (25 * 3600))
-        # Recent reminder: fire_at is in the future
-        test_db.save_reminder("new", "alice", "#chan", "new", now + 300)
+        test_db.save_reminder("due", "alice", "#chan", "a", now - 5, recurrence_seconds=60)
+        test_db.save_reminder("later", "alice", "#chan", "b", now + 300)
 
-        deleted = test_db.delete_expired_reminders()
-        assert deleted == 1
-
-        # Only the new reminder should remain
-        reminders = test_db.load_pending_reminders()
-        assert len(reminders) == 1
-        assert reminders[0].event_name == "new"
+        assert [r.event_name for r in test_db.load_due_reminders(now)] == ["due"]
+        assert [name for name, _at in test_db.reminder_fire_times()] == ["due", "later"]
+        before = test_db.get_reminder("due")
+        assert before is not None
+        test_db.update_reminder_fire_at("due", now + 600, chain_position=2)
+        after = test_db.get_reminder("due")
+        assert after == before._replace(fire_at=now + 600, chain_position=2)
+        assert test_db.get_reminder("missing") is None
 
     @pytest.mark.parametrize(
         "recurrence",
@@ -478,13 +477,12 @@ class TestReminderPersistence:
     def test_recurring_chain_survives_a_long_outage(
         self, test_db: LLMDatabase, recurrence: dict
     ) -> None:
-        """GIVEN a recurring row 25h overdue WHEN cleaning and loading THEN it
-        is neither deleted nor skipped, so reload can reschedule the chain."""
+        """GIVEN a recurring row 25h overdue WHEN loading THEN it is not
+        skipped, so its owner still sees the chain after an outage."""
         test_db.save_reminder(
             "chain", "alice", "#chan", "stretch", time.time() - (25 * 3600), **recurrence
         )
 
-        assert test_db.delete_expired_reminders() == 0
         assert [r.event_name for r in test_db.load_pending_reminders()] == ["chain"]
 
     def test_unique_event_name_constraint(self, test_db: LLMDatabase) -> None:
@@ -2369,14 +2367,15 @@ def test_scheduled_llm_task_full_column_round_trip(
     assert row.watch_mode is True
     assert row.reply_target == "#replytarget"
 
-    # The live restore path reads via the same column map; it must agree
+    # The agenda's due scan reads via the same column map; it must agree
     # field-for-field with the point lookup.
-    loaded = db.load_active_scheduled_llm_tasks()
+    loaded = db.load_due_scheduled_llm_tasks(row.fire_at)
     assert loaded == [row]
 
 
-def test_load_active_scheduled_llm_tasks_excludes_old(tmp_path: Path) -> None:
-    """Mirror reminders: anything past EXPIRY_THRESHOLD is excluded."""
+def test_owner_listing_excludes_stale_one_shots_only(tmp_path: Path) -> None:
+    """Mirror reminders: a one-shot past EXPIRY_THRESHOLD is excluded, a
+    recurring row however overdue is not."""
     from llm.persistence import EXPIRY_THRESHOLD_SECONDS
 
     db = LLMDatabase(str(tmp_path / "llm.sqlite"))
@@ -2411,11 +2410,20 @@ def test_load_active_scheduled_llm_tasks_excludes_old(tmp_path: Path) -> None:
         prompt="p",
         fire_at=now - EXPIRY_THRESHOLD_SECONDS - 60,
     )
-    rows = db.load_active_scheduled_llm_tasks()
+    db.save_scheduled_llm_task(
+        event_name="ancient_chain",
+        creator_nick="n",
+        account=None,
+        channel="#x",
+        network="afternet",
+        wire_msg=":n!u@h PRIVMSG #x :@ask hi",
+        prompt="p",
+        fire_at=now - EXPIRY_THRESHOLD_SECONDS - 60,
+        recurrence_seconds=3600,
+    )
+    rows = db.load_scheduled_llm_tasks_for(account=None, nick="n")
     names = {r.event_name for r in rows}
-    assert "future" in names
-    assert "recent_overdue" in names
-    assert "ancient" not in names
+    assert names == {"future", "recent_overdue", "ancient_chain"}
 
 
 def test_count_scheduled_llm_tasks_for_account_then_nick(tmp_path: Path) -> None:
@@ -2484,8 +2492,8 @@ def test_update_scheduled_llm_task_fire_at(tmp_path: Path) -> None:
     )
     future = time.time() + 9
     db.update_scheduled_llm_task_fire_at("ev", future, chain_position=2)
-    rows = db.load_active_scheduled_llm_tasks()
-    [row] = [r for r in rows if r.event_name == "ev"]
+    row = db.get_scheduled_llm_task("ev")
+    assert row is not None
     assert row.fire_at == future
     assert row.chain_position == 2
 

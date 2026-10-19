@@ -14,12 +14,14 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import pytest
+from llm import agenda
+from llm.agenda import next_rrule_fire
 from llm.identity import Caller, Identity
 from llm.plugin import LLM
 from llm.service import ReminderParseResult
 from llm.usertz import SOURCE_CTCP, SOURCE_DEFAULT, SOURCE_SET, UTC_DEFAULT, UserTz
 
-from .conftest import make_completion_response
+from .conftest import make_completion_response, make_reminder_row, put_reminder
 
 if TYPE_CHECKING:
     from unittest.mock import MagicMock
@@ -277,23 +279,6 @@ class TestScheduleReminderUsesZone:
         kwargs = plugin.llm_service.parse_reminder.call_args.kwargs
         assert kwargs["user_tz"] == UserTz(tz=TORONTO, source=SOURCE_SET)
 
-    def test_chain_reschedule_does_not_probe(self, plugin_env, mocker: MockerFixture) -> None:
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
-            action="schedule", seconds=3600, message="x", confirmation="Set."
-        )
-        mocker.patch("llm.plugin.schedule.addEvent")
-
-        plugin._schedule_reminder(
-            mock_irc,
-            mock_msg,
-            Caller.from_row("testnick", "testnick", mock_msg.args[0]),
-            "x",
-            parent_chain=1,
-        )
-
-        plugin._probe_ctcp_tz.assert_not_called()
-
     def test_relative_time_does_not_probe(self, plugin_env, mocker: MockerFixture) -> None:
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
@@ -347,17 +332,17 @@ class TestNextRruleFireInZone:
     NOW = datetime(2026, 9, 26, 9, 0, tzinfo=UTC).timestamp()
 
     def test_byhour_is_local_wall_clock(self) -> None:
-        nxt = LLM._next_rrule_fire("FREQ=DAILY;BYHOUR=9;BYMINUTE=0", self.NOW, TORONTO)
+        nxt = next_rrule_fire("FREQ=DAILY;BYHOUR=9;BYMINUTE=0", self.NOW, TORONTO)
         assert datetime.fromtimestamp(nxt, UTC) == datetime(2026, 9, 26, 13, 0, tzinfo=UTC)
 
     def test_survives_dst_change(self) -> None:
         # 2026-11-01 is the fall-back; 9am local is 14:00 UTC after it.
         after = datetime(2026, 11, 1, 12, 0, tzinfo=UTC).timestamp()
-        nxt = LLM._next_rrule_fire("FREQ=DAILY;BYHOUR=9;BYMINUTE=0", after, TORONTO)
+        nxt = next_rrule_fire("FREQ=DAILY;BYHOUR=9;BYMINUTE=0", after, TORONTO)
         assert datetime.fromtimestamp(nxt, UTC) == datetime(2026, 11, 1, 14, 0, tzinfo=UTC)
 
     def test_default_is_utc(self) -> None:
-        nxt = LLM._next_rrule_fire("FREQ=DAILY;BYHOUR=10;BYMINUTE=0", self.NOW)
+        nxt = next_rrule_fire("FREQ=DAILY;BYHOUR=10;BYMINUTE=0", self.NOW)
         assert datetime.fromtimestamp(nxt, UTC) == datetime(2026, 9, 26, 10, 0, tzinfo=UTC)
 
 
@@ -404,29 +389,30 @@ class TestParseReminderPrompt:
         assert "Assuming UTC; set your zone with @tz" in prompt
 
 
-class TestMechanicalRescheduleUsesOwnerZone:
-    def test_rrule_next_fire_uses_owner_zone(self, plugin_env, mocker: MockerFixture) -> None:
+class TestAgendaRescheduleUsesOwnerZone:
+    def test_rrule_next_fire_uses_owner_zone(self, plugin_env) -> None:
+        """A recurring reminder's next fire is 9am in its owner's stored zone,
+        resolved without probing (a chain rescheduling itself is not the user
+        asking)."""
         plugin, _, _ = plugin_env
         plugin.db.get_user_timezone.return_value = "America/Toronto"
-        mocker.patch("llm.plugin.schedule.addEvent")
-        next_fire = mocker.patch.object(LLM, "_next_rrule_fire", return_value=None)
-
-        plugin._mechanical_reschedule(
-            nick="rd_phone",
-            channel="#t",
-            message="m",
+        row = make_reminder_row(
             event_name="llm_remind_x",
-            action_prompt="",
+            nick="rd_phone",
             account="rdrake",
-            chain_position=1,
-            recurrence_seconds=None,
+            fire_at=time.time() - 1,
             recurrence_rrule="FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
-            watch_mode=False,
-            now=0.0,
         )
+        put_reminder(plugin, row)
+        plugin.db.load_due_scheduled_llm_tasks.return_value = []
+
+        plugin.agenda.claim_due()
+        plugin.agenda.finish(agenda.Kind.REMINDER, "llm_remind_x", fired_at=time.time())
 
         plugin.db.get_user_timezone.assert_called_once_with("rdrake")
-        assert next_fire.call_args.args[2] == TORONTO
+        name, fire_at = plugin.db.update_reminder_fire_at.call_args.args
+        local = datetime.fromtimestamp(fire_at, TORONTO)
+        assert (name, local.hour, local.minute) == ("llm_remind_x", 9, 0)
         plugin._probe_ctcp_tz.assert_not_called()
 
 
@@ -465,20 +451,6 @@ class TestScheduledTaskUsesZone:
         )
 
         assert parse.call_args.kwargs["user_tz"] == zone
-
-    def test_rrule_reschedule_uses_owner_zone(self, service, mocker: MockerFixture) -> None:
-        service.plugin._owner_tz.return_value = TORONTO
-        row = mocker.MagicMock(
-            recurrence_seconds=None,
-            recurrence_rrule="FREQ=DAILY;BYHOUR=9",
-            creator_nick="rd_phone",
-            account="rdrake",
-        )
-
-        service._compute_next_fire(row, 0.0)
-
-        service.plugin._owner_tz.assert_called_once_with("rd_phone", "rdrake")
-        assert service.plugin._next_rrule_fire.call_args.args[2] == TORONTO
 
 
 class TestOwnerTz:

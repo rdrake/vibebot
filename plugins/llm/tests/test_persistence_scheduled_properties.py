@@ -2,7 +2,7 @@
 
 Covers ``persistence.py:545-880``: ``save_reminder``,
 ``delete_reminder``, ``load_pending_reminders``,
-``delete_expired_reminders`` and the parallel ``*_scheduled_llm_task``
+the agenda reads and the parallel ``*_scheduled_llm_task``
 family. Properties focus on the invariants the audit flagged:
 recurrence mutual exclusion (seconds xor rrule), case-insensitive
 owner matching (the migration history shows this has churned), and
@@ -43,7 +43,7 @@ accounts = one_of(none(), nicks)
 
 # fire_at offsets relative to ``time.time()``. The lower bound is well
 # inside the 24h ``EXPIRY_THRESHOLD_SECONDS`` cutoff so saved rows
-# survive ``load_pending_reminders`` / ``load_active_scheduled_llm_tasks``;
+# survive ``load_pending_reminders`` / ``load_scheduled_llm_tasks_for``;
 # the upper bound is ~2 days in the future. Using ``time.time()`` (read
 # at the top of each test) rather than a fixed anchor is required: the
 # implementation hard-codes ``time.time() - EXPIRY_THRESHOLD_SECONDS``
@@ -189,12 +189,12 @@ def test_scheduled_task_round_trip(
             channel=channel,
             fire_at=time.time() + offset,
         )
-        names_after_save = {r.event_name for r in db.load_active_scheduled_llm_tasks()}
+        names_after_save = {name for name, _at in db.scheduled_llm_task_fire_times()}
         assert "evt" in names_after_save
         row = db.get_scheduled_llm_task("evt")
         assert row is not None and row.creator_nick == creator and row.account == account
         assert db.delete_scheduled_llm_task("evt") is True
-        names_after_delete = {r.event_name for r in db.load_active_scheduled_llm_tasks()}
+        names_after_delete = {name for name, _at in db.scheduled_llm_task_fire_times()}
         assert "evt" not in names_after_delete
         assert db.get_scheduled_llm_task("evt") is None
     finally:
@@ -242,7 +242,7 @@ def test_scheduled_task_recurrence_mutual_exclusion(seconds: int | None, rrule: 
 @given(offsets=lists(fire_at_offsets, min_size=1, max_size=10, unique=True))
 @settings(max_examples=30, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 def test_scheduled_task_load_is_sorted_by_fire_at(offsets: list[float]) -> None:
-    """``load_active_scheduled_llm_tasks`` returns rows ordered by ``fire_at`` ascending."""
+    """``load_due_scheduled_llm_tasks`` returns rows ordered by ``fire_at`` ascending."""
     db, work_dir = _new_db()
     try:
         for i, off in enumerate(offsets):
@@ -254,7 +254,7 @@ def test_scheduled_task_load_is_sorted_by_fire_at(offsets: list[float]) -> None:
                 channel="#x",
                 fire_at=time.time() + off,
             )
-        loaded = db.load_active_scheduled_llm_tasks()
+        loaded = db.load_due_scheduled_llm_tasks(time.time() + 30 * 86400)
         assert len(loaded) == len(offsets)
         fire_ats = [r.fire_at for r in loaded]
         assert fire_ats == sorted(fire_ats)

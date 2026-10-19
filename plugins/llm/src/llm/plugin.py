@@ -35,6 +35,7 @@ from supybot.commands import getopts, optional, wrap
 from supybot.i18n import PluginInternationalization
 
 from . import (
+    agenda,
     apikeys,
     ircquery,
     limnoria_bridge,
@@ -59,7 +60,6 @@ from .profile import (
     PROFILES,
 )
 from .service import (
-    MIN_RECURRENCE_SECONDS,
     SILENT_TOOLS,
     AssistantRequestContext,
     AssistantResult,
@@ -1024,8 +1024,11 @@ class LLM(callbacks.Plugin):
         self._roleplay_sticky: dict[tuple[str, str], float] = {}
         self._roleplay_sticky_lock = threading.Lock()
 
-        self._reminders: dict[str, ReminderRow] = {}
-        self._reminders_lock = threading.Lock()
+        # Reminders and scheduled LLM tasks: the rows are the schedule, and
+        # one wakeup timer fires whatever is due (see agenda.py).
+        self.agenda = agenda.Agenda(self.db, owner_tz=self._owner_tz)
+        self._agenda_wakeup_at: float | None = None
+        self._agenda_wakeup_lock = threading.Lock()
 
         # CTCP TIME fallback for users with no @tz; answers (and silences)
         # persist in user_clock_offsets. Waiters hold the in-flight probe,
@@ -1074,11 +1077,9 @@ class LLM(callbacks.Plugin):
         self._versepurge_tokens: dict[str, tuple[str, float]] = {}
         self._versepurge_tokens_lock = threading.Lock()
 
-        # Reload persisted reminders from database
-        self._reload_reminders(irc)
-
-        # Re-register persisted scheduled LLM tasks (Phase 2 Task 3 / B3).
-        self.llm_service.restore_scheduled_llm_tasks()
+        # Arm the agenda wakeup from the persisted rows. Overdue reminders
+        # and tasks come due on its first tick, never inside __init__.
+        self._arm_agenda()
 
         # Startup notification tracking
         self._pending_channels: set[str] = set()
@@ -1227,7 +1228,6 @@ class LLM(callbacks.Plugin):
         if hasattr(self, "db"):
             if hasattr(self, "_last_msgids_dirty"):
                 self._flush_last_msgids()
-            self.db.delete_expired_reminders()
             # Close the main-thread DB connection. Worker-thread thread-local
             # connections are released as those threads exit; we don't track
             # them centrally, so sqlite ResourceWarnings can still appear
@@ -1249,17 +1249,11 @@ class LLM(callbacks.Plugin):
             schedule.removeEvent("llm_startup_check")
         with contextlib.suppress(KeyError):
             schedule.removeEvent("llm_queue_wakeup")
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent(self._AGENDA_WAKEUP_EVENT)
         # Daily compaction timer teardown (PR 3 / E3).
         if hasattr(self, "_compaction_timer_name"):
             self._cancel_compaction_timer()
-
-        # Remove all reminder events (guard for tests that mock __init__)
-        if hasattr(self, "_reminders"):
-            with self._reminders_lock:
-                for event_name in list(self._reminders.keys()):
-                    with contextlib.suppress(KeyError):
-                        schedule.removeEvent(event_name)
-                self._reminders.clear()
 
         # Only unhook HTTP callback if we registered
         if self._http_callback is not None:
@@ -3756,27 +3750,109 @@ class LLM(callbacks.Plugin):
         line = self._format_pending_completed_reply(nick, safe_text, target)
         self._safe_queue(irc, self._safe_privmsg(target, line, reply_to))
 
-    def _finalize_reminder_fire(
-        self,
-        *,
-        event_name: str,
-        is_structured: bool,
-        reschedule_kwargs: dict | None,
-    ) -> None:
-        """Cleanup + (optionally) reschedule for a fired reminder.
+    _AGENDA_WAKEUP_EVENT = "llm_agenda_wakeup"
 
-        Used by every fire branch — main-thread early returns (no IRC,
-        rate-limited) AND the worker's finally — so a reminder is never
-        left half-cleaned. Closing-gated so a shutting-down plugin does
-        not mutate ``_reminders`` or DB.
+    def _arm_agenda(self) -> None:
+        """Point the one agenda wakeup at the next reminder or task due.
+
+        Called after anything that adds, fires, or settles an entry. Only
+        ever moves the wakeup earlier: a wakeup that turns out early (its
+        entry was cancelled) finds nothing due and re-arms. Serialised,
+        because request threads and fire workers both arm it, and an
+        interleaved remove/add can lose the earlier wakeup or trip
+        Limnoria's duplicate-name assert (the queue hit this, a5ea4a9).
+        """
+        try:
+            with self._agenda_wakeup_lock:
+                self._arm_agenda_locked()
+        except Exception:
+            # The rows are untouched, so the next arm (any new entry, any
+            # settled fire, a restart) still finds them.
+            self.log.exception("agenda_arm_failed")
+
+    def _arm_agenda_locked(self) -> None:
+        at = self.agenda.next_due_at()
+        if at is None:
+            return
+        now = time.time()
+        # Limnoria drops events in the past; an overdue entry fires next tick.
+        effective = max(at, now + 1)
+        current = self._agenda_wakeup_at
+        if current is not None and now < current <= effective:
+            return
+        with contextlib.suppress(KeyError):
+            schedule.removeEvent(self._AGENDA_WAKEUP_EVENT)
+        schedule.addEvent(self._agenda_tick, effective, name=self._AGENDA_WAKEUP_EVENT)
+        self._agenda_wakeup_at = effective
+
+    def _agenda_tick(self) -> None:
+        """The agenda wakeup: fire everything due, then re-arm.
+
+        Runs on the scheduler thread. Each fire hands slow work to a worker;
+        whoever finishes a fire calls :meth:`_finish_agenda`.
+        """
+        with self._agenda_wakeup_lock:
+            self._agenda_wakeup_at = None
+        if self._llm_executor.closing:
+            return
+        try:
+            claim = self.agenda.claim_due()
+        except Exception:
+            self.log.exception("agenda_claim_failed")
+            claim = agenda.Claim(due=[], expired=[])
+        for gone in claim.expired:
+            self.log.info(
+                "agenda_expired kind=%s event=%s fire_at=%.3f",
+                gone.kind,
+                gone.row.event_name,
+                gone.row.fire_at,
+            )
+        for due in claim.due:
+            fired_at = time.time()
+            try:
+                if isinstance(due.row, ReminderRow):
+                    self._fire_reminder(due.row, fired_at)
+                else:
+                    self.llm_service.fire_scheduled_llm_task(due.row, fired_at)
+            except Exception:
+                self.log.exception(
+                    "agenda_fire_failed kind=%s event=%s", due.kind, due.row.event_name
+                )
+                self._finish_agenda(due.kind, due.row.event_name, fired_at)
+        self._arm_agenda()
+
+    def _finish_agenda(self, kind: agenda.Kind, event_name: str, fired_at: float) -> None:
+        """Settle a fired entry (reschedule it in place, or remove it) and re-arm.
+
+        Every fire path ends here. A second call for the same fire is a no-op
+        in the agenda, so it cannot advance a chain twice. Skipped while
+        shutting down, so a dying plugin does not write to the database; the
+        row is still there and fires again on the next start.
         """
         if self._llm_executor.closing:
             return
-        if is_structured and reschedule_kwargs is not None:
-            self._mechanical_reschedule(**reschedule_kwargs)
-        with self._reminders_lock:
-            self._reminders.pop(event_name, None)
-        self.db.delete_reminder(event_name)
+        try:
+            done = self.agenda.finish(kind, event_name, fired_at=fired_at)
+        except Exception:
+            self.log.exception("agenda_finish_failed kind=%s event=%s", kind, event_name)
+            return
+        if done.outcome is agenda.Outcome.RESCHEDULED:
+            self.log.info(
+                "agenda_reschedule kind=%s event=%s position=%s/%s next_fire_at=%.3f",
+                kind,
+                event_name,
+                done.chain_position,
+                done.cap,
+                done.next_fire_at,
+            )
+        elif done.outcome is not agenda.Outcome.DONE:
+            self.log.info(
+                "agenda_reschedule_skipped kind=%s event=%s reason=%s",
+                kind,
+                event_name,
+                done.outcome,
+            )
+        self._arm_agenda()
 
     def _unattended_ask_rate_limited(self, *, account: str | None, nick: str, now: float) -> bool:
         """Silent daily-ask limit PEEK for fires that bypass command preflight.
@@ -3920,50 +3996,28 @@ class LLM(callbacks.Plugin):
 
     def _fire_reminder_action(
         self,
+        row: ReminderRow,
         *,
         active_irc: callbacks.Irc,
         target: str,
-        nick: str,
-        channel: str,
-        message: str,
-        event_name: str,
-        action_prompt: str,
-        account: str | None,
         bot_nick: str,
-        parent_chain: int,
-        is_structured: bool,
-        recurrence_seconds: int | None,
-        recurrence_rrule: str | None,
-        watch_mode: bool,
-        now: float,
-        reply_msgid: str = "",
+        fired_at: float,
     ) -> None:
         """Worker-thread reminder action body.
 
         Resolves history, performs the LLM call, dispatches the response,
-        logs usage, and finalizes (which optionally reschedules). The
-        finalize step always runs in the worker's finally regardless of
-        inner-try outcome — a single failed fire no longer kills a
-        recurring watch chain (intentional behavior change).
+        logs usage, and settles the fire with the agenda (which reschedules a
+        recurring row in place). Settling always runs in the worker's finally
+        regardless of inner-try outcome — a single failed fire does not kill
+        a recurring watch chain.
         """
-        reschedule_kwargs = (
-            {
-                "nick": nick,
-                "channel": channel,
-                "message": message,
-                "event_name": event_name,
-                "action_prompt": action_prompt,
-                "account": account,
-                "chain_position": parent_chain,
-                "recurrence_seconds": recurrence_seconds,
-                "recurrence_rrule": recurrence_rrule,
-                "watch_mode": watch_mode,
-                "now": now,
-                "reply_msgid": reply_msgid,
-            }
-            if is_structured
-            else None
-        )
+        nick = row.nick
+        account = row.account
+        channel = row.channel
+        message = row.message
+        event_name = row.event_name
+        action_prompt = row.action_prompt
+        reply_msgid = row.reply_msgid
         try:
             msg_target = Caller.from_row(nick, account, channel).reply_target
             msg_kwargs: dict[str, object] = {
@@ -4048,219 +4102,75 @@ class LLM(callbacks.Plugin):
                     event_name,
                 )
         finally:
-            # Single source of truth for cleanup. Runs even if the inner
-            # try raised — recurring chains survive a single failed fire.
-            self._finalize_reminder_fire(
-                event_name=event_name,
-                is_structured=is_structured,
-                reschedule_kwargs=reschedule_kwargs,
-            )
+            # Runs even if the inner try raised — recurring chains survive a
+            # single failed fire.
+            self._finish_agenda(agenda.Kind.REMINDER, event_name, fired_at)
 
-    def _make_reminder_delivery_closure(
-        self,
-        nick: str,
-        channel: str,
-        message: str,
-        event_name: str,
-        *,
-        action_prompt: str = "",
-        account: str | None = None,
-        chain_position: int = 1,
-        recurrence_seconds: int | None = None,
-        recurrence_rrule: str | None = None,
-        watch_mode: bool = False,
-        reply_msgid: str = "",
-    ):
-        """Create a reminder delivery closure with error handling.
+    def _fire_reminder(self, row: ReminderRow, fired_at: float) -> None:
+        """Fire a due reminder: runs on the scheduler thread, from the agenda wakeup.
 
-        The returned callable runs on the main IRC scheduler thread:
-        resolves the active IRC connection, runs the rate-limit precheck,
+        Resolves the active IRC connection, runs the rate-limit precheck,
         then either submits the heavy LLM-call body to the executor (for
-        action-prompt reminders) or sends the legacy plain-echo reminder
-        directly. Cleanup + reschedule run in `_finalize_reminder_fire`.
-
-        Args:
-            nick: User's nick
-            channel: Channel to deliver to (or nick for PM delivery)
-            message: Reminder message
-            event_name: Scheduler event name for cleanup
-            chain_position: 1-based position of this reminder within its chain.
-            recurrence_seconds: Numeric cadence (seconds) for the chain, or None.
-            recurrence_rrule: RFC 5545 RRULE string for the chain, or None.
-            watch_mode: True if the chain may emit ``[silent]`` per fire.
-
-        Returns:
-            Callable for use with schedule.addEvent
+        action-prompt reminders) or sends the plain-echo reminder directly.
+        The fire is settled with the agenda here for every branch that does
+        not reach a worker; the worker settles its own.
         """
-        parent_chain: int = chain_position or 1
-        is_structured = self._is_structured_recurring(
-            recurrence_seconds=recurrence_seconds,
-            recurrence_rrule=recurrence_rrule,
-        )
+        nick = row.nick
+        account = row.account
+        message = row.message
+        event_name = row.event_name
+        reply_msgid = row.reply_msgid
         # A PM reminder stores a nick as its channel (the bot's own, in rows
         # set before the reply target was stored); deliver to the user.
-        target = Caller.from_row(nick, account, channel).reply_target
+        target = Caller.from_row(nick, account, row.channel).reply_target
+        submitted = False
+        try:
+            active_irc = next(iter(world.ircs), None)
+            if active_irc is None:
+                return
 
-        def _build_reschedule_kwargs(now_t: float) -> dict | None:
-            return (
-                {
-                    "nick": nick,
-                    "channel": channel,
-                    "message": message,
-                    "event_name": event_name,
-                    "action_prompt": action_prompt,
-                    "account": account,
-                    "chain_position": parent_chain,
-                    "recurrence_seconds": recurrence_seconds,
-                    "recurrence_rrule": recurrence_rrule,
-                    "watch_mode": watch_mode,
-                    "now": now_t,
-                    "reply_msgid": reply_msgid,
-                }
-                if is_structured
-                else None
-            )
+            # Plain echo delivery.
+            if not row.action_prompt:
+                self._send_reminder_text(active_irc, target, nick, message, reply_msgid=reply_msgid)
+                return
 
-        def _deliver() -> None:
-            now = time.time()
-            submitted = False
-            try:
-                active_irc = next(iter(world.ircs), None)
-                if active_irc is None:
-                    return
+            bot_nick = getattr(active_irc, "nick", None)
+            if not bot_nick:
+                self.log.warning(
+                    "reminder_action_missing_bot_nick nick=%s channel=%s event=%s",
+                    nick,
+                    row.channel,
+                    event_name,
+                )
+                self._send_reminder_text(active_irc, target, nick, message, reply_msgid=reply_msgid)
+                return
 
-                # Legacy reminder path: plain echo delivery.
-                if not action_prompt:
-                    self._send_reminder_text(
-                        active_irc, target, nick, message, reply_msgid=reply_msgid
-                    )
-                    return
-
-                bot_nick = getattr(active_irc, "nick", None)
-                if not bot_nick:
-                    self.log.warning(
-                        "reminder_action_missing_bot_nick nick=%s channel=%s event=%s",
-                        nick,
-                        channel,
-                        event_name,
-                    )
-                    self._send_reminder_text(
-                        active_irc, target, nick, message, reply_msgid=reply_msgid
-                    )
-                    return
-
-                if self._unattended_ask_rate_limited(account=account, nick=nick, now=now):
-                    self._send_reminder_text(
-                        active_irc,
-                        target,
-                        nick,
-                        f"{message} (action skipped — daily ask limit reached)",
-                        reply_msgid=reply_msgid,
-                    )
-                    return
-
-                if self._llm_executor.closing:
-                    return
-
-                # A firing one-shot is no longer pending: without this, an
-                # action that calls list_pending_tasks lists itself. The DB
-                # row stays until finalize, so a crash mid-fire still reloads.
-                # Recurring chains keep the entry: it IS still pending, and
-                # _mechanical_reschedule reads it as "not cancelled mid-fire".
-                if not is_structured:
-                    with self._reminders_lock:
-                        self._reminders.pop(event_name, None)
-                self._llm_executor.submit(
-                    f"reminder:{event_name}",
-                    self._fire_reminder_action,
-                    active_irc=active_irc,
-                    target=target,
-                    nick=nick,
-                    channel=channel,
-                    message=message,
-                    event_name=event_name,
-                    action_prompt=action_prompt,
-                    account=account,
-                    bot_nick=bot_nick,
-                    parent_chain=parent_chain,
-                    is_structured=is_structured,
-                    recurrence_seconds=recurrence_seconds,
-                    recurrence_rrule=recurrence_rrule,
-                    watch_mode=watch_mode,
-                    now=now,
+            if self._unattended_ask_rate_limited(account=account, nick=nick, now=fired_at):
+                self._send_reminder_text(
+                    active_irc,
+                    target,
+                    nick,
+                    f"{message} (action skipped — daily ask limit reached)",
                     reply_msgid=reply_msgid,
                 )
-                submitted = True
-            finally:
-                # Finalize on the main thread for every fire branch that
-                # did NOT submit work to a worker. The worker's own
-                # finally handles cleanup for submitted paths.
-                if not submitted:
-                    self._finalize_reminder_fire(
-                        event_name=event_name,
-                        is_structured=is_structured,
-                        reschedule_kwargs=_build_reschedule_kwargs(now),
-                    )
+                return
 
-        return _deliver
+            if self._llm_executor.closing:
+                return
 
-    def _reload_reminders(self, irc: callbacks.Irc) -> None:
-        """Reload persisted reminders from database on startup.
-
-        Reschedules every reminder; overdue ones fire about a second later.
-        One-shots more than 24h overdue are cleaned up by the database layer.
-        """
-        pending = self.db.load_pending_reminders()
-        now = time.time()
-
-        for reminder in pending:
-            nick = reminder.nick
-            channel = reminder.channel
-            message = reminder.message
-            event_name = reminder.event_name
-
-            deliver = self._make_reminder_delivery_closure(
-                nick,
-                channel,
-                message,
-                event_name,
-                action_prompt=reminder.action_prompt,
-                account=reminder.account,
-                chain_position=reminder.chain_position or 1,
-                recurrence_seconds=reminder.recurrence_seconds,
-                recurrence_rrule=reminder.recurrence_rrule,
-                watch_mode=reminder.watch_mode,
-                reply_msgid=reminder.reply_msgid,
+            self._llm_executor.submit(
+                f"reminder:{event_name}",
+                self._fire_reminder_action,
+                row,
+                active_irc=active_irc,
+                target=target,
+                bot_nick=bot_nick,
+                fired_at=fired_at,
             )
-
-            # Overdue rows fire on a scheduler tick, not inside __init__.
-            # Every row is registered: a recurring fire whose event is missing
-            # from _reminders reads as cancelled mid-fire and ends its chain.
-            try:
-                schedule.addEvent(deliver, max(reminder.fire_at, now + 1), name=event_name)
-                with self._reminders_lock:
-                    self._reminders[event_name] = ReminderRow(
-                        id=reminder.id,
-                        event_name=event_name,
-                        nick=nick,
-                        channel=channel,
-                        message=message,
-                        action_prompt=reminder.action_prompt,
-                        account=reminder.account,
-                        fire_at=reminder.fire_at,
-                        created_at=reminder.created_at,
-                        chain_position=reminder.chain_position or 1,
-                        recurrence_seconds=reminder.recurrence_seconds,
-                        recurrence_rrule=reminder.recurrence_rrule,
-                        watch_mode=reminder.watch_mode,
-                        reply_msgid=reminder.reply_msgid,
-                    )
-            except Exception as e:
-                self.log.error("Failed to reload reminder %s: %s", event_name, e)
-                self.db.delete_reminder(event_name)
-
-        if pending:
-            self.log.info("Reloaded %s reminder(s) from database", len(pending))
+            submitted = True
+        finally:
+            if not submitted:
+                self._finish_agenda(agenda.Kind.REMINDER, event_name, fired_at)
 
     @contextlib.contextmanager
     def _allow_concurrent(self):
@@ -10522,8 +10432,8 @@ class LLM(callbacks.Plugin):
         def list_pending_tasks_fn() -> list[dict[str, object]]:
             tasks: list[dict[str, object]] = []
             for name, data in self._get_user_reminders(identity):
-                # event-name format: "llm_reminder_<owner>_<id>"; the LLM
-                # only needs the trailing id (matches existing UX).
+                # event-name format: "llm_remind_<id>", stable across a
+                # recurring chain's fires; the LLM only needs the trailing id.
                 rid = name.split("_")[-1]
                 tasks.append(
                     {
@@ -10617,12 +10527,11 @@ class LLM(callbacks.Plugin):
         Returns:
             List of ``(event_name, ReminderRow)`` pairs owned by ``caller``.
         """
-        with self._reminders_lock:
-            return [
-                (name, data)
-                for name, data in self._reminders.items()
-                if caller.owns(Identity(raw_nick=data.nick, account=data.account))
-            ]
+        return [
+            (row.event_name, row)
+            for row in self.agenda.pending_reminders()
+            if caller.owns(Identity(raw_nick=row.nick, account=row.account))
+        ]
 
     def _format_reminders(
         self,
@@ -10658,13 +10567,10 @@ class LLM(callbacks.Plugin):
         Returns:
             Event name if found and owned by the caller, ``None`` otherwise.
         """
-        with self._reminders_lock:
-            for name, data in self._reminders.items():
-                if not name.endswith(f"_{reminder_id}"):
-                    continue
-                if caller.owns(Identity(raw_nick=data.nick, account=data.account)):
-                    return name
-            return None
+        for name, _row in self._get_user_reminders(caller):
+            if name.endswith(f"_{reminder_id}"):
+                return name
+        return None
 
     def _user_scheduled_tasks(self, caller: Identity) -> list[ScheduledLlmTaskRow]:
         """Scheduled LLM tasks owned by ``caller``.
@@ -10742,29 +10648,21 @@ class LLM(callbacks.Plugin):
         under, case-insensitively.
         """
         target_lower = ircutils.toLower(target)
-        with self._reminders_lock:
-            return [
-                (name, data)
-                for name, data in self._reminders.items()
-                if ircutils.toLower(data.nick) == target_lower
-                or (data.account and ircutils.toLower(data.account) == target_lower)
-            ]
+        return [
+            (row.event_name, row)
+            for row in self.agenda.pending_reminders()
+            if ircutils.toLower(row.nick) == target_lower
+            or (row.account and ircutils.toLower(row.account) == target_lower)
+        ]
 
     def _find_reminder_for_target(self, target: str, reminder_id: str) -> str | None:
         """Find a single reminder owned by ``target`` by reminder ID."""
-        target_lower = ircutils.toLower(target)
-        with self._reminders_lock:
-            for name, data in self._reminders.items():
-                if not name.endswith(f"_{reminder_id}"):
-                    continue
-                if ircutils.toLower(data.nick) == target_lower or (
-                    data.account and ircutils.toLower(data.account) == target_lower
-                ):
-                    return name
-            return None
+        for name, _row in self._get_reminders_for_target(target):
+            if name.endswith(f"_{reminder_id}"):
+                return name
+        return None
 
     _REMINDER_MAX_SECONDS = 604800  # 7 days
-    _REMINDER_MAX_CHAIN_POSITION = 50  # cap recurring fires before user re-arms
     _REMINDER_MAX_PENDING_PER_USER = 25  # cap one-shot accumulation per user
     # A restatement of a reminder set this recently reads as a correction to it
     # ("no, wait, make it 2 minutes") rather than a second reminder. Keyed on
@@ -10779,9 +10677,11 @@ class LLM(callbacks.Plugin):
     ) -> ReminderRow | None:
         """Return a just-created pending reminder of ``caller``'s restating ``message``.
 
-        Only pending rows are compared. A fired reminder has already been
+        Only pending rows are compared. A fired one-shot has already been
         deleted, so asking for the same thing again afterwards still
-        schedules a new one.
+        schedules a new one. A recurring reminder keeps the ``created_at`` of
+        the request that set it across fires, so restating it later is a new
+        reminder, not an amendment that ends the chain.
         """
         wanted = message.strip().casefold()
         for _name, row in self._get_user_reminders(caller):
@@ -10791,162 +10691,6 @@ class LLM(callbacks.Plugin):
             ):
                 return row
         return None
-
-    @staticmethod
-    def _is_structured_recurring(
-        *, recurrence_seconds: int | None, recurrence_rrule: str | None
-    ) -> bool:
-        """True when the row carries a structured recurrence column (B1+)."""
-        return recurrence_seconds is not None or recurrence_rrule is not None
-
-    @staticmethod
-    def _next_rrule_fire(rule_str: str, now: float, tz: tzinfo = UTC) -> float | None:
-        """Compute the next fire time after ``now`` for an RRULE string.
-
-        BYHOUR/BYMINUTE are wall-clock times in ``tz`` (the owner's zone, as
-        the parser was told), so "daily at 8am" stays at 8am across a DST
-        change. Returns None when the rule is malformed or has no future
-        occurrence.
-        """
-        from dateutil.rrule import rrulestr
-
-        try:
-            now_local = datetime.fromtimestamp(now, tz=tz)
-            rule = rrulestr(rule_str, dtstart=now_local)
-            next_dt = rule.after(now_local)
-        except (ValueError, TypeError):
-            return None
-        if next_dt is None:
-            return None
-        # Parse-time checks see only the first gap; this holds for every fire.
-        return max(next_dt.timestamp(), now + MIN_RECURRENCE_SECONDS)
-
-    def _mechanical_reschedule(
-        self,
-        *,
-        nick: str,
-        channel: str,
-        message: str,
-        event_name: str,
-        action_prompt: str,
-        account: str | None,
-        chain_position: int,
-        recurrence_seconds: int | None,
-        recurrence_rrule: str | None,
-        watch_mode: bool,
-        now: float,
-        reply_msgid: str = "",
-    ) -> None:
-        """Schedule the next fire of a structured recurring reminder.
-
-        Computes ``next_fire`` from ``recurrence_seconds`` (numeric path)
-        or ``recurrence_rrule`` (RFC 5545 parsed timezone-aware UTC),
-        enforces the chain_position cap, and registers a fresh schedule
-        event + ReminderRow + DB row.
-
-        No-ops when (a) chain_position has hit the cap, (b) the rrule is
-        malformed or exhausted, or (c) the original event has been
-        cancelled mid-fire (clear-wins-over-mid-fire).
-        """
-        next_position = chain_position + 1
-        if next_position > self._REMINDER_MAX_CHAIN_POSITION:
-            self.log.info(
-                "reminder_reschedule_skipped reason=cap event=%s position=%i/%i",
-                event_name,
-                next_position,
-                self._REMINDER_MAX_CHAIN_POSITION,
-            )
-            return
-
-        next_fire: float | None = None
-        if recurrence_seconds is not None:
-            next_fire = now + max(recurrence_seconds, MIN_RECURRENCE_SECONDS)
-        elif recurrence_rrule is not None:
-            next_fire = self._next_rrule_fire(recurrence_rrule, now, self._owner_tz(nick, account))
-            if next_fire is None:
-                self.log.warning(
-                    "reminder_reschedule_skipped reason=rrule_invalid_or_exhausted "
-                    "event=%s rule=%r",
-                    event_name,
-                    recurrence_rrule,
-                )
-                return
-
-        if next_fire is None:
-            return  # Neither recurrence kind populated — caller's mistake.
-
-        # Clear-wins-over-mid-fire: if cancel_all_reminders or a single
-        # delete fired during the action, the original event_name is gone
-        # from _reminders. Don't reschedule a cancelled chain.
-        with self._reminders_lock:
-            if event_name not in self._reminders:
-                self.log.info(
-                    "reminder_reschedule_skipped reason=cancelled_mid_fire event=%s",
-                    event_name,
-                )
-                return
-
-        new_event_name = f"llm_remind_{uuid.uuid4().hex[:12]}"
-        new_deliver = self._make_reminder_delivery_closure(
-            nick,
-            channel,
-            message,
-            new_event_name,
-            action_prompt=action_prompt,
-            account=account,
-            chain_position=next_position,
-            recurrence_seconds=recurrence_seconds,
-            recurrence_rrule=recurrence_rrule,
-            watch_mode=watch_mode,
-            reply_msgid=reply_msgid,
-        )
-        try:
-            schedule.addEvent(new_deliver, next_fire, name=new_event_name)
-            with self._reminders_lock:
-                self._reminders[new_event_name] = ReminderRow(
-                    id=0,
-                    event_name=new_event_name,
-                    nick=nick,
-                    channel=channel,
-                    message=message,
-                    action_prompt=action_prompt,
-                    account=account,
-                    fire_at=next_fire,
-                    created_at=now,
-                    chain_position=next_position,
-                    recurrence_seconds=recurrence_seconds,
-                    recurrence_rrule=recurrence_rrule,
-                    watch_mode=watch_mode,
-                    reply_msgid=reply_msgid,
-                )
-            self.db.save_reminder(
-                new_event_name,
-                nick,
-                channel,
-                message,
-                next_fire,
-                action_prompt=action_prompt,
-                account=account,
-                chain_position=next_position,
-                recurrence_seconds=recurrence_seconds,
-                recurrence_rrule=recurrence_rrule,
-                watch_mode=watch_mode,
-                reply_msgid=reply_msgid,
-            )
-            self.log.info(
-                "reminder_reschedule path=mechanical kind=%s event=%s "
-                "position=%i/%i next_fire_at=%.3f",
-                "seconds" if recurrence_seconds is not None else "rrule",
-                new_event_name,
-                next_position,
-                self._REMINDER_MAX_CHAIN_POSITION,
-                next_fire,
-            )
-        except Exception:
-            self.log.exception(
-                "reminder_reschedule_failed event=%s reason=schedule_or_persist",
-                new_event_name,
-            )
 
     def _react(self, irc: callbacks.Irc, msg: IrcMsg, emoji: str) -> bool:
         """Send a +draft/react reaction to ``msg``. Returns True if queued.
@@ -10990,15 +10734,14 @@ class LLM(callbacks.Plugin):
             irc.reply(fallback_text, prefixNick=prefixNick)
 
     def _cancel_reminder(self, event_name: str) -> None:
-        """Remove a single reminder from scheduler, in-memory dict, and database.
+        """Cancel a reminder by deleting its row.
 
-        Also takes back the ⏰ put on the message that set it, so a cancelled
-        reminder does not still look pending in the channel.
+        The row is the only cancel truth: a fire already running finds it
+        gone when it finishes and does not reschedule. Also takes back the ⏰
+        put on the message that set it, so a cancelled reminder does not
+        still look pending in the channel.
         """
-        with contextlib.suppress(KeyError):
-            schedule.removeEvent(event_name)
-        with self._reminders_lock:
-            row = self._reminders.pop(event_name, None)
+        row = self.db.get_reminder(event_name)
         self.db.delete_reminder(event_name)
         irc = next(iter(world.ircs), None)
         if row is None or not row.reply_msgid or irc is None:
@@ -11103,8 +10846,6 @@ class LLM(callbacks.Plugin):
         msg: IrcMsg,
         caller: Caller,
         text: str,
-        *,
-        parent_chain: int | None = None,
     ) -> ReminderScheduleResult:
         """Parse, validate, and schedule a reminder.
 
@@ -11114,17 +10855,16 @@ class LLM(callbacks.Plugin):
         separately and is the preferred match key on lookup. The reply
         target is stored as the reminder's channel.
 
-        ``parent_chain`` is supplied when an action-fire LLM is rescheduling
-        the next occurrence of a recurring reminder. It carries the parent's
-        ``chain_position`` so we can enforce the per-chain cap.
+        A recurring reminder's later fires are the agenda's business (it
+        moves this row in place and enforces the chain cap); this only ever
+        starts a chain, at position 1.
         """
         identity = caller.identity
         channel = caller.reply_target
         # Resolved before taking an executor permit: the CTCP probe can wait
-        # seconds on the user's client. A chain rescheduling itself does not
-        # probe; it is not the user asking. Nor does a request with no wall
-        # clock in it: "in 20 minutes" needs no zone.
-        probe = parent_chain is None and needs_zone(text)
+        # seconds on the user's client. A request with no wall clock in it
+        # does not probe: "in 20 minutes" needs no zone.
+        probe = needs_zone(text)
         user_tz = self._resolve_user_tz(identity, irc=irc if probe else None)
 
         with (
@@ -11153,35 +10893,20 @@ class LLM(callbacks.Plugin):
             )
 
         now = time.time()
-        if parent_chain is not None:
-            parent_position = parent_chain
-            chain_position = parent_position + 1
-            if chain_position > self._REMINDER_MAX_CHAIN_POSITION:
-                return ReminderScheduleResult(
-                    ok=False,
-                    message=(
-                        f"Recurring reminder reached its cap of "
-                        f"{self._REMINDER_MAX_CHAIN_POSITION} runs. "
-                        "Set it again to continue."
-                    ),
-                )
-        else:
-            chain_position = 1
-            pending = len(self._get_user_reminders(identity))
-            if pending >= self._REMINDER_MAX_PENDING_PER_USER:
-                return ReminderScheduleResult(
-                    ok=False,
-                    message=(
-                        f"You already have {pending} pending reminders "
-                        f"(cap {self._REMINDER_MAX_PENDING_PER_USER}). "
-                        "Cancel some first."
-                    ),
-                )
+        pending = len(self._get_user_reminders(identity))
+        if pending >= self._REMINDER_MAX_PENDING_PER_USER:
+            return ReminderScheduleResult(
+                ok=False,
+                message=(
+                    f"You already have {pending} pending reminders "
+                    f"(cap {self._REMINDER_MAX_PENDING_PER_USER}). "
+                    "Cancel some first."
+                ),
+            )
 
         reminder_message = result.message or text
         # msgid of the message that asked for the reminder, so the fire can be
-        # threaded under it. Absent on a synthetic setter (an action fire
-        # rescheduling a chain) and on servers without message-tags.
+        # threaded under it. Absent on servers without message-tags.
         reply_msgid = (getattr(msg, "server_tags", None) or {}).get("msgid") or ""
         # A second set_reminder for a request just handled is a restatement,
         # never a second reminder. It arrives two ways: the user revising
@@ -11194,85 +10919,45 @@ class LLM(callbacks.Plugin):
         # row and let the new one take its place. A follow-up that carried no
         # new time re-parses to the same delay, so this degrades to "keep one
         # reminder" on its own.
-        if parent_chain is None:
-            existing = self._find_amendable_reminder(identity, message=reminder_message, now=now)
-            if existing is not None:
-                self.log.info(
-                    "reminder_amended event=%s nick=%s old_fire_in=%is new_fire_in=%is",
-                    existing.event_name,
-                    identity.key,
-                    max(0, int(existing.fire_at - now)),
-                    int(result.seconds),
-                )
-                self._cancel_reminder(existing.event_name)
+        existing = self._find_amendable_reminder(identity, message=reminder_message, now=now)
+        if existing is not None:
+            self.log.info(
+                "reminder_amended event=%s nick=%s old_fire_in=%is new_fire_in=%is",
+                existing.event_name,
+                identity.key,
+                max(0, int(existing.fire_at - now)),
+                int(result.seconds),
+            )
+            self._cancel_reminder(existing.event_name)
 
-        action_prompt = result.action_prompt
         event_name = f"llm_remind_{uuid.uuid4().hex[:12]}"
-        recurrence_seconds = result.recurrence_seconds
-        recurrence_rrule = result.recurrence_rrule
-        watch_mode = result.watch_mode
-        deliver = self._make_reminder_delivery_closure(
-            identity.raw_nick,
-            channel,
-            reminder_message,
-            event_name,
-            action_prompt=action_prompt,
-            account=identity.account,
-            chain_position=chain_position,
-            recurrence_seconds=recurrence_seconds,
-            recurrence_rrule=recurrence_rrule,
-            watch_mode=watch_mode,
-            reply_msgid=reply_msgid,
-        )
-
         try:
-            schedule.addEvent(deliver, now + result.seconds, name=event_name)
-            with self._reminders_lock:
-                self._reminders[event_name] = ReminderRow(
-                    id=0,
-                    event_name=event_name,
-                    nick=identity.raw_nick,
-                    channel=channel,
-                    message=reminder_message,
-                    action_prompt=action_prompt,
-                    account=identity.account,
-                    fire_at=now + result.seconds,
-                    created_at=now,
-                    chain_position=chain_position,
-                    recurrence_seconds=recurrence_seconds,
-                    recurrence_rrule=recurrence_rrule,
-                    watch_mode=watch_mode,
-                    reply_msgid=reply_msgid,
-                )
-
             self.db.save_reminder(
                 event_name,
                 identity.raw_nick,
                 channel,
                 reminder_message,
                 now + result.seconds,
-                action_prompt=action_prompt,
+                action_prompt=result.action_prompt,
                 account=identity.account,
-                chain_position=chain_position,
-                recurrence_seconds=recurrence_seconds,
-                recurrence_rrule=recurrence_rrule,
-                watch_mode=watch_mode,
+                recurrence_seconds=result.recurrence_seconds,
+                recurrence_rrule=result.recurrence_rrule,
+                watch_mode=result.watch_mode,
                 reply_msgid=reply_msgid,
-            )
-
-            reply = self.llm_service.sanitize_output(result.confirmation)
-            if result.note:
-                reply = f"{reply} ({self.llm_service.sanitize_output(result.note)})"
-            if chain_position > 1:
-                reply = f"{reply} ({chain_position}/{self._REMINDER_MAX_CHAIN_POSITION})"
-            return ReminderScheduleResult(
-                ok=True,
-                message=reply,
-                summary=f"{reminder_message} in {int(result.seconds)}s",
             )
         except Exception as e:
             self.log.error("Failed to schedule reminder: %s", e)
             return ReminderScheduleResult(ok=False, message="Failed to set reminder.")
+        self._arm_agenda()
+
+        reply = self.llm_service.sanitize_output(result.confirmation)
+        if result.note:
+            reply = f"{reply} ({self.llm_service.sanitize_output(result.note)})"
+        return ReminderScheduleResult(
+            ok=True,
+            message=reply,
+            summary=f"{reminder_message} in {int(result.seconds)}s",
+        )
 
     def _remind_set(self, irc: callbacks.Irc, msg: IrcMsg, caller: Caller, text: str) -> None:
         """Parse and schedule a natural language reminder via IRC."""
@@ -11294,14 +10979,8 @@ class LLM(callbacks.Plugin):
         msg: IrcMsg,
         caller: Caller,
         text: str,
-        *,
-        parent_chain: int | None = None,
     ) -> ToolCallbackResult:
         """Parse and schedule a reminder, returning a ToolCallbackResult for meta.
-
-        ``parent_chain`` is provided when the call originates from an
-        action-fire LLM rescheduling a recurring chain — see
-        :meth:`_schedule_reminder` for cap enforcement.
 
         Reacts ⏰ to ``msg`` on success and ❌ on cap/parse failure so the
         user gets a visual acknowledgment regardless of whether the model
@@ -11310,7 +10989,7 @@ class LLM(callbacks.Plugin):
         """
         from .assistant import ToolCallbackResult as _ToolCallbackResult
 
-        result = self._schedule_reminder(irc, msg, caller, text, parent_chain=parent_chain)
+        result = self._schedule_reminder(irc, msg, caller, text)
         self._react(irc, msg, "⏰" if result.ok else "❌")
         message = result.message
         if result.ok and result.summary:
@@ -11459,9 +11138,7 @@ class LLM(callbacks.Plugin):
             self._remind_set(irc, msg, caller, text)
 
     def _cancel_scheduled_llm_task_admin(self, event_name: str) -> None:
-        """Owner-only cancel: skip ownership check, remove schedule + DB row."""
-        with contextlib.suppress(KeyError):
-            schedule.removeEvent(event_name)
+        """Owner-only cancel: skip the ownership check and delete the row."""
         self.db.delete_scheduled_llm_task(event_name)
 
     def _remind_admin(self, irc: callbacks.Irc, msg: IrcMsg, rest: str) -> None:
