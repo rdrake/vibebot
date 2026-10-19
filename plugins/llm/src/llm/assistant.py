@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from .identity import UNAUTHENTICATED_KEY_PREFIX
 from .profile import (
     PROFILE_ANIMATE,
     PROFILE_CHAT,
@@ -997,7 +998,10 @@ class AssistantToolExecutor:
         ``self._deny_access()`` itself when this returns None.
         """
         target = args.get("nick")
-        if not target or target.lower() == self.nick.lower():
+        # ``self.nick`` is the storage key: an unauthenticated caller's carries
+        # a "!" prefix the model never sees, so compare without it.
+        own = self.nick.removeprefix(UNAUTHENTICATED_KEY_PREFIX)
+        if not target or target.lower() in (self.nick.lower(), own.lower()):
             return self.nick
         if not self.is_owner:
             return None

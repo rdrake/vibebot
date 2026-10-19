@@ -101,7 +101,7 @@ class TestDoPrivmsgIntegration:
         plugin.doPrivmsg(mock_irc, mock_msg)
 
         # Should have tracked the message
-        messages = plugin.context.get_messages("user1", "#channel")
+        messages = plugin.context.get_messages("!user1", "#channel")
         assert len(messages) >= 1
 
     def test_doprivmsg_tracks_action_messages(
@@ -124,7 +124,7 @@ class TestDoPrivmsgIntegration:
         plugin.doPrivmsg(mock_irc, mock_msg)
 
         # Should have tracked the message
-        messages = plugin.context.get_messages("user1", "#channel")
+        messages = plugin.context.get_messages("!user1", "#channel")
         assert len(messages) >= 1
 
 
@@ -781,6 +781,8 @@ class TestMemoriesCommand:
         mock_msg = self._make_msg(mocker)
 
         plugin.db.save_memory("otheruser", "Likes Rust", "#test")
+        # Each nick is authenticated to its own account.
+        mock_irc.state.nickToAccount.side_effect = lambda nick: nick
 
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
 
@@ -892,6 +894,8 @@ class TestMemoriesCommand:
 
         plugin.db.save_memory("otheruser", "fact a", "#test")
         plugin.db.save_memory("otheruser", "fact b", "#test")
+        # Each nick is authenticated to its own account.
+        mock_irc.state.nickToAccount.side_effect = lambda nick: nick
 
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
         plugin.llm_service.cleanup_memories = mocker.MagicMock(
@@ -903,6 +907,50 @@ class TestMemoriesCommand:
         mock_irc.reply.assert_called_once()
         reply = mock_irc.reply.call_args[0][0]
         assert "Before: 2" in reply
+
+    def test_account_on_someone_elses_nick_takes_none_of_their_data(
+        self, plugin_with_real_db: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN account alice's personal data, conversation and usage
+        WHEN account bob speaks from the nick "alice"
+        THEN everything stays under alice and bob's @memories shows none of it.
+
+        Regression: the nick→account migration used to move every row
+        stored under the nick "alice" to whichever account appeared on it.
+        """
+        plugin, mock_irc = plugin_with_real_db
+        db = plugin.db
+        db.save_memory("alice", "Secret fact", "#test")
+        db.save_avatar_persona("alice", "A wandering knight")
+        db.save_instruction("alice", "Answer in French")
+        db.save_user_timezone("alice", "Europe/Paris")
+        db.save_clock_offset("alice", 3600)
+        db.save_conversation("alice", "#test", [{"role": "user", "content": "hi"}], time.time())
+        db.log_usage("alice", "#test", "ask", "m", 1, 1, 0.5)
+
+        mock_irc.state.nickToAccount.return_value = "bob"
+        msg = self._make_msg(mocker)
+        msg.prefix = "alice!user@host"
+        msg.nick = "alice"
+        # Every path that used to trigger the migration.
+        plugin._resolve_caller(mock_irc, msg)
+        assert plugin._resolve_nick_to_identity(mock_irc, "alice") == "bob"
+        plugin.memories(mock_irc, msg, [])
+
+        assert "No memories stored" in mock_irc.reply.call_args[0][0]
+        assert [m.fact for m in db.get_memories("alice")] == ["Secret fact"]
+        assert db.get_memories("bob") == []
+        assert db.get_avatar_persona("alice") == "A wandering knight"
+        assert db.get_avatar_persona("bob") is None
+        assert db.get_instruction("alice") == "Answer in French"
+        assert db.get_instruction("bob") is None
+        assert db.get_user_timezone("alice") == "Europe/Paris"
+        assert db.get_user_timezone("bob") is None
+        assert db.get_clock_offset("alice") is not None
+        assert db.get_clock_offset("bob") is None
+        assert [(n, c) for n, c, _m, _t in db.load_conversations()] == [("alice", "#test")]
+        assert db.get_usage_summary_for_nick("alice").total_cost == 0.5
+        assert db.get_usage_summary_for_nick("bob").total_requests == 0
 
     def test_memories_cleanup_other_user_non_owner(
         self, plugin_with_real_db: tuple, mocker: MockerFixture

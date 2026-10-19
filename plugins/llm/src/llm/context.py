@@ -409,42 +409,6 @@ class ConversationContext:
             self._best_effort_db("clear all", "delete_all_conversations")
             return count
 
-    def migrate_user(self, old_nick: str, new_nick: str) -> int:
-        """Rekey in-memory conversations from an old nick to a new identity.
-
-        Companion to :meth:`LLMDatabase.migrate_conversations`.  When a
-        user identifies for the first time in a session, conversations
-        already loaded under the raw nick are rekeyed to the account
-        so the next turn resumes the same thread.
-
-        When a destination key already exists (rare — would imply the
-        user has both nick-keyed and account-keyed history loaded), the
-        destination wins and the source is dropped.
-
-        Args:
-            old_nick: Previous nick value.
-            new_nick: New identity value (typically a NickServ account).
-
-        Returns:
-            Number of conversation entries renamed.
-        """
-        old = old_nick.lower()
-        new = new_nick.lower()
-        if old == new:
-            return 0
-        renamed = 0
-        with self._lock:
-            for src_key in list(self._conversations.keys()):
-                if src_key[0] != old:
-                    continue
-                dst_key = (new, src_key[1])
-                if dst_key in self._conversations:
-                    del self._conversations[src_key]
-                    continue
-                self._conversations[dst_key] = self._conversations.pop(src_key)
-                renamed += 1
-        return renamed
-
     def get_user_stats(
         self,
         nick: str,

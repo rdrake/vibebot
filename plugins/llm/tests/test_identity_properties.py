@@ -18,9 +18,10 @@ from hypothesis.strategies import builds, none, one_of, sampled_from, text
 from llm.identity import Caller, Identity
 from supybot import ircutils
 
-# Alphabet includes the IRC special-case characters []{}\\^| so the
-# RFC 1459 casemapping in ircutils.toLower is exercised, not just str.lower.
-_NICK_ALPHABET = ascii_letters + digits + "[]{}\\^_-|"
+# Alphabet is the RFC 2812 nick charset, including the special characters
+# []\\`^{}| so the RFC 1459 casemapping in ircutils.toLower is exercised,
+# not just str.lower.
+_NICK_ALPHABET = ascii_letters + digits + "[]\\`^{}|_-"
 nicks = text(alphabet=_NICK_ALPHABET, min_size=1, max_size=15)
 accounts = one_of(none(), nicks)
 
@@ -83,8 +84,22 @@ def test_key_equals_account_when_present(raw: str, acct: str) -> None:
 
 
 @given(raw=nicks)
-def test_key_falls_back_to_raw_nick_when_unidentified(raw: str) -> None:
-    assert Identity(raw_nick=raw, account=None).key == raw
+def test_key_is_the_prefixed_raw_nick_when_unidentified(raw: str) -> None:
+    assert Identity(raw_nick=raw, account=None).key == "!" + raw
+
+
+@given(raw=nicks, other=nicks, account=nicks)
+def test_unauthenticated_key_never_equals_an_authenticated_key(
+    raw: str, other: str, account: str
+) -> None:
+    """No nick, however it's spelled or cased, lands on an account's storage
+    key: conversation history, rate limits, sticky @rp and usage stay apart.
+    Holds under both str.lower (context) and RFC 1459 toLower (IRC)."""
+    squatter = Identity(raw_nick=raw, account=None).key
+    owner = Identity(raw_nick=other, account=account).key
+    assert squatter != owner
+    assert squatter.lower() != owner.lower()
+    assert ircutils.toLower(squatter) != ircutils.toLower(owner)
 
 
 @given(raw=nicks, account=accounts)
@@ -102,7 +117,7 @@ def test_unauthenticated_nick_shaped_like_an_account_has_no_personal_key(raw: st
     """A nick squatter on someone's account name still has no personal key."""
     squatter = Identity(raw_nick=raw, account=None)
     owner = Identity(raw_nick=raw, account=raw)
-    assert squatter.key == owner.key
+    assert squatter.key != owner.key
     assert squatter.personal_key is None
 
 

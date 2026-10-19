@@ -55,7 +55,7 @@ class TestLLMService:
         assert isinstance(result, AssistantResult)
         call_kwargs = self.service.assistant_completion.call_args.kwargs
         assert call_kwargs["route_profile"] == "chat"
-        assert call_kwargs["nick"] == "testuser"
+        assert call_kwargs["nick"] == "!testuser"
         assert call_kwargs["channel"] == "#test"
 
     def test_assistant_request_forwards_manage_typing_flag(self) -> None:

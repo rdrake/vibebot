@@ -52,8 +52,6 @@ class TestDoPrivmsg:
         plugin.context = mocker.MagicMock()
         plugin.llm_service = mocker.MagicMock()
         plugin.db = mocker.MagicMock()
-        plugin._migrated_nicks = set()
-        plugin._migrated_nicks_lock = threading.Lock()
         plugin._route_addressed_to_assistant = mocker.MagicMock()
         # Loom caches (PR 2). Tests that exercise the loom hook set _loom
         # explicitly; default state here is "loom not wired".
@@ -179,7 +177,7 @@ class TestDoPrivmsg:
 
         # add_message called with channel-specific config kwarg
         call_args = plugin.context.add_message.call_args
-        assert call_args[0] == ("usernick", "#channel", "user", "hello world")
+        assert call_args[0] == ("!usernick", "#channel", "user", "hello world")
         assert "config" in call_args[1]
         plugin._route_addressed_to_assistant.assert_not_called()
 
@@ -1176,8 +1174,6 @@ class TestNickAtEndAddressing:
         plugin.context = mocker.MagicMock()
         plugin.llm_service = mocker.MagicMock()
         plugin.db = mocker.MagicMock()
-        plugin._migrated_nicks = set()
-        plugin._migrated_nicks_lock = threading.Lock()
         plugin._route_addressed_to_assistant = mocker.MagicMock()
         plugin._loom = None
         plugin._loom_bridge = None
@@ -1349,8 +1345,6 @@ class TestNickInMiddleOfAction:
         plugin.context = mocker.MagicMock()
         plugin.llm_service = mocker.MagicMock()
         plugin.db = mocker.MagicMock()
-        plugin._migrated_nicks = set()
-        plugin._migrated_nicks_lock = threading.Lock()
         plugin._route_addressed_to_assistant = mocker.MagicMock()
         plugin._loom = None
         plugin._loom_bridge = None

@@ -60,7 +60,7 @@ class TestPreflightResolvesTheCaller:
 
         caller = plugin._run_preflight(irc, msg, "hi", "ask", require_account=False).caller
 
-        assert caller.identity.key == NICK
+        assert caller.identity.key == "!" + NICK
         assert caller.identity.personal_key is None
 
     def test_required_account_refusal_logs_the_reply_target(self, plugin_env) -> None:
