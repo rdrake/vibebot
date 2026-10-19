@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from llm.identity import Caller, Identity
 from llm.plugin import AssistantResult
 from supybot import ircmsgs
 
@@ -418,7 +419,7 @@ class TestModelCommand:
         result = mocker.MagicMock(model="anthropic/claude-haiku-5-5", last_successful_tool=None)
 
         plugin._dispatch_assistant_reply(
-            irc, msg, result, nick="rdrake", channel="#Test", response=""
+            irc, msg, result, caller=Caller(Identity("rdrake", None), "#Test"), response=""
         )
 
         assert plugin._served_models[("afternet", "#test")][0] == "anthropic/claude-haiku-5-5"

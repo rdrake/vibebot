@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from llm.identity import Caller
 from supybot import ircmsgs
 
 from .conftest import make_registry_side_effect
@@ -43,7 +44,7 @@ def echo(plugin, irc, msgid: str, *, at: float, mocker, target: str = "#test") -
 
 class TestDeleteLastReply:
     def _delete(self, plugin, irc, msg) -> dict:
-        _, handlers = plugin._build_redact_tool(irc, msg)
+        _, handlers = plugin._build_redact_tool(irc, msg, Caller.from_msg(msg))
         return json.loads(handlers["delete_last_reply"]({}).content)
 
     def test_redacts_the_latest_burst_only(self, env, mocker) -> None:
@@ -95,7 +96,7 @@ class TestDeleteLastReply:
 
 class TestNotifyWhenOnline:
     def _call(self, plugin, irc, msg, **args) -> dict:
-        _, handlers = plugin._build_notify_tool(irc, msg)
+        _, handlers = plugin._build_notify_tool(irc, msg, Caller.from_msg(msg))
         return json.loads(handlers["notify_when_online"](args).content)
 
     def _serve_monitor(self, plugin, irc, reply: str) -> None:

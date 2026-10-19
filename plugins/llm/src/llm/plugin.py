@@ -47,6 +47,7 @@ from . import (
 from .assistant import PENDING_TASK_TOOLS
 from .context import ContextConfig, ConversationContext, Role
 from .executor import LLMExecutor, RecursiveSubmitError
+from .identity import Caller, Identity
 from .persistence import LLMDatabase, PendingTaskRow, ReminderRow, ScheduledLlmTaskRow
 from .profile import (
     PROFILE_ANIMATE,
@@ -313,56 +314,6 @@ _VERSE_CHAT_FLAVOUR_NUDGE = (
 )
 
 
-@dataclass(frozen=True)
-class Identity:
-    """A user's stable storage handle paired with their live IRC nick.
-
-    Three uses, one type:
-
-    * ``raw_nick`` — what the user is presenting as on IRC right now.
-      Use this for replies, displays, and IRC-protocol operations.
-    * ``account`` — the NickServ account, or ``None`` if unidentified.
-      Use this for "must be identified" gates and ownership checks
-      that need to survive a nick change.
-    * ``key`` — ``account or raw_nick``.  Use this for storage keys,
-      rate-limit buckets, conversation context, and memory lookup.
-
-    Two ``Identity`` values refer to the same user when their accounts
-    match (case-insensitive) — or, lacking accounts on one or both
-    sides, when their raw nicks match (case-insensitive).
-    """
-
-    raw_nick: str
-    account: str | None
-
-    @property
-    def key(self) -> str:
-        """Stable storage key — account when identified, raw nick otherwise."""
-        return self.account or self.raw_nick
-
-    def matches(self, other: Identity) -> bool:
-        """True when both identities refer to the same user.
-
-        Account-to-account match wins when both sides have one; falls
-        back to raw-nick comparison when either side is unidentified.
-        Both comparisons are case-insensitive (IRC nicks and NickServ
-        account names are case-insensitive on AfterNet).
-        """
-        if self.account and other.account:
-            return ircutils.toLower(self.account) == ircutils.toLower(other.account)
-        return ircutils.toLower(self.raw_nick) == ircutils.toLower(other.raw_nick)
-
-    def owns(self, owner: Identity) -> bool:
-        """True when this caller may act on a row stored under ``owner``.
-
-        A row stored with an account belongs only to a caller authenticated
-        as that account; a nick-only row matches by nick. :meth:`matches`
-        alone would hand an account-owned row to whoever takes the nick
-        while its owner is offline.
-        """
-        return self.matches(owner) and (bool(self.account) or not owner.account)
-
-
 class ReminderScheduleResult(NamedTuple):
     """Result of scheduling a reminder."""
 
@@ -378,13 +329,13 @@ class PreflightResult(NamedTuple):
     """Result of the shared command preflight check.
 
     ``blocked`` is True when the command should not proceed (the preflight
-    already sent the appropriate error reply and logged usage).
+    already sent the appropriate error reply and logged usage). ``caller``
+    is the Caller resolved for this message; everything after preflight
+    reads it rather than ``msg``.
     """
 
     blocked: bool
-    nick: str  # account-resolved identity for logging
-    channel: str
-    account: str | None  # NickServ account, or None if unidentified
+    caller: Caller
 
 
 class VerseRoute(NamedTuple):
@@ -3168,7 +3119,7 @@ class LLM(callbacks.Plugin):
             return
 
         display_nick = msg.nick
-        caller = self._resolve_identity(irc, msg)
+        caller = self._resolve_caller(irc, msg)
         message_text = text if action_body is None else f"* {display_nick} {action_body}"
 
         # Store in conversation context for richer follow-up questions
@@ -3176,7 +3127,7 @@ class LLM(callbacks.Plugin):
         # addresses people by their visible IRC name, not their account name.
         ctx_cfg = self._get_context_config(channel)
         self.context.add_message(
-            caller.key, channel, Role.USER, message_text, config=ctx_cfg, persist=False
+            caller.identity.key, channel, Role.USER, message_text, config=ctx_cfg, persist=False
         )
         self.context.add_channel_message(
             channel, display_nick, Role.USER, message_text, config=ctx_cfg
@@ -3859,9 +3810,7 @@ class LLM(callbacks.Plugin):
         irc: callbacks.Irc,
         msg: IrcMsg,
         prompt: str,
-        nick: str,
-        account: str | None,
-        channel: str,
+        caller: Caller,
         bot_nick: str,
         entry_route: str,
         exclude_tools: frozenset[str] = frozenset(),
@@ -3886,20 +3835,16 @@ class LLM(callbacks.Plugin):
         request_context = AssistantRequestContext(
             entry_route=entry_route,
             profile=PROFILE_REMIND_ACTION,
-            nick=nick,
-            raw_nick=nick,
-            account=account,
-            channel=channel,
-            is_private=not ircutils.isChannel(channel),
+            caller=caller,
             is_owner=False,
             # Same per-feature caps as @ask/@draw/@code; owner/admin excluded.
             capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
         )
-        caller = Identity(raw_nick=nick, account=account)
-        history, channel_history = self._gather_history(caller.key, channel)
-        # Account-or-nick key: unauthenticated, it could be someone else's data.
-        memories = self._get_user_memories(caller.key) if account else []
-        user_instruction = self.db.get_instruction(caller.key) if account else None
+        channel = caller.reply_target
+        history, channel_history = self._gather_history(caller.identity.key, channel)
+        personal_key = caller.identity.personal_key
+        memories = self._get_user_memories(personal_key) if personal_key else []
+        user_instruction = self.db.get_instruction(personal_key) if personal_key else None
         ask_prompt = self.registryValue(PROFILES[PROFILE_REMIND_ACTION].overlay_setting, channel)
         if fold_instruction_into_prompt:
             system_prompt = f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
@@ -3931,7 +3876,6 @@ class LLM(callbacks.Plugin):
                 caller=caller,
                 irc=irc,
                 msg=msg,
-                channel=channel,
                 pass_irc_msg_to_callbacks=False,
             ),
         )
@@ -4017,7 +3961,7 @@ class LLM(callbacks.Plugin):
             else None
         )
         try:
-            msg_target = channel if ircutils.isChannel(channel) else nick
+            msg_target = Caller.from_row(nick, account, channel).reply_target
             msg_kwargs: dict[str, object] = {
                 "prefix": f"{nick}!~remind@scheduled",
                 "command": "PRIVMSG",
@@ -4039,9 +3983,7 @@ class LLM(callbacks.Plugin):
                     "reply IS the reminder being delivered, so it is no "
                     f"longer pending.)\n\n{action_prompt}"
                 ),
-                nick=nick,
-                account=account,
-                channel=channel,
+                caller=Caller.from_row(nick, account, channel),
                 bot_nick=bot_nick,
                 entry_route=PROFILE_REMIND_ACTION,
                 exclude_tools=frozenset({"set_reminder"}),
@@ -4150,9 +4092,9 @@ class LLM(callbacks.Plugin):
             recurrence_seconds=recurrence_seconds,
             recurrence_rrule=recurrence_rrule,
         )
-        # If the command was sent via PM, channel is the bot's own nick.
-        # Deliver to the user's nick instead.
-        target = channel if ircutils.isChannel(channel) else nick
+        # A PM reminder stores a nick as its channel (the bot's own, in rows
+        # set before the reply target was stored); deliver to the user.
+        target = Caller.from_row(nick, account, channel).reply_target
 
         def _build_reschedule_kwargs(now_t: float) -> dict | None:
             return (
@@ -4558,9 +4500,8 @@ class LLM(callbacks.Plugin):
         """
         # Suppress a duplicate of the same addressed line (relay echo / double
         # entry-point) before spending an LLM turn or spawning a second story.
-        # A PM's "channel" is the bot's own nick; bucket by sender instead.
-        bucket = preflight.channel if ircutils.isChannel(preflight.channel) else msg.nick
-        if self._is_duplicate_dispatch(bucket, text):
+        # Bucket by reply target: two people's PMs never share one.
+        if self._is_duplicate_dispatch(preflight.caller.reply_target, text):
             return
 
         def _work() -> None:
@@ -5220,7 +5161,7 @@ class LLM(callbacks.Plugin):
             return False
         return not any(ord(c) < 128 or c.isspace() for c in emoji)
 
-    def _build_react_tool(self, irc: callbacks.Irc, msg: IrcMsg):
+    def _build_react_tool(self, irc: callbacks.Irc, msg: IrcMsg, caller: Caller):
         """Build the per-request ``react`` tool schema + handler.
 
         Same shape as :meth:`_build_irc_lookup_tool`. With no ``nick`` the
@@ -5268,9 +5209,9 @@ class LLM(callbacks.Plugin):
                 return ToolResult(
                     content=json.dumps({"error": "emoji must be one emoji character, like 👍"})
                 )
-            where = msg.args[0] if msg.args else ""
-            in_channel = ircutils.isChannel(where)
-            target = where if in_channel else msg.nick
+            where = caller.reply_target
+            in_channel = not caller.is_private
+            target = where
             tags = getattr(msg, "server_tags", None) or {}
             trigger_msgid = tags.get("msgid") or ""
             reply_msgid = tags.get("+draft/reply") or ""
@@ -5327,7 +5268,7 @@ class LLM(callbacks.Plugin):
 
         return [schema], {"react": handler}
 
-    def _build_redact_tool(self, irc: callbacks.Irc, msg: IrcMsg):
+    def _build_redact_tool(self, irc: callbacks.Irc, msg: IrcMsg, caller: Caller):
         """Build the per-request ``delete_last_reply`` tool (IRCv3 REDACT).
 
         Takes back the bot's latest reply where the request came from: every
@@ -5352,8 +5293,7 @@ class LLM(callbacks.Plugin):
         }
 
         def handler(arguments: dict[str, Any]) -> ToolResult:
-            where = msg.args[0] if msg.args else ""
-            target = where if ircutils.isChannel(where) else msg.nick
+            target = caller.reply_target
             self.log.info("delete_last_reply: target=%r network=%s", target, self._network_of(irc))
             if "draft/message-redaction" not in getattr(irc.state, "capabilities_ack", set()):
                 return ToolResult(
@@ -5393,7 +5333,7 @@ class LLM(callbacks.Plugin):
 
         return [schema], {"delete_last_reply": handler}
 
-    def _build_notify_tool(self, irc: callbacks.Irc, msg: IrcMsg):
+    def _build_notify_tool(self, irc: callbacks.Irc, msg: IrcMsg, caller: Caller):
         """Build the per-request ``notify_when_online`` tool (IRC MONITOR).
 
         Returns ``([schema], {"notify_when_online": fn})``.
@@ -5426,9 +5366,8 @@ class LLM(callbacks.Plugin):
             action = str(arguments.get("action", "") or "watch").strip().lower()
             nick = str(arguments.get("nick", "") or "").strip()
             net = self._network_of(irc)
-            requester = msg.nick or ""
-            where = msg.args[0] if msg.args else ""
-            target = where if ircutils.isChannel(where) else requester
+            requester = caller.identity.raw_nick
+            target = caller.reply_target
             self.log.info("notify_when_online: action=%s nick=%r network=%s", action, nick, net)
 
             def result(payload: dict[str, Any]) -> ToolResult:
@@ -6083,8 +6022,7 @@ class LLM(callbacks.Plugin):
         msg: IrcMsg,
         result: AssistantResult,
         *,
-        nick: str,
-        channel: str,
+        caller: Caller,
         response: str,
         suppress_reminder_mutations: bool = False,
     ) -> tuple[str, bool]:
@@ -6100,6 +6038,7 @@ class LLM(callbacks.Plugin):
         empty-response error branch; that is the existing behaviour and must
         be preserved.
         """
+        nick, channel = caller.identity.key, caller.reply_target
         if result.model and channel:
             served = getattr(self, "_served_models", None)
             if served is None:
@@ -6166,7 +6105,7 @@ class LLM(callbacks.Plugin):
         if action_text:
             action_text = self._prefix_reply_icons(action_text, result)
             self.log.info("sending action to %s/%s", channel, nick)
-            target = channel if ircutils.isChannel(channel) else nick
+            target = caller.reply_target
             # safeArgument for the same reason as _safe_privmsg: this is a
             # raw-queue send of model-derived text, and IrcMsg's own CR/LF/NUL
             # assertion vanishes under python -O. sanitize_output already
@@ -6202,7 +6141,6 @@ class LLM(callbacks.Plugin):
         profile: str,
     ) -> AssistantRequestContext:
         """Normalize route metadata into a shared assistant request context."""
-        raw_nick = ircutils.nickFromHostmask(msg.prefix)
         capabilities = frozenset(
             capability
             for capability in _REQUEST_CONTEXT_CAPABILITIES
@@ -6211,11 +6149,7 @@ class LLM(callbacks.Plugin):
         return AssistantRequestContext(
             entry_route=entry_route,
             profile=profile,
-            nick=preflight.nick,
-            raw_nick=raw_nick,
-            account=preflight.account,
-            channel=preflight.channel,
-            is_private=not ircutils.isChannel(preflight.channel),
+            caller=preflight.caller,
             is_owner="owner" in capabilities,
             capabilities=capabilities,
         )
@@ -6336,12 +6270,14 @@ class LLM(callbacks.Plugin):
         world's voice; left False for the ``@draw`` grounding path, where an
         "answer in voice" instruction has no business in an image prompt.
         """
-        channel = preflight.channel
+        channel = preflight.caller.reply_target
         if not self.registryValue("verseEnabled", channel):
             return None
         try:
             store = self._get_or_create_verse_store(channel)
-            avatar_id = self._find_caller_avatar(store, preflight.account, preflight.nick)
+            avatar_id = self._find_caller_avatar(
+                store, preflight.caller.identity.account, preflight.caller.identity.key
+            )
             # Retrieval trigger: only inject when the message actually references
             # canon. -1 stands in for a non-avatar speaker (no self to exclude),
             # so lore grounding works for opted-out users too.
@@ -6486,14 +6422,16 @@ class LLM(callbacks.Plugin):
         path (draw drawn), still verse-grounded. The cooldown check reserves the
         slot, matching the verse_storybook tool handler.
         """
-        channel = preflight.channel
+        channel = preflight.caller.reply_target
         if not self.registryValue("verseStorybookEnabled", channel):
             return None
         if self._ambient_verse_intent(text) != "illustrate":
             return None
         try:
             store = self._get_or_create_verse_store(channel)
-            avatar_id = self._find_caller_avatar(store, preflight.account, preflight.nick)
+            avatar_id = self._find_caller_avatar(
+                store, preflight.caller.identity.account, preflight.caller.identity.key
+            )
             if not self._verse_triggered(
                 channel, store, avatar_id if avatar_id is not None else -1, text
             ):
@@ -6503,12 +6441,13 @@ class LLM(callbacks.Plugin):
             return None
         # Spend gates, mirroring _storybook_handler: authenticated + llm.draw +
         # per-account cooldown (reserve-at-start). A miss falls through to chat.
-        if not preflight.account:
+        account = preflight.caller.identity.account
+        if not account:
             return None
         if not ircdb.checkCapability(msg.prefix, "llm.draw"):
             return None
         cooldown = int(self.registryValue("verseStorybookCooldownSeconds", channel) or 0)
-        if self._storybook_cooldown_active(preflight.account, cooldown):
+        if self._storybook_cooldown_active(account, cooldown):
             return None
         return text
 
@@ -6530,14 +6469,16 @@ class LLM(callbacks.Plugin):
         non-avatar speaker falls through to grounded chat instead. Best-effort:
         any failure returns False (→ the caller's normal chat/draw paths stand).
         """
-        channel = preflight.channel
+        channel = preflight.caller.reply_target
         if not self.registryValue("verseEnabled", channel):
             return False
         if self._ambient_verse_intent(text) != "story":
             return False
         try:
             store = self._get_or_create_verse_store(channel)
-            avatar_id = self._find_caller_avatar(store, preflight.account, preflight.nick)
+            avatar_id = self._find_caller_avatar(
+                store, preflight.caller.identity.account, preflight.caller.identity.key
+            )
             if avatar_id is None:
                 return False
             return self._verse_triggered(channel, store, avatar_id, text)
@@ -6557,14 +6498,16 @@ class LLM(callbacks.Plugin):
         verse_record stays denied and canon only grows during @rp roleplay.
         Best-effort: returns None on any failure (→ the denial handler stands).
         """
-        channel = preflight.channel
+        channel = preflight.caller.reply_target
         if not self.registryValue("verseEnabled", channel):
             return None
         if not self.registryValue("verseChatRecordEnabled", channel):
             return None
         try:
             store = self._get_or_create_verse_store(channel)
-            avatar_id = self._find_caller_avatar(store, preflight.account, preflight.nick)
+            avatar_id = self._find_caller_avatar(
+                store, preflight.caller.identity.account, preflight.caller.identity.key
+            )
             if avatar_id is None:
                 return None
             max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
@@ -6578,24 +6521,20 @@ class LLM(callbacks.Plugin):
 
     # --- Slice 3: sticky @rp roleplay sessions -----------------------------
 
-    @staticmethod
-    def _roleplay_identity(preflight: PreflightResult) -> str:
-        """Key a sticky roleplay session by account (stable across nick changes),
-        falling back to the nick when unauthenticated."""
-        return preflight.account or preflight.nick
-
     def _roleplay_sticky_set(self, preflight: PreflightResult, on: bool) -> None:
         """Turn sticky @rp roleplay on/off for this caller+channel.
 
         On: store an expiry ``verseRoleplayStickyTtlSeconds`` in the future (inf
         when the TTL is 0 → never auto-expire). Off: drop the entry.
         """
-        key = (preflight.channel, self._roleplay_identity(preflight))
+        # Storage key: stable across nick changes once authenticated.
+        channel = preflight.caller.reply_target
+        key = (channel, preflight.caller.identity.key)
         with self._roleplay_sticky_lock:
             if not on:
                 self._roleplay_sticky.pop(key, None)
                 return
-            ttl = int(self.registryValue("verseRoleplayStickyTtlSeconds", preflight.channel) or 0)
+            ttl = int(self.registryValue("verseRoleplayStickyTtlSeconds", channel) or 0)
             self._roleplay_sticky[key] = (time.time() + ttl) if ttl > 0 else float("inf")
 
     def _roleplay_sticky_active(self, preflight: PreflightResult) -> bool:
@@ -6606,7 +6545,9 @@ class LLM(callbacks.Plugin):
         ``verseRoleplayStickyTtlSeconds`` of silence. Expired entries are
         evicted lazily here.
         """
-        key = (preflight.channel, self._roleplay_identity(preflight))
+        # Storage key: stable across nick changes once authenticated.
+        channel = preflight.caller.reply_target
+        key = (channel, preflight.caller.identity.key)
         now = time.time()
         with self._roleplay_sticky_lock:
             exp = self._roleplay_sticky.get(key)
@@ -6615,7 +6556,7 @@ class LLM(callbacks.Plugin):
             if exp <= now:  # lapsed
                 self._roleplay_sticky.pop(key, None)
                 return False
-            ttl = int(self.registryValue("verseRoleplayStickyTtlSeconds", preflight.channel) or 0)
+            ttl = int(self.registryValue("verseRoleplayStickyTtlSeconds", channel) or 0)
             self._roleplay_sticky[key] = (now + ttl) if ttl > 0 else float("inf")
             return True
 
@@ -6656,15 +6597,14 @@ class LLM(callbacks.Plugin):
     def _submit_storybook_job(
         self,
         *,
-        channel: str,
-        nick: str,
+        caller: Caller,
         persona: str,
         brief: str,
-        account: str | None = None,
         max_images: int | None = None,
     ) -> None:
         """Fire a background job that renders a storybook for ``brief`` and
-        posts the resulting link to ``channel``. Fire-and-return — never raises
+        posts the resulting link to the caller's reply target (the channel, or
+        their IRC nick in a PM). Fire-and-return — never raises
         to the caller. Shared by the verse_storybook tool and the @story command.
 
         Delivery looks up the live IRC connection via ``world.ircs`` (not a
@@ -6678,9 +6618,11 @@ class LLM(callbacks.Plugin):
         # Also captures the canon roster so the story generator (which runs
         # outside the verse completion) uses established characters by name
         # instead of inventing them.
+        channel = caller.reply_target
+        nick, account = caller.identity.raw_nick, caller.identity.account
         world_context = ""
         try:
-            if ircutils.isChannel(channel) and self.registryValue("verseEnabled", channel):
+            if caller.channel and self.registryValue("verseEnabled", channel):
                 store = self._get_or_create_verse_store(channel)
                 world_context = build_story_world_context(
                     store, roster_max_chars=self.registryValue("verseRosterMaxChars", channel)
@@ -6711,14 +6653,14 @@ class LLM(callbacks.Plugin):
 
         def _deliver(text: str) -> None:
             collapsed = self._collapse_for_irc(text) or text
-            if ircutils.isChannel(channel):
+            if not caller.is_private:
                 for irc_conn in world.ircs:
                     if channel in irc_conn.state.channels:
                         self._safe_queue(irc_conn, self._safe_privmsg(channel, collapsed))
                         return
                 return
-            # PM: the "channel" is the bot's own nick, never in state.channels —
-            # deliver to the requesting nick on the first available connection.
+            # PM: the reply target is the requester's nick, never in
+            # state.channels — deliver on the first available connection.
             for irc_conn in world.ircs:
                 if self._safe_queue(irc_conn, self._safe_privmsg(nick, collapsed)):
                     return
@@ -6739,7 +6681,7 @@ class LLM(callbacks.Plugin):
                     # spend — log the (image-dominated) usage here instead.
                     try:
                         self.db.log_usage(
-                            nick=nick,
+                            nick=caller.identity.key,
                             channel=channel,
                             command="story",
                             model=res.model,
@@ -6766,8 +6708,7 @@ class LLM(callbacks.Plugin):
         *,
         irc: callbacks.Irc,
         msg: IrcMsg,
-        channel: str,
-        account: str | None,
+        caller: Caller,
         persona: str,
     ) -> Callable[[dict], _VerseToolResult]:
         """Build the ``verse_storybook`` tool handler for one completion.
@@ -6790,6 +6731,8 @@ class LLM(callbacks.Plugin):
         """
         # Per-turn counter, captured by reference via a single-element list so
         # the inner closure can mutate it. Scoped to this handler instance.
+        channel = caller.reply_target
+        account = caller.identity.account
         turn_count = [0]
         max_per_turn = int(self.registryValue("verseStorybookMaxPerTurn", channel) or 1)
         cooldown = int(self.registryValue("verseStorybookCooldownSeconds", channel) or 0)
@@ -6822,10 +6765,7 @@ class LLM(callbacks.Plugin):
                 raw = args.get("brief")
                 if isinstance(raw, str):
                     brief = raw
-            # Deliver to the IRC nick, not the account (same rule as @story).
-            self._submit_storybook_job(
-                channel=channel, nick=msg.nick, persona=persona, brief=brief, account=account
-            )
+            self._submit_storybook_job(caller=caller, persona=persona, brief=brief)
             return _VerseToolResult(
                 content=json.dumps(
                     {
@@ -7047,9 +6987,7 @@ class LLM(callbacks.Plugin):
         msg: IrcMsg,
         prompt: str,
         *,
-        nick: str,
-        channel: str,
-        account: str | None,
+        caller: Caller,
         reference: ReferenceImage | None = None,
     ) -> ToolCallbackResult:
         """Queue a video for the generate_video tool.
@@ -7073,9 +7011,7 @@ class LLM(callbacks.Plugin):
         """
         from .assistant import ToolCallbackResult as _ToolCallbackResult
 
-        result = self._submit_video(
-            irc, msg, prompt, nick=nick, channel=channel, account=account, reference=reference
-        )
+        result = self._submit_video(irc, msg, prompt, caller=caller, reference=reference)
         return _ToolCallbackResult(not bool(result.error), result.content)
 
     def _submit_video(
@@ -7084,9 +7020,7 @@ class LLM(callbacks.Plugin):
         msg: IrcMsg,
         prompt: str,
         *,
-        nick: str,
-        channel: str,
-        account: str | None,
+        caller: Caller,
         reference: ReferenceImage | None = None,
     ) -> VideoResult:
         """Submit one clip and wake the render-typing refresher on success.
@@ -7095,22 +7029,14 @@ class LLM(callbacks.Plugin):
         reference command cannot drift apart on which of the reply target, the
         msgid, the URL stripping or the wake flag they remember to do.
 
-        The stashed nick is the IRC nick, not ``nick`` — which arrives here as
-        the account-resolved identity and is what the delivery line was
-        addressing minutes later. An account is not what the channel calls
-        someone and not what their client highlights on. Identity still travels
-        as ``account``; this only decides who the line greets. Every other
-        stash site already does it this way (``_msg_stash_context``).
+        The clip goes to the caller's reply target, greeting their IRC nick:
+        an account is not what the channel calls someone and not what their
+        client highlights on, and in a PM ``msg.args[0]`` is the bot's own
+        nick. The account still travels as ``account``.
         """
-        reply_target = msg.args[0] if msg.args else ""
-        display_nick = getattr(msg, "nick", "") or nick
-        if reply_target and not ircutils.isChannel(reply_target):
-            # PM: args[0] is the bot's own nick, so the clip would be delivered
-            # to the bot minutes later and the requester would see nothing at
-            # all — the job still renders and still shows in @renders, which is
-            # exactly how this looked from the outside. Same rule as
-            # ``_msg_stash_context``.
-            reply_target = display_nick or reply_target
+        reply_target = caller.reply_target
+        display_nick = caller.identity.raw_nick
+        account = caller.identity.account
         # Strip URLs from the prompt whether or not one becomes the reference:
         # the video model renders stray text on screen, so a URL the planner
         # copied through would end up in the picture.
@@ -7133,8 +7059,8 @@ class LLM(callbacks.Plugin):
                 prompt,
                 nick=display_nick,
                 reply_target=reply_target,
-                is_channel=bool(reply_target) and ircutils.isChannel(reply_target),
-                channel=channel,
+                is_channel=not caller.is_private,
+                channel=reply_target,
                 account=account,
                 reply_msgid=(getattr(msg, "server_tags", None) or {}).get("msgid") or "",
                 reference=reference,
@@ -7228,8 +7154,8 @@ class LLM(callbacks.Plugin):
                 status = "content_blocked"
             else:
                 status = "error"
-            nick = ircutils.nickFromHostmask(msg.prefix)
-            channel = self._get_channel(msg)
+            where = Caller.from_msg(msg)
+            nick, channel = where.identity.raw_nick, where.reply_target
             for attempt in blocked:
                 self.db.log_usage(
                     nick,
@@ -7296,32 +7222,33 @@ class LLM(callbacks.Plugin):
             self.log.exception("_code_for_assistant failed")
             return ToolResult(content=json.dumps({"error": "Code generation failed."}))
 
-    def _resolve_identity(self, irc: callbacks.Irc, msg: IrcMsg) -> Identity:
-        """Resolve a message sender to a structured :class:`Identity`.
+    def _resolve_caller(self, irc: callbacks.Irc, msg: IrcMsg) -> Caller:
+        """Resolve the sender of ``msg`` to a :class:`Caller`.
 
-        Reads the IRCv3 account-tag (or layer-2 session cache) via
-        :meth:`_account_from_msg`. Triggers a one-time DB migration of
-        nick→account rows on first successful resolution per session,
-        covering both ``usage`` and ``conversations`` tables.
+        The one resolver: the account comes from the IRCv3 account-tag (or
+        the session cache) via :meth:`_account_from_msg`, the nick and the
+        channel from ``msg`` via :meth:`Caller.from_msg`. Triggers a one-time
+        DB migration of nick→account rows on first successful resolution per
+        session, covering both ``usage`` and ``conversations`` tables.
         """
-        raw_nick = ircutils.nickFromHostmask(msg.prefix)
         account = self._account_from_msg(irc, msg)
+        caller = Caller.from_msg(msg, account)
         if account:
-            self._maybe_migrate_nick(raw_nick, account)
-        return Identity(raw_nick=raw_nick, account=account)
+            self._maybe_migrate_nick(caller.identity.raw_nick, account)
+        return caller
 
-    def _require_account(self, irc: callbacks.Irc, msg: IrcMsg) -> str | None:
-        """Require account identification. Returns account name or None.
+    def _require_caller(self, irc: callbacks.Irc, msg: IrcMsg) -> Caller | None:
+        """Resolve the Caller, refusing one that isn't authenticated.
 
-        Uses the IRCv3 account-tag-aware resolver. When the user is not
-        identified, sends an error reply and returns None. Callers should
-        ``return`` immediately when None is returned.
+        Commands that read or write personal data need a personal key. When
+        the caller has none, sends an error reply and returns None; callers
+        should ``return`` immediately.
         """
-        account = self._account_from_msg(irc, msg)
-        if not account:
+        caller = self._resolve_caller(irc, msg)
+        if caller.identity.personal_key is None:
             self._safe_error(irc, _("You must be identified to use this command."))
             return None
-        return account
+        return caller
 
     def _run_preflight(
         self,
@@ -7335,10 +7262,10 @@ class LLM(callbacks.Plugin):
         """Shared preflight check for all commands.
 
         Runs the following sequence:
-        1. Account resolution (required or optional depending on command).
-        2. Flagged-user block check.
-        3. Tier resolution (owner/admin exempt, then trusted/registered/unregistered).
-        4. Per-command, per-tier rate-limit check.
+        1. Caller resolution; an authenticated account is required or
+           optional depending on the command.
+        2. Tier resolution (owner/admin exempt, then trusted/registered/unregistered).
+        3. Per-command, per-tier rate-limit check.
 
         When any check fails the method sends the appropriate IRC error,
         logs usage with the blocked status, and returns ``blocked=True``.
@@ -7348,52 +7275,37 @@ class LLM(callbacks.Plugin):
             msg: IRC message.
             text: User's prompt text (for usage logging).
             command: Command name (ask, code, draw).
-            require_account: If True, NickServ identification is mandatory.
+            require_account: If True, an authenticated account is mandatory.
 
         Returns:
-            PreflightResult with blocked=False if the command should proceed.
+            PreflightResult carrying the resolved Caller, with blocked=False
+            if the command should proceed.
         """
-        channel = self._get_channel(msg)
-
-        # --- account resolution ---
-        if require_account:
-            account = self._require_account(irc, msg)
-            if account is None:
-                nick = ircutils.nickFromHostmask(msg.prefix)
-                self.db.log_usage(
-                    nick,
-                    channel,
-                    command,
-                    "",
-                    0,
-                    0,
-                    0.0,
-                    prompt=text,
-                    status="auth_failure",
-                )
-                return PreflightResult(blocked=True, nick=nick, channel=channel, account=None)
-            # _require_account returned the account; trigger nick→account migration.
-            raw_nick = ircutils.nickFromHostmask(msg.prefix)
-            self._maybe_migrate_nick(raw_nick, account)
-            nick = account
-        else:
-            account = self._account_from_msg(irc, msg)
-            if account:
-                raw_nick = ircutils.nickFromHostmask(msg.prefix)
-                self._maybe_migrate_nick(raw_nick, account)
-                nick = account
-            else:
-                nick = ircutils.nickFromHostmask(msg.prefix)
+        caller = self._resolve_caller(irc, msg)
+        if require_account and caller.identity.personal_key is None:
+            self._safe_error(irc, _("You must be identified to use this command."))
+            self.db.log_usage(
+                caller.identity.raw_nick,
+                caller.reply_target,
+                command,
+                "",
+                0,
+                0,
+                0.0,
+                prompt=text,
+                status="auth_failure",
+            )
+            return PreflightResult(blocked=True, caller=caller)
 
         # --- tier-based rate limit check ---
         tier = self._resolve_tier(irc, msg)
         # Owner and admin are always exempt from rate limits
         if tier not in ("owner", "admin"):
-            identity = account or nick
-            if self._check_rate_limit(irc, command, identity, nick, channel, text, tier=tier):
-                return PreflightResult(blocked=True, nick=nick, channel=channel, account=account)
+            key = caller.identity.key
+            if self._check_rate_limit(irc, command, key, key, caller.reply_target, text, tier=tier):
+                return PreflightResult(blocked=True, caller=caller)
 
-        return PreflightResult(blocked=False, nick=nick, channel=channel, account=account)
+        return PreflightResult(blocked=False, caller=caller)
 
     def _is_rate_limited(self, command: str, account: str, now: float, *, tier: str) -> bool:
         """Check if a user exceeds the per-command rate limit.
@@ -7641,17 +7553,6 @@ class LLM(callbacks.Plugin):
         count_key = f"{command}{infix}RateLimitCount"
         window_key = f"{command}{infix}RateLimitWindow"
         return self.registryValue(count_key), self.registryValue(window_key)
-
-    def _get_channel(self, msg: IrcMsg) -> str:
-        """Extract channel from IRC message.
-
-        Args:
-            msg: IRC message
-
-        Returns:
-            Channel name
-        """
-        return msg.args[0] if msg.args else "unknown"
 
     def _is_old_message(self, msg: IrcMsg) -> bool:
         """Check if message predates bot startup (ZNC playback).
@@ -7918,35 +7819,36 @@ class LLM(callbacks.Plugin):
 
     def _store_context_and_log_usage(
         self,
-        nick: str,
-        channel: str,
+        caller: Caller,
         command: str,
         text: str,
         response: str,
         result: CompletionResult | ImageResult | VideoResult | AssistantResult,
         irc: callbacks.Irc,
-        msg: IrcMsg,
         rendered_prompt: str = "",
     ) -> None:
         """Store conversation context and log API usage for a command.
 
         Shared between all commands (ask, code, draw).
 
+        History and the usage row go under the caller's storage key and
+        reply target; background memory extraction runs only for a
+        personal key.
+
         Args:
-            nick: User's nick
-            channel: Channel name
+            caller: Who asked, and where
             command: Command name ("ask", "code", or "draw")
             text: Original user input
             response: Text to store in context (e.g. LLM response or
                 ``"[Generated image: <url>]"``)
             result: Result with usage metadata
             irc: IRC connection instance
-            msg: IRC message
             rendered_prompt: What the generator was actually asked for, when a
                 planner rewrote ``text`` on the way there. @animate is the only
                 caller that passes it; every other command sends the user's
                 words through unchanged.
         """
+        nick, channel = caller.identity.key, caller.reply_target
         # Store conversation context if enabled and no error occurred
         if result.error is None and self._get_context_enabled(channel):
             ctx_cfg = self._get_context_config(channel)
@@ -7980,14 +7882,11 @@ class LLM(callbacks.Plugin):
         )
 
         # Schedule background memory extraction for eligible commands. Only for
-        # an account: memories are read by account only, so a nick-keyed fact
+        # a personal key: memories are read by it alone, so a nick-keyed fact
         # is a wasted LLM call (and could land on someone else's account key).
-        if (
-            command in _MEMORY_COMMANDS
-            and result.error is None
-            and self._account_from_msg(irc, msg)
-        ):
-            self._schedule_memory_extraction(nick, channel, text, result.content)
+        personal_key = caller.identity.personal_key
+        if command in _MEMORY_COMMANDS and result.error is None and personal_key:
+            self._schedule_memory_extraction(personal_key, channel, text, result.content)
 
     def ask(
         self,
@@ -8104,6 +8003,8 @@ class LLM(callbacks.Plugin):
         # before any DB work (verse route lookup, history fetch, memory
         # fetch, executor permit acquisition). Otherwise the user waits
         # several seconds before "is composing" appears.
+        caller = preflight.caller
+        channel = caller.reply_target
         stop_typing = self.llm_service._begin_typing(irc, msg)
         try:
             # Slice 3: sticky @rp promotes ambient "just talk" messages to
@@ -8121,7 +8022,7 @@ class LLM(callbacks.Plugin):
             # `// illustrate the lads` still spends a whole storybook. Gated on
             # verseEnabled because these markers only carry OOC meaning on a
             # verse channel; elsewhere they are ordinary text.
-            verse_enabled = self.registryValue("verseEnabled", preflight.channel)
+            verse_enabled = self.registryValue("verseEnabled", channel)
             ooc = bool(verse_enabled and is_ooc(text))
             # Prose-first ambient story, the DEFAULT for a canon mention: any
             # message that references canon becomes a multi-paragraph INLINE
@@ -8137,9 +8038,9 @@ class LLM(callbacks.Plugin):
             ):
                 force_roleplay = True
             route = self._verse_route_for(
-                preflight.channel,
-                preflight.nick,
-                preflight.account,
+                channel,
+                caller.identity.key,
+                caller.identity.account,
                 text,
                 msg.prefix,
                 force_roleplay=force_roleplay,
@@ -8159,18 +8060,18 @@ class LLM(callbacks.Plugin):
                 if verse_enabled and not ooc and entry_route in _AMBIENT_ENTRY_ROUTES:
                     brief = self._ambient_storybook_brief(msg, preflight, text)
                     if brief is not None:
-                        persona = self.db.get_avatar_persona(preflight.nick) or ""
-                        # The job PMs ``nick`` from a PM: the IRC nick, not
-                        # the account (same rule as @story).
+                        # A brief means an authenticated account (its spend
+                        # gate), so the personal key is set.
+                        personal_key = caller.identity.personal_key
+                        persona = (
+                            (self.db.get_avatar_persona(personal_key) or "") if personal_key else ""
+                        )
                         self._submit_storybook_job(
-                            channel=preflight.channel,
-                            nick=msg.nick,
+                            caller=caller,
                             persona=persona,
                             brief=brief,
-                            account=preflight.account,
                             max_images=int(
-                                self.registryValue("verseStorybookMaxImages", preflight.channel)
-                                or 3
+                                self.registryValue("verseStorybookMaxImages", channel) or 3
                             ),
                         )
                         return
@@ -8182,14 +8083,10 @@ class LLM(callbacks.Plugin):
                 # on opt-in state, which fragments xAI's automatic prompt
                 # cache per-user instead of per-channel.
                 if verse_enabled:
-                    max_actors = self.registryValue(
-                        "verseAutoEntityMaxNamesPerCall", preflight.channel
-                    )
+                    max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
                     verse_specs = make_verse_tool_specs(
                         max_actors=max_actors,
-                        storybook=bool(
-                            self.registryValue("verseStorybookEnabled", preflight.channel)
-                        ),
+                        storybook=bool(self.registryValue("verseStorybookEnabled", channel)),
                     )
                     verse_context = self._verse_context_for(preflight, text, for_chat=True)
                     # A real-world question with NO canon reference (verse_context
@@ -8223,14 +8120,14 @@ class LLM(callbacks.Plugin):
             # at ~120 visible tokens regardless of prompt — point ``verseModel``
             # at a non-reasoning model (e.g. gemini-flash-latest) for richer
             # long-form scenes without affecting chat-mode behavior.
-            verse_model = self.registryValue("verseModel", preflight.channel) or None
-            if verse_model is None and preflight.channel not in self._verse_model_warned:
-                self._verse_model_warned.add(preflight.channel)
+            verse_model = self.registryValue("verseModel", channel) or None
+            if verse_model is None and channel not in self._verse_model_warned:
+                self._verse_model_warned.add(channel)
                 self.log.warning(
                     "verse turn on channel=%s has empty verseModel; falling back to "
                     "assistantModel — set a non-reasoning verseModel or verse prose may be "
                     "cratered by a reasoning model",
-                    preflight.channel,
+                    channel,
                 )
             self._ask_impl(
                 irc,
@@ -8285,7 +8182,8 @@ class LLM(callbacks.Plugin):
           answer, not invented lore). Distinct from ``system_prompt_override``,
           which APPENDS a verse scene to the overlay; here we substitute it.
         """
-        nick, channel = pf.nick, pf.channel
+        caller = pf.caller
+        nick, channel = caller.identity.key, caller.reply_target
         effective_profile = profile_override or PROFILE_CHAT
         request_context = self._build_request_context(
             irc,
@@ -8295,17 +8193,16 @@ class LLM(callbacks.Plugin):
             profile=effective_profile,
         )
 
-        caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
-
         with self._trace_request("ask", nick, channel):
             # Detect images for vision
             images = self.llm_service.detect_images(text)
 
             history, channel_history = self._gather_history(nick, channel)
 
-            # Account-or-nick key: unauthenticated, it could be someone else's data.
-            memories = self._get_user_memories(nick) if pf.account else []
-            user_instruction = self.db.get_instruction(nick) if pf.account else None
+            # Personal data: read only through the personal key.
+            personal_key = caller.identity.personal_key
+            memories = self._get_user_memories(personal_key) if personal_key else []
+            user_instruction = self.db.get_instruction(personal_key) if personal_key else None
 
             # Personality overlay assembly.
             #
@@ -8374,15 +8271,15 @@ class LLM(callbacks.Plugin):
                     bridge_schemas = [*(bridge_schemas or []), *lookup_schemas]
                     bridge_handlers = {**(bridge_handlers or {}), **lookup_handlers}
                 if self.registryValue("reactEnabled", channel):
-                    react_schemas, react_handlers = self._build_react_tool(irc, msg)
+                    react_schemas, react_handlers = self._build_react_tool(irc, msg, caller)
                     bridge_schemas = [*(bridge_schemas or []), *react_schemas]
                     bridge_handlers = {**(bridge_handlers or {}), **react_handlers}
                 if self.registryValue("redactEnabled", channel):
-                    redact_schemas, redact_handlers = self._build_redact_tool(irc, msg)
+                    redact_schemas, redact_handlers = self._build_redact_tool(irc, msg, caller)
                     bridge_schemas = [*(bridge_schemas or []), *redact_schemas]
                     bridge_handlers = {**(bridge_handlers or {}), **redact_handlers}
                 if self.registryValue("notifyOnlineEnabled", channel):
-                    notify_schemas, notify_handlers = self._build_notify_tool(irc, msg)
+                    notify_schemas, notify_handlers = self._build_notify_tool(irc, msg, caller)
                     bridge_schemas = [*(bridge_schemas or []), *notify_schemas]
                     bridge_handlers = {**(bridge_handlers or {}), **notify_handlers}
                 if self.registryValue("memeEnabled", channel):
@@ -8425,7 +8322,7 @@ class LLM(callbacks.Plugin):
                     combined_handlers["verse_edit"] = self._verse_edit_handler(
                         msg=msg,
                         store=verse_route.store,
-                        account=pf.account,
+                        account=caller.identity.account,
                     )
                     # Storybook tool (gated): overlay a live handler that can
                     # capture irc/msg/channel/account/persona. Only wired
@@ -8433,12 +8330,13 @@ class LLM(callbacks.Plugin):
                     # advertised and this key is never reached. The persona is
                     # the clean character voice (NOT the system_prompt overlay).
                     if self.registryValue("verseStorybookEnabled", channel):
-                        persona = self.db.get_avatar_persona(nick) or ""
+                        persona = (
+                            (self.db.get_avatar_persona(personal_key) or "") if personal_key else ""
+                        )
                         combined_handlers["verse_storybook"] = self._storybook_handler(
                             irc=irc,
                             msg=msg,
-                            channel=channel,
-                            account=pf.account,
+                            caller=caller,
                             persona=persona,
                         )
                 elif verse_list:
@@ -8481,15 +8379,13 @@ class LLM(callbacks.Plugin):
                     fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
                     code_fn=lambda p: self._code_for_assistant(p, channel),
                     draw_fn=lambda p, **kw: self._draw_for_assistant(irc, msg, p, **kw),
-                    animate_fn=lambda p: self._animate_for_assistant(
-                        irc, msg, p, nick=nick, channel=channel, account=pf.account
-                    ),
+                    animate_fn=lambda p: self._animate_for_assistant(irc, msg, p, caller=caller),
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                     extra_tools=extra_tools,
                     extra_handlers=combined_handlers,
                     manage_typing=False,
                     exclude_tools=self._pending_task_excludes(channel),
-                    **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
+                    **self._pending_task_fns(caller=caller, irc=irc, msg=msg),
                 )
 
                 response = result.content
@@ -8504,16 +8400,13 @@ class LLM(callbacks.Plugin):
                     irc,
                     msg,
                     result,
-                    nick=nick,
-                    channel=channel,
+                    caller=caller,
                     response=response,
                     suppress_reminder_mutations=True,
                 )
 
             if should_log:
-                self._store_context_and_log_usage(
-                    nick, channel, "ask", text, response, result, irc, msg
-                )
+                self._store_context_and_log_usage(caller, "ask", text, response, result, irc)
 
     def code(
         self,
@@ -8545,7 +8438,8 @@ class LLM(callbacks.Plugin):
         )
         if pf.blocked:
             return
-        nick, channel = pf.nick, pf.channel
+        caller = pf.caller
+        nick, channel = caller.identity.key, caller.reply_target
 
         # Typing fires before any DB work (history, memory, executor
         # permit) so the user sees "is composing" within ~50ms instead
@@ -8560,14 +8454,12 @@ class LLM(callbacks.Plugin):
                 profile=PROFILE_CODE,
             )
 
-            caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
-
             with self._trace_request("code", nick, channel):
                 history, channel_history = self._gather_history(nick, channel)
 
-                # Account-or-nick key: unauthenticated, it could be someone else's data.
-                memories = self._get_user_memories(nick) if pf.account else []
-                user_instruction = self.db.get_instruction(nick) if pf.account else None
+                personal_key = caller.identity.personal_key
+                memories = self._get_user_memories(personal_key) if personal_key else []
+                user_instruction = self.db.get_instruction(personal_key) if personal_key else None
                 # CODE_SYSTEM_PROMPT is the facade prompt that tells the planner
                 # to call generate_code (not the registry codeSystemPrompt, the
                 # inner-call prompt used by _code_for_assistant). The user's
@@ -8599,22 +8491,19 @@ class LLM(callbacks.Plugin):
                         draw_fn=lambda p, **kw: self._draw_for_assistant(irc, msg, p, **kw),
                         cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                         manage_typing=False,
-                        **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
+                        **self._pending_task_fns(caller=caller, irc=irc, msg=msg),
                     )
 
                     response, should_log = self._dispatch_assistant_reply(
                         irc,
                         msg,
                         result,
-                        nick=nick,
-                        channel=channel,
+                        caller=caller,
                         response=result.content,
                     )
 
                 if should_log:
-                    self._store_context_and_log_usage(
-                        nick, channel, "code", text, response, result, irc, msg
-                    )
+                    self._store_context_and_log_usage(caller, "code", text, response, result, irc)
         finally:
             stop_typing()
 
@@ -8652,7 +8541,8 @@ class LLM(callbacks.Plugin):
         )
         if pf.blocked:
             return
-        nick, channel = pf.nick, pf.channel
+        caller = pf.caller
+        nick, channel = caller.identity.key, caller.reply_target
 
         # Typing fires immediately after preflight so users see "is composing"
         # before the subject-research call / history fetch / executor permit /
@@ -8689,8 +8579,6 @@ class LLM(callbacks.Plugin):
                 profile=PROFILE_DRAW,
             )
 
-            caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
-
             with self._trace_request("draw", nick, channel):
                 history, channel_history = self._gather_history(
                     nick,
@@ -8713,22 +8601,19 @@ class LLM(callbacks.Plugin):
                         system_prompt=draw_system_prompt,
                         draw_fn=lambda p, **kw: self._draw_for_assistant(irc, msg, p, **kw),
                         manage_typing=False,
-                        **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
+                        **self._pending_task_fns(caller=caller, irc=irc, msg=msg),
                     )
 
                     response, should_log = self._dispatch_assistant_reply(
                         irc,
                         msg,
                         result,
-                        nick=nick,
-                        channel=channel,
+                        caller=caller,
                         response=result.content,
                     )
 
                 if should_log:
-                    self._store_context_and_log_usage(
-                        nick, channel, "draw", text, response, result, irc, msg
-                    )
+                    self._store_context_and_log_usage(caller, "draw", text, response, result, irc)
         finally:
             stop_typing()
 
@@ -8798,7 +8683,7 @@ class LLM(callbacks.Plugin):
         try:
             self.db.log_usage(
                 ircutils.nickFromHostmask(msg.prefix),
-                self._get_channel(msg),
+                Caller.from_msg(msg).reply_target,
                 "meme",
                 "meme-render",
                 0,
@@ -8855,7 +8740,7 @@ class LLM(callbacks.Plugin):
             try:
                 self.db.log_usage(
                     ircutils.nickFromHostmask(msg.prefix),
-                    self._get_channel(msg),
+                    Caller.from_msg(msg).reply_target,
                     "meme",
                     result.model,
                     0,
@@ -8936,7 +8821,7 @@ class LLM(callbacks.Plugin):
         own row goes into the usage table under the edit model, beside the
         $0 render row, at what xAI reported (or the list price).
         """
-        channel = self._get_channel(msg)
+        channel = Caller.from_msg(msg).reply_target
         result = self.llm_service.image_edit(hosted, draw, channel=channel)
         try:
             self.db.log_usage(
@@ -9009,7 +8894,7 @@ class LLM(callbacks.Plugin):
         catalog = self._meme_catalog()
         if catalog is None:
             return None, _("Meme templates are unavailable right now.")
-        channel = self._get_channel(msg)
+        channel = Caller.from_msg(msg).reply_target
         pick = self.llm_service.meme_pick(
             request,
             catalog_brief=meme.catalog_brief(
@@ -9552,7 +9437,9 @@ class LLM(callbacks.Plugin):
         verse_ctx = self._verse_context_for(pf, text)
         if verse_ctx:
             parts.append(verse_ctx)
-        dossier_block = self._subject_dossier_for(pf.nick, pf.channel, text)
+        dossier_block = self._subject_dossier_for(
+            pf.caller.identity.key, pf.caller.reply_target, text
+        )
         if dossier_block:
             parts.append(dossier_block)
         return "\n\n".join(parts) or None
@@ -9608,7 +9495,8 @@ class LLM(callbacks.Plugin):
         )
         if pf.blocked:
             return
-        nick, channel = pf.nick, pf.channel
+        caller = pf.caller
+        nick, channel = caller.identity.key, caller.reply_target
 
         # Typing fires immediately after preflight, same as @draw: the planner
         # turn in front of the submission is a completion like any other, and
@@ -9671,8 +9559,6 @@ class LLM(callbacks.Plugin):
                 profile=PROFILE_ANIMATE,
             )
 
-            caller = Identity(raw_nick=request_context.raw_nick, account=pf.account)
-
             # What the planner actually sent the video box. The usage row below
             # would otherwise record only the ask, and the ask is not what was
             # rendered — the planner turn in front of the submission rewrites
@@ -9687,9 +9573,7 @@ class LLM(callbacks.Plugin):
                     irc,
                     msg,
                     planned,
-                    nick=nick,
-                    channel=channel,
-                    account=pf.account,
+                    caller=caller,
                     reference=reference,
                 )
 
@@ -9716,15 +9600,14 @@ class LLM(callbacks.Plugin):
                         system_prompt=animate_system_prompt,
                         animate_fn=_animate_tool,
                         manage_typing=False,
-                        **self._pending_task_fns(caller=caller, irc=irc, msg=msg, channel=channel),
+                        **self._pending_task_fns(caller=caller, irc=irc, msg=msg),
                     )
 
                     response, should_log = self._dispatch_assistant_reply(
                         irc,
                         msg,
                         result,
-                        nick=nick,
-                        channel=channel,
+                        caller=caller,
                         response=result.content,
                     )
 
@@ -9734,14 +9617,12 @@ class LLM(callbacks.Plugin):
                 # the clip minutes later has no usage of its own to add.
                 if should_log:
                     self._store_context_and_log_usage(
-                        nick,
-                        channel,
+                        caller,
                         "animate",
                         text,
                         response,
                         result,
                         irc,
-                        msg,
                         rendered_prompt=" | ".join(rendered_prompts),
                     )
         finally:
@@ -9883,8 +9764,8 @@ class LLM(callbacks.Plugin):
             if row is None:
                 irc.reply(_("No pending clip #%d.") % task_id)
                 return
-            caller = self._resolve_identity(irc, msg)
-            owns = caller.owns(Identity(raw_nick=row.nick, account=row.account))
+            identity = self._resolve_caller(irc, msg).identity
+            owns = identity.owns(Identity(raw_nick=row.nick, account=row.account))
             if not is_admin and not owns:
                 irc.reply(_("#%d isn't yours.") % task_id)
                 return
@@ -10044,7 +9925,8 @@ class LLM(callbacks.Plugin):
         pf = self._run_preflight(irc, msg, text, "story", require_account=True)
         if pf.blocked:
             return
-        nick, channel = pf.nick, pf.channel
+        caller = pf.caller
+        channel = caller.reply_target
 
         brief = (text or "").strip()
         if not brief:
@@ -10053,19 +9935,17 @@ class LLM(callbacks.Plugin):
 
         # Per-account cooldown (shared with verse_storybook), reserve-at-start.
         cooldown = int(self.registryValue("verseStorybookCooldownSeconds", channel) or 0)
-        if self._storybook_cooldown_active(pf.account, cooldown):
+        if self._storybook_cooldown_active(caller.identity.account, cooldown):
             self._safe_error(irc, _("Storybook cooldown is active — try again in a bit."))
             return
 
         # Fire-and-return: the page is rendered + posted asynchronously, so the
         # user gets the link when it's ready with no interim chatter (mirrors
         # the verse_storybook UX). Persona is the caller's avatar voice if set.
-        persona = self.db.get_avatar_persona(nick) or ""
-        # The job PMs ``nick`` when there is no channel: that must be the IRC
-        # nick, not the account (same rule as ``_submit_video``).
-        self._submit_storybook_job(
-            channel=channel, nick=msg.nick, persona=persona, brief=brief, account=pf.account
-        )
+        # require_account above: the personal key is set.
+        personal_key = caller.identity.personal_key
+        persona = (self.db.get_avatar_persona(personal_key) or "") if personal_key else ""
+        self._submit_storybook_job(caller=caller, persona=persona, brief=brief)
 
     story = wrap(story, [("checkCapability", "llm.draw"), "text"])
 
@@ -10085,12 +9965,12 @@ class LLM(callbacks.Plugin):
         """
         if self._is_old_message(msg):
             return
-        caller = self._resolve_identity(irc, msg)
-        origin = self._get_channel(msg)
+        caller = self._resolve_caller(irc, msg)
+        origin = caller.reply_target
         # Default to current channel if not specified
         if channel is None:
             channel = origin
-        self.context.clear(caller.key, channel)
+        self.context.clear(caller.identity.key, channel)
         # The channel-wide clear wipes the shared recent-history for EVERYONE in
         # the channel, so only allow it from within that same channel. Otherwise
         # any user could wipe an arbitrary channel's context from PM on demand
@@ -10121,21 +10001,22 @@ class LLM(callbacks.Plugin):
         """
         if self._is_old_message(msg):
             return
-        # Stored under account-or-nick; a bare nick could be someone else's.
-        if self._require_account(irc, msg) is None:
+        # Personal data: only an authenticated account has a personal key.
+        caller = self._require_caller(irc, msg)
+        key = caller.identity.personal_key if caller else None
+        if caller is None or key is None:
             return
-        caller = self._resolve_identity(irc, msg)
 
         if not text:
             # List own memories (newest first)
-            self._memories_list(irc, caller.key, caller.key)
+            self._memories_list(irc, key, key)
             return
 
         parts = text.split(None, 2)
         subcommand = parts[0].lower()
 
         if subcommand == "clear":
-            count = self.db.delete_all_memories(caller.key)
+            count = self.db.delete_all_memories(key)
             label = "memory" if count == 1 else "memories"
             irc.reply(f"Cleared {count} {label}.", prefixNick=False)
 
@@ -10146,7 +10027,7 @@ class LLM(callbacks.Plugin):
             except ValueError:
                 irc.error("Usage: memories delete <id> [<id> ...]")
                 return
-            deleted = sum(1 for mid in memory_ids if self.db.delete_memory(caller.key, mid))
+            deleted = sum(1 for mid in memory_ids if self.db.delete_memory(key, mid))
             if deleted == 0:
                 irc.error("No matching memories found.")
             elif deleted == 1:
@@ -10164,7 +10045,7 @@ class LLM(callbacks.Plugin):
             if not new_text:
                 irc.error("Usage: memories edit <id> <new text>")
                 return
-            if self.db.update_memory(caller.key, memory_id, new_text):
+            if self.db.update_memory(key, memory_id, new_text):
                 irc.reply("Memory updated.", prefixNick=False)
             else:
                 irc.error("Memory not found or doesn't belong to you.")
@@ -10175,13 +10056,13 @@ class LLM(callbacks.Plugin):
                 if not ircdb.checkCapability(msg.prefix, "owner"):
                     irc.error("Only bot owners can clean up other users' memories.")
                     return
-                # Memories are keyed by NickServ account (caller.key), so resolve
-                # the typed nick to its account or cleanup runs against the wrong
-                # key for any user whose account differs from their nick.
+                # Memories are keyed by the account, so resolve the typed nick
+                # to its account or cleanup runs against the wrong key for any
+                # user whose account differs from their nick.
                 target = self._resolve_nick_to_identity(irc, parts[1])
             else:
-                target = caller.key
-            channel = (msg.channel or msg.args[0]) if msg.args else "#unknown"
+                target = key
+            channel = caller.reply_target
             if self._run_preflight(irc, msg, text, "ask", require_account=False).blocked:
                 return
             # The permit lives here, not in _run_memory_cleanup: that also runs
@@ -10234,13 +10115,14 @@ class LLM(callbacks.Plugin):
         """
         if self._is_old_message(msg):
             return
-        # Stored under account-or-nick; a bare nick could be someone else's.
-        if self._require_account(irc, msg) is None:
+        # Personal data: only an authenticated account has a personal key.
+        caller = self._require_caller(irc, msg)
+        key = caller.identity.personal_key if caller else None
+        if caller is None or key is None:
             return
-        caller = self._resolve_identity(irc, msg)
 
         if not text:
-            current = self.db.get_instruction(caller.key)
+            current = self.db.get_instruction(key)
             if current:
                 irc.reply(f"Current instruction: {current}", prefixNick=False)
             else:
@@ -10250,13 +10132,13 @@ class LLM(callbacks.Plugin):
         is_clear = text.strip().lower() == "clear"
 
         if is_clear:
-            if self.db.delete_instruction(caller.key):
+            if self.db.delete_instruction(key):
                 irc.reply("Instruction cleared.", prefixNick=False)
             else:
                 irc.reply("No instruction to clear.", prefixNick=False)
             return
 
-        self.db.save_instruction(caller.key, text)
+        self.db.save_instruction(key, text)
         irc.reply("Instruction set.", prefixNick=False)
 
     instruct = wrap(instruct, [optional("text")])
@@ -10280,13 +10162,14 @@ class LLM(callbacks.Plugin):
         """
         if self._is_old_message(msg):
             return
-        # Stored under account-or-nick; a bare nick could be someone else's.
-        if self._require_account(irc, msg) is None:
+        # Personal data: only an authenticated account has a personal key.
+        caller = self._require_caller(irc, msg)
+        key = caller.identity.personal_key if caller else None
+        if caller is None or key is None:
             return
-        caller = self._resolve_identity(irc, msg)
 
         if not text:
-            zone = parse_zone(self.db.get_user_timezone(caller.key) or "")
+            zone = parse_zone(self.db.get_user_timezone(key) or "")
             if zone is not None:
                 label = UserTz(tz=zone, source=SOURCE_SET).label()
                 irc.reply(f"Your time zone: {label}", prefixNick=False)
@@ -10299,7 +10182,7 @@ class LLM(callbacks.Plugin):
             return
 
         if text.strip().lower() == "clear":
-            if self.db.delete_user_timezone(caller.key):
+            if self.db.delete_user_timezone(key):
                 irc.reply("Time zone cleared.", prefixNick=False)
             else:
                 irc.reply("No time zone to clear.", prefixNick=False)
@@ -10313,7 +10196,7 @@ class LLM(callbacks.Plugin):
             )
             return
 
-        self.db.save_user_timezone(caller.key, zone.key)
+        self.db.save_user_timezone(key, zone.key)
         irc.reply(
             f"Time zone set: {UserTz(tz=zone, source=SOURCE_SET).label()}",
             prefixNick=False,
@@ -10340,20 +10223,21 @@ class LLM(callbacks.Plugin):
         """
         if self._is_old_message(msg):
             return
-        # Stored under account-or-nick; a bare nick could be someone else's.
-        if self._require_account(irc, msg) is None:
+        # Personal data: only an authenticated account has a personal key.
+        caller = self._require_caller(irc, msg)
+        key = caller.identity.personal_key if caller else None
+        if caller is None or key is None:
             return
-        caller = self._resolve_identity(irc, msg)
 
         if not text:
-            current = self.db.get_avatar_persona(caller.key)
+            current = self.db.get_avatar_persona(key)
             if current:
                 irc.reply(f"Current persona: {current}", prefixNick=False)
             else:
                 irc.reply("No persona set. Use @avatar <text> to set one.", prefixNick=False)
             return
 
-        channel = msg.args[0] if msg.args else None
+        channel = caller.channel
         is_clear = text.strip().lower() == "clear"
         new_summary = "" if is_clear else text
 
@@ -10363,7 +10247,7 @@ class LLM(callbacks.Plugin):
         # truth for the verse system prompt.
         if channel and self.registryValue("verseEnabled", channel):
             store = self._get_or_create_verse_store(channel)
-            avatar_id = self._find_caller_avatar(store, caller.account, caller.raw_nick)
+            avatar_id = self._find_caller_avatar(store, key, caller.identity.raw_nick)
             if avatar_id is not None:
                 entity = store.get_entity(avatar_id)
                 if entity is not None and entity.status == "active":
@@ -10377,13 +10261,13 @@ class LLM(callbacks.Plugin):
                     )
 
         if is_clear:
-            if self.db.delete_avatar_persona(caller.key):
+            if self.db.delete_avatar_persona(key):
                 irc.reply("Persona cleared.", prefixNick=False)
             else:
                 irc.reply("No persona to clear.", prefixNick=False)
             return
 
-        self.db.save_avatar_persona(caller.key, text)
+        self.db.save_avatar_persona(key, text)
         irc.reply("Persona set.", prefixNick=False)
 
     avatar = wrap(avatar, [optional("text")])
@@ -10467,17 +10351,17 @@ class LLM(callbacks.Plugin):
     def _usage_channel(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
         """Show channel and personal usage stats in-channel."""
         channel = msg.channel
-        caller = self._resolve_identity(irc, msg)
+        identity = self._resolve_caller(irc, msg).identity
 
         # This month: first of month midnight UTC
         month_start = self._month_start_ts()
 
         chan_summary = self.db.get_usage_summary_for_channel(channel, since=month_start)
         nick_summary = self.db.get_usage_summary_for_nick(
-            caller.key, since=month_start, channel=channel
+            identity.key, since=month_start, channel=channel
         )
         chan_rank = self.db.get_channel_rank(channel, since=month_start)
-        nick_rank = self.db.get_nick_rank(caller.key, since=month_start, channel=channel)
+        nick_rank = self.db.get_nick_rank(identity.key, since=month_start, channel=channel)
 
         # Format channel part
         chan_part = f"{channel} this month: ${chan_summary.total_cost:.4f}"
@@ -10495,7 +10379,7 @@ class LLM(callbacks.Plugin):
 
         # Format context part
         ctx_cfg = self._get_context_config(channel)
-        ctx_stats = self.context.get_user_stats(caller.key, channel, config=ctx_cfg)
+        ctx_stats = self.context.get_user_stats(identity.key, channel, config=ctx_cfg)
         if not ctx_stats["enabled"]:
             ctx_part = "Context: disabled"
         elif ctx_stats["message_count"] == 0:
@@ -10570,10 +10454,9 @@ class LLM(callbacks.Plugin):
     def _pending_task_fns(
         self,
         *,
-        caller: Identity,
+        caller: Caller,
         irc: callbacks.Irc,
         msg: IrcMsg,
-        channel: str,
         pass_irc_msg_to_callbacks: bool = True,
     ) -> dict[str, Callable[..., object]]:
         """Build the unified pending-task tool dict for assistant calls.
@@ -10590,6 +10473,7 @@ class LLM(callbacks.Plugin):
         ``synthetic_msg`` has no msgid, so passing ``irc``/``msg`` through
         would just invoke ``_react`` only to have its msgid check fail.
         """
+        identity = caller.identity
         react_irc = irc if pass_irc_msg_to_callbacks else None
         react_msg = msg if pass_irc_msg_to_callbacks else None
 
@@ -10605,13 +10489,13 @@ class LLM(callbacks.Plugin):
             # The action-fire path is not the user asking, so it does not probe;
             # neither does a relative time, which lands the same in any zone.
             probe = needs_zone(f"{when_natural} {prompt}")
-            user_tz = self._resolve_user_tz(caller, irc=react_irc if probe else None)
+            user_tz = self._resolve_user_tz(identity, irc=react_irc if probe else None)
             result = self.llm_service.schedule_llm_task(
                 irc=irc,
                 msg=msg,
-                creator_nick=caller.raw_nick,
-                account=caller.account,
-                channel=channel,
+                creator_nick=identity.raw_nick,
+                account=identity.account,
+                channel=caller.reply_target,
                 when_natural=when_natural,
                 prompt=prompt,
                 reply_target=reply_target,
@@ -10627,7 +10511,7 @@ class LLM(callbacks.Plugin):
 
         def list_pending_tasks_fn() -> list[dict[str, object]]:
             tasks: list[dict[str, object]] = []
-            for name, data in self._get_user_reminders(caller):
+            for name, data in self._get_user_reminders(identity):
                 # event-name format: "llm_reminder_<owner>_<id>"; the LLM
                 # only needs the trailing id (matches existing UX).
                 rid = name.split("_")[-1]
@@ -10641,7 +10525,7 @@ class LLM(callbacks.Plugin):
                     }
                 )
             for row in self.llm_service.list_scheduled_llm_tasks(
-                creator_nick=caller.raw_nick, account=caller.account
+                creator_nick=identity.raw_nick, account=identity.account
             ):
                 tasks.append(
                     {
@@ -10663,8 +10547,8 @@ class LLM(callbacks.Plugin):
             if task_id.startswith("llm_task_"):
                 result = self.llm_service.cancel_scheduled_llm_task(
                     event_name=task_id,
-                    creator_nick=caller.raw_nick,
-                    account=caller.account,
+                    creator_nick=identity.raw_nick,
+                    account=identity.account,
                 )
                 return {
                     "status": result.status,
@@ -10673,7 +10557,7 @@ class LLM(callbacks.Plugin):
                     "message": result.message,
                 }
             result = self._remind_delete_for_assistant(
-                caller, task_id, irc=react_irc, msg=react_msg
+                identity, task_id, irc=react_irc, msg=react_msg
             )
             return {
                 "status": "ok" if result.ok else "error",
@@ -10683,16 +10567,16 @@ class LLM(callbacks.Plugin):
             }
 
         def cancel_all_pending_tasks_fn() -> dict[str, object]:
-            reminder_msg = self._remind_clear_for_assistant(caller, irc=react_irc, msg=react_msg)
+            reminder_msg = self._remind_clear_for_assistant(identity, irc=react_irc, msg=react_msg)
             scheduled_rows = self.llm_service.list_scheduled_llm_tasks(
-                creator_nick=caller.raw_nick, account=caller.account
+                creator_nick=identity.raw_nick, account=identity.account
             )
             scheduled_cancelled = 0
             for row in scheduled_rows:
                 result = self.llm_service.cancel_scheduled_llm_task(
                     event_name=row.event_name,
-                    creator_nick=caller.raw_nick,
-                    account=caller.account,
+                    creator_nick=identity.raw_nick,
+                    account=identity.account,
                 )
                 if result.status == "ok":
                     scheduled_cancelled += 1
@@ -11109,9 +10993,9 @@ class LLM(callbacks.Plugin):
         irc = next(iter(world.ircs), None)
         if row is None or not row.reply_msgid or irc is None:
             return
-        # A PM reminder stores the bot's own nick as its channel; the
-        # reaction went to the sender, as in _react.
-        target = row.channel if ircutils.isChannel(row.channel) else row.nick
+        # A PM reminder stores a nick as its channel; the reaction went to
+        # the sender, as in _react.
+        target = Caller.from_row(row.nick, row.account, row.channel).reply_target
         self.llm_service.send_reaction(irc, target, row.reply_msgid, "⏰", remove=True)
 
     _CTCP_TIME_TIMEOUT_SECONDS = 3.0
@@ -11207,32 +11091,34 @@ class LLM(callbacks.Plugin):
         self,
         irc: callbacks.Irc,
         msg: IrcMsg,
-        caller: Identity,
+        caller: Caller,
         text: str,
         *,
         parent_chain: int | None = None,
     ) -> ReminderScheduleResult:
         """Parse, validate, and schedule a reminder.
 
-        ``caller.raw_nick`` is stored as the reminder's owning nick (used
+        The caller's raw nick is stored as the reminder's owning nick (used
         for the synthetic message prefix at fire time and as the fallback
-        match when the caller has no account).  ``caller.account`` is
-        captured separately and is the preferred match key on lookup.
+        match when the caller has no account). The account is captured
+        separately and is the preferred match key on lookup. The reply
+        target is stored as the reminder's channel.
 
         ``parent_chain`` is supplied when an action-fire LLM is rescheduling
         the next occurrence of a recurring reminder. It carries the parent's
         ``chain_position`` so we can enforce the per-chain cap.
         """
-        channel = self._get_channel(msg)
+        identity = caller.identity
+        channel = caller.reply_target
         # Resolved before taking an executor permit: the CTCP probe can wait
         # seconds on the user's client. A chain rescheduling itself does not
         # probe; it is not the user asking. Nor does a request with no wall
         # clock in it: "in 20 minutes" needs no zone.
         probe = parent_chain is None and needs_zone(text)
-        user_tz = self._resolve_user_tz(caller, irc=irc if probe else None)
+        user_tz = self._resolve_user_tz(identity, irc=irc if probe else None)
 
         with (
-            self._trace_request("remind", caller.key, channel),
+            self._trace_request("remind", identity.key, channel),
             self._allow_concurrent(),
             self._llm_executor.permit(),
         ):
@@ -11271,7 +11157,7 @@ class LLM(callbacks.Plugin):
                 )
         else:
             chain_position = 1
-            pending = len(self._get_user_reminders(caller))
+            pending = len(self._get_user_reminders(identity))
             if pending >= self._REMINDER_MAX_PENDING_PER_USER:
                 return ReminderScheduleResult(
                     ok=False,
@@ -11299,12 +11185,12 @@ class LLM(callbacks.Plugin):
         # new time re-parses to the same delay, so this degrades to "keep one
         # reminder" on its own.
         if parent_chain is None:
-            existing = self._find_amendable_reminder(caller, message=reminder_message, now=now)
+            existing = self._find_amendable_reminder(identity, message=reminder_message, now=now)
             if existing is not None:
                 self.log.info(
                     "reminder_amended event=%s nick=%s old_fire_in=%is new_fire_in=%is",
                     existing.event_name,
-                    caller.key,
+                    identity.key,
                     max(0, int(existing.fire_at - now)),
                     int(result.seconds),
                 )
@@ -11316,12 +11202,12 @@ class LLM(callbacks.Plugin):
         recurrence_rrule = result.recurrence_rrule
         watch_mode = result.watch_mode
         deliver = self._make_reminder_delivery_closure(
-            caller.raw_nick,
+            identity.raw_nick,
             channel,
             reminder_message,
             event_name,
             action_prompt=action_prompt,
-            account=caller.account,
+            account=identity.account,
             chain_position=chain_position,
             recurrence_seconds=recurrence_seconds,
             recurrence_rrule=recurrence_rrule,
@@ -11335,11 +11221,11 @@ class LLM(callbacks.Plugin):
                 self._reminders[event_name] = ReminderRow(
                     id=0,
                     event_name=event_name,
-                    nick=caller.raw_nick,
+                    nick=identity.raw_nick,
                     channel=channel,
                     message=reminder_message,
                     action_prompt=action_prompt,
-                    account=caller.account,
+                    account=identity.account,
                     fire_at=now + result.seconds,
                     created_at=now,
                     chain_position=chain_position,
@@ -11351,12 +11237,12 @@ class LLM(callbacks.Plugin):
 
             self.db.save_reminder(
                 event_name,
-                caller.raw_nick,
+                identity.raw_nick,
                 channel,
                 reminder_message,
                 now + result.seconds,
                 action_prompt=action_prompt,
-                account=caller.account,
+                account=identity.account,
                 chain_position=chain_position,
                 recurrence_seconds=recurrence_seconds,
                 recurrence_rrule=recurrence_rrule,
@@ -11378,7 +11264,7 @@ class LLM(callbacks.Plugin):
             self.log.error("Failed to schedule reminder: %s", e)
             return ReminderScheduleResult(ok=False, message="Failed to set reminder.")
 
-    def _remind_set(self, irc: callbacks.Irc, msg: IrcMsg, caller: Identity, text: str) -> None:
+    def _remind_set(self, irc: callbacks.Irc, msg: IrcMsg, caller: Caller, text: str) -> None:
         """Parse and schedule a natural language reminder via IRC."""
         result = self._schedule_reminder(irc, msg, caller, text)
         if result.ok:
@@ -11386,7 +11272,7 @@ class LLM(callbacks.Plugin):
             return
         log.info(
             "remind_set blocked nick=%s reason=%s",
-            caller.key,
+            caller.identity.key,
             result.message,
         )
         self._react(irc, msg, "❌")
@@ -11396,7 +11282,7 @@ class LLM(callbacks.Plugin):
         self,
         irc: callbacks.Irc,
         msg: IrcMsg,
-        caller: Identity,
+        caller: Caller,
         text: str,
         *,
         parent_chain: int | None = None,
@@ -11503,10 +11389,11 @@ class LLM(callbacks.Plugin):
         """
         if self._is_old_message(msg):
             return
-        caller = self._resolve_identity(irc, msg)
+        caller = self._resolve_caller(irc, msg)
+        identity = caller.identity
 
         if not text:
-            self._remind_list(irc, caller)
+            self._remind_list(irc, identity)
             return
 
         parts = text.split(None, 1)
@@ -11520,18 +11407,18 @@ class LLM(callbacks.Plugin):
             return
 
         if subcommand == "list":
-            self._remind_list(irc, caller)
+            self._remind_list(irc, identity)
 
         elif subcommand in ("delete", "del") and len(parts) >= 2:
             raw_ids = text.split()[1:]
             reminders_deleted = 0
             tasks_deleted = 0
             for rid in raw_ids:
-                target = self._find_user_reminder(caller, rid)
+                target = self._find_user_reminder(identity, rid)
                 if target:
                     self._cancel_reminder(target)
                     reminders_deleted += 1
-                elif self._cancel_user_scheduled_task(caller, rid):
+                elif self._cancel_user_scheduled_task(identity, rid):
                     tasks_deleted += 1
             if reminders_deleted == 0 and tasks_deleted == 0:
                 self._react(irc, msg, "❌")
@@ -11541,15 +11428,15 @@ class LLM(callbacks.Plugin):
                 self._ack(irc, msg, "👍", f"Cancelled {what}.")
 
         elif subcommand == "clear":
-            user_reminders = self._get_user_reminders(caller)
-            tasks = self._user_scheduled_tasks(caller)
+            user_reminders = self._get_user_reminders(identity)
+            tasks = self._user_scheduled_tasks(identity)
             if not user_reminders and not tasks:
                 self._ack(irc, msg, "👌", _("No reminders or scheduled tasks to clear."))
                 return
             for name, _data in user_reminders:
                 self._cancel_reminder(name)
             tasks_cleared = sum(
-                1 for row in tasks if self._cancel_user_scheduled_task(caller, row.event_name)
+                1 for row in tasks if self._cancel_user_scheduled_task(identity, row.event_name)
             )
             what = self._describe_pending(len(user_reminders), tasks_cleared)
             if not what:
@@ -11890,13 +11777,13 @@ class LLM(callbacks.Plugin):
             irc.reply(self._NO_VERSE_REPLY, prefixNick=False)
             return
 
-        caller = self._resolve_identity(irc, msg)
-        nick = caller.raw_nick
-        account = caller.account
+        identity = self._resolve_caller(irc, msg).identity
+        nick = identity.raw_nick
+        account = identity.account
+        personal_key = identity.personal_key
 
         if mode == "in":
-            # Account-or-nick key: unauthenticated, it could be someone else's persona.
-            persona_text = (self.db.get_avatar_persona(caller.key) or "") if account else ""
+            persona_text = (self.db.get_avatar_persona(personal_key) or "") if personal_key else ""
             store = self._get_or_create_verse_store(channel)
             result = store.opt_in_avatar(nick, account, persona_text)
             reply = result.scene_text
@@ -11974,9 +11861,9 @@ class LLM(callbacks.Plugin):
         if channel is None:
             return
 
-        caller = self._resolve_identity(irc, msg)
+        identity = self._resolve_caller(irc, msg).identity
         store = self._get_or_create_verse_store(channel)
-        entity_id = self._find_caller_avatar(store, caller.account, caller.raw_nick)
+        entity_id = self._find_caller_avatar(store, identity.account, identity.raw_nick)
         if entity_id is None:
             irc.reply(self._NO_AVATAR_REPLY, prefixNick=False)
             return
@@ -12013,8 +11900,8 @@ class LLM(callbacks.Plugin):
 
         if target is None:
             # No target: show caller's scene (avatar required).
-            caller = self._resolve_identity(irc, msg)
-            entity_id = self._find_caller_avatar(store, caller.account, caller.raw_nick)
+            identity = self._resolve_caller(irc, msg).identity
+            entity_id = self._find_caller_avatar(store, identity.account, identity.raw_nick)
             if entity_id is None:
                 irc.reply(self._NO_AVATAR_REPLY, prefixNick=False)
                 return

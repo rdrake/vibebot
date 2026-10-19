@@ -7,6 +7,7 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
+from llm.identity import Caller, Identity
 from llm.service import AssistantResult
 
 from .conftest import make_registry_side_effect
@@ -3262,7 +3263,7 @@ class TestVersePasteStyle:
         result = AssistantResult(content=scene, was_verse=True)
 
         plugin._dispatch_assistant_reply(
-            irc, msg, result, nick="fc42", channel="#test", response=scene
+            irc, msg, result, caller=Caller(Identity("fc42", None), "#test"), response=scene
         )
 
         assert plugin.llm_service.save_markdown_to_http.call_args.kwargs["style"] == "story"
@@ -3276,7 +3277,7 @@ class TestVersePasteStyle:
         result = AssistantResult(content=answer, was_verse=False)
 
         plugin._dispatch_assistant_reply(
-            irc, msg, result, nick="alice", channel="#test", response=answer
+            irc, msg, result, caller=Caller(Identity("alice", None), "#test"), response=answer
         )
 
         assert plugin.llm_service.save_markdown_to_http.call_args.kwargs["style"] == "answer"
@@ -3291,8 +3292,7 @@ class TestVerseReactionSendHook:
             irc,
             msg,
             result,
-            nick="fc42",
-            channel="#test",
+            caller=Caller(Identity("fc42", None), "#test"),
             response="A tale of Methane Max",
         )
         last = plugin._last_bot_line.get(("testnet", "#test"))
@@ -3308,8 +3308,7 @@ class TestVerseReactionSendHook:
             irc,
             msg,
             result,
-            nick="fc42",
-            channel="#test",
+            caller=Caller(Identity("fc42", None), "#test"),
             response="just chatting",
         )
         assert ("testnet", "#test") not in plugin._last_bot_line
@@ -3324,8 +3323,7 @@ class TestVerseReactionSendHook:
             irc,
             msg,
             result,
-            nick="fc42",
-            channel="#test",
+            caller=Caller(Identity("fc42", None), "#test"),
             response="/me summons Methane Max",
         )
         last = plugin._last_bot_line.get(("testnet", "#test"))

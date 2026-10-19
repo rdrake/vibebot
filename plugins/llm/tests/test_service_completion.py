@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from llm.identity import Caller, Identity
 from llm.service import AssistantRequestContext, AssistantResult, CompletionResult, LLMService
 
 from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
@@ -1294,11 +1295,7 @@ class TestAssistantRequestFacade:
         return AssistantRequestContext(
             entry_route=entry_route,
             profile=profile,
-            nick=nick,
-            raw_nick=nick,
-            account=account,
-            channel=channel,
-            is_private=channel is None,
+            caller=Caller(Identity(nick, account), channel),
             is_owner=is_owner,
             capabilities=capabilities,
         )
@@ -1456,7 +1453,8 @@ class TestAssistantRequestFacade:
         )
 
     def test_forwards_context_fields(self) -> None:
-        """Nick, channel, account, is_owner, capabilities are forwarded."""
+        """The caller's storage key, reply target and account, plus is_owner and
+        capabilities, are forwarded."""
         ctx = self._make_ctx(
             nick="alice",
             channel="#dev",
@@ -1477,16 +1475,17 @@ class TestAssistantRequestFacade:
         )
 
         kw = self.service.assistant_completion.call_args.kwargs
-        assert kw["nick"] == "alice"
+        assert kw["nick"] == "alice_acct"
         assert kw["channel"] == "#dev"
         assert kw["account"] == "alice_acct"
         assert kw["is_owner"] is True
         assert kw["capabilities"] == frozenset({"llm.ask", "llm.code"})
         assert kw["bot_nick"] == "TestBot"
 
-    def test_none_channel_becomes_empty_string(self) -> None:
-        """Private messages (channel=None) pass empty string to assistant_completion."""
-        ctx = self._make_ctx(channel=None)
+    def test_private_message_passes_the_senders_nick(self) -> None:
+        """Private messages (channel=None) pass the sender's nick, the reply
+        target, to assistant_completion: never the bot's own nick."""
+        ctx = self._make_ctx(nick="user", channel=None)
         self.service.assistant_completion = self.mocker.Mock(
             return_value=AssistantResult(content="ok"),
         )
@@ -1499,7 +1498,7 @@ class TestAssistantRequestFacade:
             bot_nick="Bot",
         )
 
-        assert self.service.assistant_completion.call_args.kwargs["channel"] == ""
+        assert self.service.assistant_completion.call_args.kwargs["channel"] == "user"
 
 
 # =============================================================================

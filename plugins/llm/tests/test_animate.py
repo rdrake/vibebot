@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 import pytest
+from llm.identity import Caller, Identity
 from llm.service import VideoResult
 
 from .conftest import (
@@ -657,10 +658,10 @@ class TestAnimatePlanner:
         kwargs = plugin.llm_service.assistant_request.call_args.kwargs
         assert kwargs.get("draw_fn") is None
         kwargs["animate_fn"]("three men wade into grey surf")
-        # Both are the account-resolved identity (PreflightResult.nick), which
-        # is what the stashed job is keyed and delivered against.
-        assert forwarded.call_args.kwargs["nick"] == "test_account"
-        assert forwarded.call_args.kwargs["account"] == "test_account"
+        # The resolved Caller: the stashed job is keyed on the account and
+        # delivered to the reply target, greeting the IRC nick.
+        caller = forwarded.call_args.kwargs["caller"]
+        assert caller == Caller(Identity("testnick", "test_account"), "#test")
 
     def test_planner_spend_is_booked(self, plugin_env, mocker) -> None:
         """The planner turn is the only thing @animate spends.
@@ -675,8 +676,8 @@ class TestAnimatePlanner:
 
         plugin.animate(mock_irc, mock_msg, ["a", "pine", "forest"])
 
-        assert logged.call_args.args[2] == "animate"
-        assert logged.call_args.args[5].cost == 0.0012
+        assert logged.call_args.args[1] == "animate"
+        assert logged.call_args.args[4].cost == 0.0012
 
     def test_rendered_prompt_is_booked_with_the_ask(self, plugin_env, mocker) -> None:
         """The row carries the planner's script, not just what the user typed.
@@ -699,7 +700,7 @@ class TestAnimatePlanner:
 
         plugin.animate(mock_irc, mock_msg, ["a", "pine", "forest"])
 
-        assert logged.call_args.args[3] == "a pine forest"
+        assert logged.call_args.args[2] == "a pine forest"
         assert (
             logged.call_args.kwargs["rendered_prompt"]
             == "Three men wade into grey surf at dawn, handheld."
@@ -1238,7 +1239,7 @@ class TestTypingRefreshPass:
         # A planner turn on afternet ends: its done goes out, and the render
         # on the other network keeps typing.
         afternet = self._irc(mocker)
-        msg = mocker.MagicMock(args=("#chan", "hi"))
+        msg = mocker.MagicMock(args=("#chan", "hi"), prefix="alice!u@host")
         plugin.llm_service.typing.hold(afternet, msg.args[0])()
 
         plugin.llm_service.send_typing_indicator.assert_any_call(afternet, "#chan", "done")
@@ -1339,7 +1340,7 @@ class TestTypingRefresherLifecycle:
         self._quiesce_refresher(plugin)
 
         plugin._animate_for_assistant(
-            mock_irc, mock_msg, "a corgi", nick="alice", channel="#test", account="acct"
+            mock_irc, mock_msg, "a corgi", caller=Caller.from_msg(mock_msg, "acct")
         )
 
         assert plugin._render_typing_wake.is_set()
@@ -1355,7 +1356,7 @@ class TestTypingRefresherLifecycle:
         self._quiesce_refresher(plugin)
 
         plugin._animate_for_assistant(
-            mock_irc, mock_msg, "a corgi", nick="alice", channel="#test", account="acct"
+            mock_irc, mock_msg, "a corgi", caller=Caller.from_msg(mock_msg, "acct")
         )
 
         assert not plugin._render_typing_wake.is_set()
@@ -1503,7 +1504,7 @@ class TestPlannerAndRenderShareOneIndicator:
     def test_done_waits_until_the_render_lets_go(self, make_service, mocker) -> None:
         service, _plugin = make_service()
         irc = self._irc(mocker)
-        msg = mocker.MagicMock(args=("#chan", "hi"))
+        msg = mocker.MagicMock(args=("#chan", "hi"), prefix="alice!u@host")
 
         stop = service._begin_typing(irc, msg)
         service.typing.set_group("render", {("afternet", "#chan"): irc})
@@ -1518,7 +1519,7 @@ class TestPlannerAndRenderShareOneIndicator:
     def test_done_is_sent_when_nothing_else_holds_the_target(self, make_service, mocker) -> None:
         service, _plugin = make_service()
         irc = self._irc(mocker)
-        msg = mocker.MagicMock(args=("#chan", "hi"))
+        msg = mocker.MagicMock(args=("#chan", "hi"), prefix="alice!u@host")
 
         service._begin_typing(irc, msg)()
 
@@ -1530,7 +1531,7 @@ class TestPlannerAndRenderShareOneIndicator:
         """Two planner turns on one channel: one active, one done."""
         service, _plugin = make_service()
         irc = self._irc(mocker)
-        msg = mocker.MagicMock(args=("#chan", "hi"))
+        msg = mocker.MagicMock(args=("#chan", "hi"), prefix="alice!u@host")
 
         first = service._begin_typing(irc, msg)
         second = service._begin_typing(irc, msg)
@@ -1670,10 +1671,9 @@ class TestAnimateAdmission:
     model phrases it under the channel's prompt.
     """
 
-    def _submit(self, plugin, irc, msg, **overrides):
-        kwargs = {"nick": "alice", "channel": "#chan", "account": "alice"}
-        kwargs.update(overrides)
-        return plugin._submit_video(irc, msg, "a corgi", **kwargs)
+    def _submit(self, plugin, irc, msg, *, account: str | None = "alice"):
+        caller = Caller.from_msg(msg, account)
+        return plugin._submit_video(irc, msg, "a corgi", caller=caller)
 
     def test_per_user_cap_refuses_third_clip(self, plugin_env, mocker) -> None:
         plugin, irc, msg = plugin_env
@@ -1697,7 +1697,7 @@ class TestAnimateAdmission:
         mocker.patch.object(plugin.db, "count_pending_animate", return_value=0)
         mocker.patch.object(plugin.llm_service, "video_generation")
 
-        self._submit(plugin, irc, msg, nick="alice", account="alice")
+        self._submit(plugin, irc, msg, account="alice")
 
         # display_nick comes from the message, not the account-resolved nick.
         assert mine.call_args.kwargs == {"account": "alice", "nick": msg.nick}
@@ -1709,7 +1709,7 @@ class TestAnimateAdmission:
         count_all = mocker.patch.object(plugin.db, "count_pending_animate", return_value=6)
         submit = mocker.patch.object(plugin.llm_service, "video_generation")
 
-        result = self._submit(plugin, irc, msg, nick="rdrake", account="rdrake")
+        result = self._submit(plugin, irc, msg, account="rdrake")
 
         assert result.error
         assert "full" in result.content
@@ -1726,7 +1726,7 @@ class TestAnimateAdmission:
             plugin.llm_service, "video_generation", return_value=_queued_result()
         )
 
-        result = self._submit(plugin, irc, msg, nick="rdrake", account="rdrake")
+        result = self._submit(plugin, irc, msg, account="rdrake")
 
         assert not result.error
         submit.assert_called_once()
@@ -1830,7 +1830,7 @@ class TestAnimateAdmission:
         )
 
         result = plugin._animate_for_assistant(
-            irc, msg, "a corgi", nick="alice", channel="#chan", account="alice"
+            irc, msg, "a corgi", caller=Caller.from_msg(msg, "alice")
         )
 
         assert result.ok is False
@@ -1858,7 +1858,7 @@ class TestPrivateMessageTarget:
         mocker.patch.object(plugin.db, "count_pending_animate", return_value=0)
         submit = mocker.patch.object(plugin.llm_service, "video_generation")
 
-        plugin._submit_video(irc, msg, "a corgi", nick="testnick", channel="testbot", account=None)
+        plugin._submit_video(irc, msg, "a corgi", caller=Caller.from_msg(msg, None))
 
         assert submit.call_args.kwargs["reply_target"] == "testnick"
         assert submit.call_args.kwargs["is_channel"] is False
@@ -1870,7 +1870,7 @@ class TestPrivateMessageTarget:
         mocker.patch.object(plugin.db, "count_pending_animate", return_value=0)
         submit = mocker.patch.object(plugin.llm_service, "video_generation")
 
-        plugin._submit_video(irc, msg, "a corgi", nick="testnick", channel="#test", account=None)
+        plugin._submit_video(irc, msg, "a corgi", caller=Caller.from_msg(msg, None))
 
         assert submit.call_args.kwargs["reply_target"] == "#test"
         assert submit.call_args.kwargs["is_channel"] is True

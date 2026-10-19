@@ -436,6 +436,7 @@ class TestImageGenerationWithBase64:
         """Create mock message."""
         msg = self.mocker.Mock()
         msg.args = (channel,)
+        msg.prefix = "testnick!user@host"
         return msg
 
     def test_image_generation_with_url_response(self) -> None:

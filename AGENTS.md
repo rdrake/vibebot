@@ -56,6 +56,7 @@ For `plugins/llm/src/llm/`:
 - `limnoria_bridge.py`: allowlisted Limnoria-as-tool surface (mutation gating plus a curated default allowlist)
 - `config.py`: Limnoria registry configuration (models, prompt overlays, context, memory, rate limits, verse, bridge, status page). No API keys — those come from the environment; see `apikeys.py`
 - `context.py`: conversation history and thread-safe state
+- `identity.py`: `Identity` and `Caller` value types (storage key, personal key, reply target); resolved once per message by `LLM._resolve_caller`
 - `apikeys.py`: provider-scoped key resolution (model → provider → environment variable) and the `SecretFilter` that scrubs key values out of every log handler
 - `statuspage.py`: Atlassian Statuspage v2 model — fetch, strict parse, incident classification, sanitisation, line rendering; deliberately free of Limnoria and `service` imports
 - `tracing.py`: structured trace severity helpers

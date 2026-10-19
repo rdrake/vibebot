@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from llm.identity import Caller
+
 
 def test_storybook_config_defaults():
     import llm.config as cfg
@@ -473,7 +475,9 @@ def test_storybook_job_records_canon_event(plugin_env, tmp_path, mocker):
     mocker.patch.object(plugin, "_llm_executor")
 
     plugin._submit_storybook_job(
-        channel="#afnet", nick="alice", persona="", brief="a tale of dragons", account="alice-acct"
+        caller=Caller.from_row("alice", "alice-acct", "#afnet"),
+        persona="",
+        brief="a tale of dragons",
     )
 
     events = store.recent_events(limit=10)
@@ -494,7 +498,7 @@ def test_storybook_job_no_avatar_skips_record(plugin_env, tmp_path, mocker):
     mocker.patch.object(plugin, "_llm_executor")
 
     plugin._submit_storybook_job(
-        channel="#afnet", nick="ghost", persona="", brief="x", account=None
+        caller=Caller.from_row("ghost", None, "#afnet"), persona="", brief="x"
     )
 
     assert store.recent_events(limit=10) == []
@@ -507,10 +511,10 @@ def test_storybook_job_non_verse_channel_skips_store(plugin_env, mocker):
     mocker.patch.object(plugin, "_llm_executor")
 
     plugin._submit_storybook_job(
-        channel="#test", nick="alice", persona="", brief="a tale", account="acct"
+        caller=Caller.from_row("alice", "acct", "#test"), persona="", brief="a tale"
     )
     plugin._submit_storybook_job(
-        channel="testbot", nick="alice", persona="", brief="a tale", account="acct"
+        caller=Caller.from_row("alice", "acct", "testbot"), persona="", brief="a tale"
     )
 
     get_store.assert_not_called()
@@ -535,7 +539,7 @@ def test_storybook_job_logs_usage_on_success(plugin_env, mocker):
     mocker.patch.object(plugin, "_safe_queue", return_value=True)
 
     plugin._submit_storybook_job(
-        channel="#test", nick="alice", persona="", brief="a tale", account="acct"
+        caller=Caller.from_row("alice", "acct", "#test"), persona="", brief="a tale"
     )
 
     plugin.db.log_usage.assert_called_once()
@@ -558,9 +562,9 @@ def test_storybook_job_pm_delivers_to_nick(plugin_env, mocker):
     safe_queue = mocker.patch.object(plugin, "_safe_queue", return_value=True)
     privmsg = mocker.patch.object(plugin, "_safe_privmsg", side_effect=lambda t, m: (t, m))
 
-    # "channel" for a PM is the bot's own nick — never in state.channels.
+    # A PM caller's reply target is their nick — never in state.channels.
     plugin._submit_storybook_job(
-        channel="testbot", nick="alice", persona="", brief="a tale", account="acct"
+        caller=Caller.from_row("alice", "acct", "testbot"), persona="", brief="a tale"
     )
 
     assert safe_queue.called

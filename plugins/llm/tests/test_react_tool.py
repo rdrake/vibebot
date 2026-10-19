@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from llm.identity import Caller, Identity
 from llm.plugin import AssistantResult
 from supybot import ircmsgs
 
@@ -29,7 +30,7 @@ def react_env(plugin_env):
 
 
 def _call(plugin, irc, msg, **args) -> dict:
-    _, handlers = plugin._build_react_tool(irc, msg)
+    _, handlers = plugin._build_react_tool(irc, msg, Caller.from_msg(msg))
     return json.loads(handlers["react"](args).content)
 
 
@@ -187,7 +188,7 @@ class TestReactWiringAndDispatch:
         )
 
         stored, should_log = plugin._dispatch_assistant_reply(
-            irc, msg, result, nick="testnick", channel="#test", response=""
+            irc, msg, result, caller=Caller(Identity("testnick", None), "#test"), response=""
         )
 
         assert (stored, should_log) == ("[reacted 👍 to bob's message]", True)
@@ -204,7 +205,7 @@ class TestReactWiringAndDispatch:
         result = self._result(content=text, last_successful_tool="")
 
         _, should_log = plugin._dispatch_assistant_reply(
-            irc, msg, result, nick="testnick", channel="#test", response=text
+            irc, msg, result, caller=Caller(Identity("testnick", None), "#test"), response=text
         )
 
         assert should_log is False
@@ -218,7 +219,7 @@ class TestReactWiringAndDispatch:
         result = self._result(content=text)
 
         _, should_log = plugin._dispatch_assistant_reply(
-            irc, msg, result, nick="testnick", channel="#test", response=text
+            irc, msg, result, caller=Caller(Identity("testnick", None), "#test"), response=text
         )
 
         assert should_log is True

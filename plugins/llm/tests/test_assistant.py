@@ -16,7 +16,8 @@ from llm.assistant import (
     ToolResult,
     get_tools_for_profile,
 )
-from llm.plugin import LLM, Identity
+from llm.identity import Caller, Identity
+from llm.plugin import LLM
 from llm.profile import PROFILE_CHAT, PROFILE_REMIND_ACTION
 from llm.prompts import CHAT_SYSTEM_PROMPT, PENDING_TASKS_GUIDANCE
 from llm.service import (
@@ -3289,7 +3290,10 @@ class TestReminderMetaHelpers:
         msg.args = ["#test"]
 
         result = plugin._remind_set_for_assistant(
-            mock_irc, msg, Identity(raw_nick="testuser", account=None), "check the build in 1 hour"
+            mock_irc,
+            msg,
+            Caller.from_row("testuser", None, msg.args[0]),
+            "check the build in 1 hour",
         )
 
         assert result.ok is True
@@ -3315,7 +3319,7 @@ class TestReminderMetaHelpers:
         msg.args = ["#test"]
 
         result = plugin._remind_set_for_assistant(
-            mock_irc, msg, Identity(raw_nick="testuser", account=None), "deploy in 1 hour"
+            mock_irc, msg, Caller.from_row("testuser", None, msg.args[0]), "deploy in 1 hour"
         )
 
         assert "Eastern" in result.message
@@ -3335,7 +3339,7 @@ class TestReminderMetaHelpers:
         msg.args = ["#test"]
 
         result = plugin._remind_set_for_assistant(
-            mock_irc, msg, Identity(raw_nick="testuser", account=None), "maybe sometime"
+            mock_irc, msg, Caller.from_row("testuser", None, msg.args[0]), "maybe sometime"
         )
 
         assert result.ok is False
@@ -3358,7 +3362,7 @@ class TestReminderMetaHelpers:
         msg.args = ["#test"]
 
         result = plugin._remind_set_for_assistant(
-            mock_irc, msg, Identity(raw_nick="testuser", account=None), "remind me now"
+            mock_irc, msg, Caller.from_row("testuser", None, msg.args[0]), "remind me now"
         )
 
         assert result.ok is False
@@ -3381,7 +3385,7 @@ class TestReminderMetaHelpers:
         msg.args = ["#test"]
 
         result = plugin._remind_set_for_assistant(
-            mock_irc, msg, Identity(raw_nick="testuser", account=None), "remind me in 2 weeks"
+            mock_irc, msg, Caller.from_row("testuser", None, msg.args[0]), "remind me in 2 weeks"
         )
 
         assert result.ok is False
@@ -3402,7 +3406,7 @@ class TestReminderMetaHelpers:
         msg.args = ["#test"]
 
         result = plugin._remind_set_for_assistant(
-            mock_irc, msg, Identity(raw_nick="testuser", account=None), "remind me"
+            mock_irc, msg, Caller.from_row("testuser", None, msg.args[0]), "remind me"
         )
 
         assert "when" in result.message.lower()
@@ -3996,8 +4000,11 @@ class TestInvalidCommandRouting:
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
         """GIVEN alice and bob both PM "hi" within the dedup window THEN both
-        get a dispatch. In a PM the preflight channel is the bot's own nick, so
-        keying the filter on it put every PM sender in one bucket."""
+        get a dispatch. In a PM msg.args[0] is the bot's own nick, so keying
+        the filter on it put every PM sender in one bucket; the reply target
+        is the sender."""
+        from llm.plugin import PreflightResult
+
         started: list[str] = []
 
         class _FakeThread:
@@ -4010,7 +4017,7 @@ class TestInvalidCommandRouting:
         mocker.patch("llm.plugin.world.SupyThread", _FakeThread)
         for nick in ("alice", "bob", "alice"):
             msg = mocker.MagicMock(nick=nick)
-            preflight = mocker.MagicMock(blocked=False, nick=nick, channel="testbot", account=None)
+            preflight = PreflightResult(blocked=False, caller=Caller(Identity(nick, None), None))
             plugin._dispatch_addressed_async(mock_irc, msg, "hi", preflight, entry_route="pm")
 
         # alice, bob; alice's repeat is the duplicate.
@@ -5349,12 +5356,7 @@ class TestOverlayReadsViaProfiles:
         # tests that drive _ask_impl through plugin.ask().
         from llm.plugin import PreflightResult
 
-        pf = PreflightResult(
-            blocked=False,
-            nick="testnick",
-            channel="#test",
-            account=None,
-        )
+        pf = PreflightResult(blocked=False, caller=Caller(Identity("testnick", None), "#test"))
 
         plugin._ask_impl(
             mock_irc,

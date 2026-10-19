@@ -18,8 +18,9 @@ from typing import TYPE_CHECKING
 import pytest
 from llm.assistant import PENDING_TASK_TOOLS
 from llm.context import Role
+from llm.identity import Caller, Identity
 from llm.persistence import UsageBreakdown, UsageSummary
-from llm.plugin import LLM
+from llm.plugin import LLM, PreflightResult
 from llm.service import AssistantResult, CompletionResult, ReminderParseResult
 
 from .conftest import make_registry_side_effect, make_reminder_row
@@ -1485,8 +1486,7 @@ class TestDispatchAssistantReply:
             mock_irc,
             mock_msg,
             result,
-            nick="testnick",
-            channel="#test",
+            caller=Caller(Identity("testnick", None), "#test"),
             response="",
         )
 
@@ -1548,8 +1548,7 @@ class TestDispatchAssistantReply:
             mock_irc,
             mock_msg,
             result,
-            nick="testnick",
-            channel="#test",
+            caller=Caller(Identity("testnick", None), "#test"),
             response="/me waves",
         )
 
@@ -3960,7 +3959,7 @@ class TestVerseStorybook:
             {"verseEnabled": True, "verseTriggerRegex": "", "verseRosterMaxChars": 2000}
         )
         plugin.registryValue = mocker.MagicMock(side_effect=base)
-        pf = mocker.MagicMock(channel="#test", nick="testnick", account=None)
+        pf = PreflightResult(False, Caller(Identity("testnick", None), "#test"))
         block = plugin._verse_context_for(pf, "what does Archie think?")
         assert block is not None
         assert "Archie: the windbag" in block
@@ -3977,7 +3976,7 @@ class TestVerseStorybook:
             {"verseEnabled": True, "verseTriggerRegex": "", "verseRosterMaxChars": 2000}
         )
         plugin.registryValue = mocker.MagicMock(side_effect=base)
-        pf = mocker.MagicMock(channel="#test", nick="testnick", account=None)
+        pf = PreflightResult(False, Caller(Identity("testnick", None), "#test"))
         assert plugin._verse_context_for(pf, "hello there") is None
 
     def test_verse_context_for_chat_appends_flavour(self, plugin_env, mocker, tmp_path):
@@ -4000,7 +3999,7 @@ class TestVerseStorybook:
             {"verseEnabled": True, "verseTriggerRegex": "", "verseRosterMaxChars": 2000}
         )
         plugin.registryValue = mocker.MagicMock(side_effect=base)
-        pf = mocker.MagicMock(channel="#test", nick="testnick", account=None)
+        pf = PreflightResult(False, Caller(Identity("testnick", None), "#test"))
 
         chat = plugin._verse_context_for(pf, "who is Archie?", for_chat=True)
         assert _VERSE_CHAT_FLAVOUR_NUDGE in chat
@@ -4042,7 +4041,7 @@ class TestVerseStorybook:
         mocker.patch.object(plugin, "_find_caller_avatar", return_value=av)
         base = make_registry_side_effect({"verseEnabled": True, "verseChatRecordEnabled": False})
         plugin.registryValue = mocker.MagicMock(side_effect=base)
-        pf = mocker.MagicMock(channel="#test", nick="alice", account=None)
+        pf = PreflightResult(False, Caller(Identity("alice", None), "#test"))
         assert plugin._verse_chat_record_handler(pf) is None
 
     def test_chat_record_handler_none_without_avatar(self, plugin_env, mocker, tmp_path):
@@ -4056,7 +4055,7 @@ class TestVerseStorybook:
         mocker.patch.object(plugin, "_find_caller_avatar", return_value=None)
         base = make_registry_side_effect({"verseEnabled": True, "verseChatRecordEnabled": True})
         plugin.registryValue = mocker.MagicMock(side_effect=base)
-        pf = mocker.MagicMock(channel="#test", nick="bob", account=None)
+        pf = PreflightResult(False, Caller(Identity("bob", None), "#test"))
         assert plugin._verse_chat_record_handler(pf) is None
 
     def test_chat_record_handler_live_records_to_canon(self, plugin_env, mocker, tmp_path):
@@ -4079,7 +4078,7 @@ class TestVerseStorybook:
             }
         )
         plugin.registryValue = mocker.MagicMock(side_effect=base)
-        pf = mocker.MagicMock(channel="#test", nick="alice", account=None)
+        pf = PreflightResult(False, Caller(Identity("alice", None), "#test"))
         handler = plugin._verse_chat_record_handler(pf)
         assert handler is not None
         res = handler({"summary": "Alice found the golden key"})
@@ -4114,7 +4113,7 @@ class TestVerseStorybook:
                 }
             )
 
-        pf = mocker.MagicMock(channel="#test", nick="alice", account=None)
+        pf = PreflightResult(False, Caller(Identity("alice", None), "#test"))
 
         plugin.registryValue = mocker.MagicMock(side_effect=_regs(True))
         on = plugin._verse_context_for(pf, "what does Archie think?")
@@ -4130,7 +4129,7 @@ class TestVerseStorybook:
         plugin, _i, _m = plugin_env
         base = make_registry_side_effect({"verseRoleplayStickyTtlSeconds": 900})
         plugin.registryValue = mocker.MagicMock(side_effect=base)
-        pf = mocker.MagicMock(channel="#test", nick="alice", account=None)
+        pf = PreflightResult(False, Caller(Identity("alice", None), "#test"))
         assert plugin._roleplay_sticky_active(pf) is False
         plugin._roleplay_sticky_set(pf, True)
         assert plugin._roleplay_sticky_active(pf) is True
@@ -4143,7 +4142,7 @@ class TestVerseStorybook:
         plugin, _i, _m = plugin_env
         base = make_registry_side_effect({"verseRoleplayStickyTtlSeconds": 900})
         plugin.registryValue = mocker.MagicMock(side_effect=base)
-        pf = mocker.MagicMock(channel="#test", nick="alice", account=None)
+        pf = PreflightResult(False, Caller(Identity("alice", None), "#test"))
         plugin._roleplay_sticky_set(pf, True)
         plugin._roleplay_sticky[("#test", "alice")] = _t.time() - 1  # force lapse
         assert plugin._roleplay_sticky_active(pf) is False
@@ -4155,7 +4154,7 @@ class TestVerseStorybook:
         plugin, _i, _m = plugin_env
         base = make_registry_side_effect({"verseRoleplayStickyTtlSeconds": 0})
         plugin.registryValue = mocker.MagicMock(side_effect=base)
-        pf = mocker.MagicMock(channel="#test", nick="alice", account=None)
+        pf = PreflightResult(False, Caller(Identity("alice", None), "#test"))
         plugin._roleplay_sticky_set(pf, True)
         assert plugin._roleplay_sticky[("#test", "alice")] == math.inf
         assert plugin._roleplay_sticky_active(pf) is True
@@ -4165,9 +4164,9 @@ class TestVerseStorybook:
         plugin, _i, _m = plugin_env
         base = make_registry_side_effect({"verseRoleplayStickyTtlSeconds": 900})
         plugin.registryValue = mocker.MagicMock(side_effect=base)
-        pf_on = mocker.MagicMock(channel="#test", nick="alice", account="acct1")
+        pf_on = PreflightResult(False, Caller(Identity("alice", "acct1"), "#test"))
         plugin._roleplay_sticky_set(pf_on, True)
-        pf_renamed = mocker.MagicMock(channel="#test", nick="alice_away", account="acct1")
+        pf_renamed = PreflightResult(False, Caller(Identity("alice_away", "acct1"), "#test"))
         assert plugin._roleplay_sticky_active(pf_renamed) is True
 
     def test_sticky_promotes_ambient_but_not_explicit(self, plugin_env, mocker):
@@ -4183,7 +4182,7 @@ class TestVerseStorybook:
         mocker.patch.object(plugin, "_verse_chat_record_handler", return_value=None)
         mocker.patch.object(plugin, "_ask_impl")
         mock_msg.prefix = "alice!u@h"
-        pf = mocker.MagicMock(channel="#test", nick="alice", account=None)
+        pf = PreflightResult(False, Caller(Identity("alice", None), "#test"))
         plugin._roleplay_sticky_set(pf, True)
 
         plugin._dispatch_with_verse_routing(
@@ -4244,7 +4243,7 @@ class TestVerseStorybook:
             side_effect=make_registry_side_effect({"verseEnabled": True})
         )
         mock_msg.prefix = "alice!u@h"
-        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+        pf = PreflightResult(False, Caller(Identity("alice", "acct"), "#test"))
 
         plugin._dispatch_with_verse_routing(
             mock_irc, mock_msg, "who got rid of school milk entirely", pf, entry_route="addressed"
@@ -4265,7 +4264,7 @@ class TestVerseStorybook:
             side_effect=make_registry_side_effect({"verseEnabled": True})
         )
         mock_msg.prefix = "alice!u@h"
-        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+        pf = PreflightResult(False, Caller(Identity("alice", "acct"), "#test"))
 
         plugin._dispatch_with_verse_routing(
             mock_irc, mock_msg, "who is the headmaster", pf, entry_route="addressed"
@@ -4287,7 +4286,7 @@ class TestVerseStorybook:
             side_effect=make_registry_side_effect({"verseEnabled": True})
         )
         mock_msg.prefix = "alice!u@h"
-        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+        pf = PreflightResult(False, Caller(Identity("alice", "acct"), "#test"))
 
         plugin._dispatch_with_verse_routing(
             mock_irc, mock_msg, "go mental about dragons", pf, entry_route="addressed"
@@ -4314,7 +4313,7 @@ class TestVerseStorybook:
         )
         plugin.registryValue = mocker.MagicMock(side_effect=base)
         mock_msg.prefix = "alice!u@h"
-        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+        pf = PreflightResult(False, Caller(Identity("alice", "acct"), "#test"))
 
         # Explicit "illustrate" → the image storybook.
         illustrate = "illustrate the stinky lads' saga"
@@ -4335,7 +4334,7 @@ class TestVerseStorybook:
             plugin._ambient_storybook_brief(mock_msg, pf, "illustrate a fox") is None
         )  # not canon
 
-        pf_anon = mocker.MagicMock(channel="#test", nick="alice", account=None)
+        pf_anon = PreflightResult(False, Caller(Identity("alice", None), "#test"))
         assert plugin._ambient_storybook_brief(mock_msg, pf_anon, illustrate) is None  # no account
 
     def test_ambient_inline_story_gates(self, plugin_env, mocker, tmp_path):
@@ -4352,7 +4351,7 @@ class TestVerseStorybook:
         plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect({"verseEnabled": True})
         )
-        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+        pf = PreflightResult(False, Caller(Identity("alice", "acct"), "#test"))
 
         assert plugin._ambient_inline_story(pf, "the stinky lads stormed the chippy") is True
         assert plugin._ambient_inline_story(pf, "what have the lads done today") is True
@@ -4384,7 +4383,7 @@ class TestVerseStorybook:
             side_effect=make_registry_side_effect({"verseEnabled": True})
         )
         mock_msg.prefix = "alice!u@h"
-        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+        pf = PreflightResult(False, Caller(Identity("alice", "acct"), "#test"))
 
         plugin._dispatch_with_verse_routing(
             mock_irc, mock_msg, "the lads stormed the chippy", pf, entry_route="addressed"
@@ -4408,7 +4407,7 @@ class TestVerseStorybook:
             side_effect=make_registry_side_effect({"verseEnabled": True})
         )
         mock_msg.prefix = "alice!u@h"
-        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+        pf = PreflightResult(False, Caller(Identity("alice", "acct"), "#test"))
 
         plugin._dispatch_with_verse_routing(
             mock_irc, mock_msg, "illustrate the lads' saga", pf, entry_route="addressed"
@@ -4434,13 +4433,12 @@ class TestVerseStorybook:
         )
         mock_msg.prefix = "alice!u@h"
         mock_msg.nick = "alice"
-        pf = mocker.MagicMock(channel="#test", nick="acct", account="acct")
+        pf = PreflightResult(False, Caller(Identity("alice", "acct"), "#test"))
 
         plugin._dispatch_with_verse_routing(
             mock_irc, mock_msg, "illustrate it", pf, entry_route="addressed"
         )
-        assert job.call_args.kwargs["nick"] == "alice"
-        assert job.call_args.kwargs["account"] == "acct"
+        assert job.call_args.kwargs["caller"] == Caller(Identity("alice", "acct"), "#test")
 
     def test_ambient_question_falls_through_to_chat(self, plugin_env, mocker):
         plugin, mock_irc, mock_msg = plugin_env
@@ -4456,7 +4454,7 @@ class TestVerseStorybook:
             side_effect=make_registry_side_effect({"verseEnabled": True})
         )
         mock_msg.prefix = "alice!u@h"
-        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+        pf = PreflightResult(False, Caller(Identity("alice", "acct"), "#test"))
 
         plugin._dispatch_with_verse_routing(
             mock_irc, mock_msg, "who is Dan?", pf, entry_route="addressed"
@@ -4479,7 +4477,7 @@ class TestVerseStorybook:
             side_effect=make_registry_side_effect({"verseEnabled": True})
         )
         mock_msg.prefix = "alice!u@h"
-        pf = mocker.MagicMock(channel="#test", nick="alice", account="acct")
+        pf = PreflightResult(False, Caller(Identity("alice", "acct"), "#test"))
 
         plugin._dispatch_with_verse_routing(
             mock_irc, mock_msg, "the lads stormed the chippy", pf, entry_route="ask"
@@ -4494,8 +4492,7 @@ class TestVerseStorybook:
         return plugin._storybook_handler(
             irc=mock_irc,
             msg=mock_msg,
-            channel="#test",
-            account=account,
+            caller=Caller(Identity(mock_msg.nick, account), "#test"),
             persona="a sly fox",
         )
 
@@ -4590,8 +4587,9 @@ class TestVerseStorybook:
 
         self._build(plugin, mock_irc, mock_msg, mocker)({"brief": "a tale"})
 
-        assert job.call_args.kwargs["nick"] == "alice"
-        assert job.call_args.kwargs["account"] == "acct"
+        caller = job.call_args.kwargs["caller"]
+        assert caller.identity == Identity("alice", "acct")
+        assert caller.reply_target == "#test"
 
     def test_job_delivers_url_to_channel(self, plugin_env, mocker):
         """The scheduled job posts the storybook URL via the world.ircs path."""
@@ -4638,7 +4636,7 @@ class TestStoryCommand:
 
         job.assert_called_once()
         assert job.call_args.kwargs["brief"] == "illustrated tale of lads"
-        assert job.call_args.kwargs["channel"] == "#test"
+        assert job.call_args.kwargs["caller"].reply_target == "#test"
 
     def test_story_from_pm_delivers_to_irc_nick_not_account(self, plugin_env, mocker):
         """GIVEN testnick authenticated as acct PMs @story THEN the job is told
@@ -4653,8 +4651,9 @@ class TestStoryCommand:
 
         plugin.story(mock_irc, mock_msg, ["a", "tale"])
 
-        assert job.call_args.kwargs["nick"] == "testnick"
-        assert job.call_args.kwargs["account"] == "acct"
+        caller = job.call_args.kwargs["caller"]
+        assert caller.reply_target == "testnick"
+        assert caller.identity.account == "acct"
         plugin.db.get_avatar_persona.assert_called_once_with("acct")
 
     def test_story_requires_account(self, plugin_env, mocker):
