@@ -11,3 +11,9 @@ Domain terms for vibebot. Code, docs, and reviews use these names.
 **Caller**: the person who sent this message (an Identity) plus where they sent it from: the channel, or a private message. It's resolved once per message, and everything after preflight uses it.
 
 **Reply target**: where a reply to the Caller goes. That's the channel, or the Caller's IRC nick in a private message. It's never the bot's own nick and never an account name.
+
+**Agenda** (`agenda.py`): everything that is set to fire later on its own: reminders and scheduled LLM tasks. They stay in separate tables and are delivered by separate code, but one set of rules decides when each fires, how often a recurring one may repeat, and what a restart does with an overdue one. The plugin runs one wakeup timer, armed for the agenda's next due time.
+
+**Agenda entry**: one reminder or scheduled LLM task. Its database row is the only record of whether it's still wanted: cancelling deletes the row, and a fire that finds its row gone doesn't reschedule. A recurring entry keeps its row, and the id shown by `@remind list`, across fires.
+
+**Chain**: the fires of one recurring agenda entry. `chain_position` counts them; a reminder chain stops after 50 fires and a scheduled-task chain after 5, and the owner has to set it again.

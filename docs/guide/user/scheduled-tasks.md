@@ -106,7 +106,7 @@ A recurring task fires at most five times and is then deleted — re-arm it if y
 - **Tool error:** a failed search or fetch can still produce a partial reply explaining what went wrong.
 - **Rate limit hit:** the run is dropped with a note in the delivery target — "Scheduled task skipped — daily ask limit reached." Recurring tasks try again next time.
 - **Cancelled mid-run:** the current run completes; the next one doesn't fire.
-- **Bot restarted:** schedules live in the database and are re-registered on startup. A fire whose time passed while the bot was down happens a second after it starts up, however long it was away — unlike reminders, which are dropped once they are 24 hours overdue.
+- **Bot restarted:** schedules live in the database, so a restart loses nothing. A fire whose time passed while the bot was down happens a second after it starts up. The rule is the one reminders follow: a one-off task more than 24 hours overdue is dropped, not run; a recurring task fires once however long the bot was away, then carries on.
 - **You lost `llm.ask`:** the task is deleted at its next fire, and the bot says so in the delivery target.
 
 An unexpected error is the one silent case: it reaches the log and nothing else. If a recurring task goes quiet, ask an owner to run `@remind admin list <nick>`.

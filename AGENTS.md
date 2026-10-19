@@ -58,6 +58,7 @@ For `plugins/llm/src/llm/`:
 - `context.py`: conversation history and thread-safe state
 - `identity.py`: `Identity` and `Caller` value types (storage key, personal key, reply target); resolved once per message by `LLM._resolve_caller`
 - `apikeys.py`: provider-scoped key resolution (model → provider → environment variable) and the `SecretFilter` that scrubs key values out of every log handler
+- `agenda.py`: the agenda — when reminders and scheduled LLM tasks fire: the one-minute cadence floor, next-fire anchoring, per-kind chain caps, the row-is-the-cancel-truth check, restart recovery, and the next due time the plugin's single wakeup timer is armed for; free of Limnoria imports, tested against real SQLite and a fake clock
 - `statuspage.py`: Atlassian Statuspage v2 model — fetch, strict parse, incident classification, sanitisation, line rendering; deliberately free of Limnoria and `service` imports
 - `tracing.py`: structured trace severity helpers
 - `verse/`: the verse subsystem (SQLite world store, avatars, aging, compaction, reactions, taste command-line tools, validation, purge)
@@ -112,6 +113,7 @@ Keep those boundaries intact:
 - `plugins/llm/src/llm/plugin.py`: command surface and IRC integration
 - `plugins/llm/src/llm/context.py`: volatile memory implementation
 - `plugins/llm/src/llm/limnoria_bridge.py`: Limnoria-to-LLM tool bridge
+- `plugins/llm/src/llm/agenda.py`: the single source of reminder and scheduled-task timing; change cadence, cap, or restart rules here, not in `plugin.py` or `service.py`
 - `plugins/llm/src/llm/{service,plugin,assistant,persistence}.py`: native `schedule_llm_task` plus the unified `list_pending_tasks` / `cancel_pending_task` / `cancel_all_pending_tasks` tool surface
 - `plugins/llm/src/llm/executor.py`: global LLM concurrency gate; tune via `supybot.plugins.LLM.maxConcurrentLLMCalls`
 - `plugins/nickinmiddle/src/nickinmiddle/`: nick-in-middle `inFilter` plugin
