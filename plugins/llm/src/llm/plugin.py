@@ -323,6 +323,9 @@ class ReminderScheduleResult(NamedTuple):
     # confirmation above is model-authored and often names neither, which
     # leaves a later "make it 30s" with no antecedent.
     summary: str = ""
+    # The parser asked the user something instead of scheduling; ``message``
+    # is the question. Nothing was set, so no ⏰ — and no ❌ either.
+    question: bool = False
 
 
 class PreflightResult(NamedTuple):
@@ -10876,7 +10879,9 @@ class LLM(callbacks.Plugin):
             result = self.llm_service.parse_reminder(text, channel, user_tz=user_tz)
 
         if result.action == "clarify":
-            return ReminderScheduleResult(ok=True, message=result.confirmation)
+            # Not ok: a question read as success got a ⏰ and, in chat, had its
+            # text dropped as a redundant ack, so the user never saw it.
+            return ReminderScheduleResult(ok=False, message=result.confirmation, question=True)
 
         if result.seconds is None:
             return ReminderScheduleResult(
@@ -10966,6 +10971,9 @@ class LLM(callbacks.Plugin):
         if result.ok:
             self._ack(irc, msg, "⏰", result.message, prefixNick=True)
             return
+        if result.question:
+            self._safe_reply(irc, result.message, prefixNick=True)
+            return
         log.info(
             "remind_set blocked nick=%s reason=%s",
             caller.identity.key,
@@ -10991,6 +10999,8 @@ class LLM(callbacks.Plugin):
         from .assistant import ToolCallbackResult as _ToolCallbackResult
 
         result = self._schedule_reminder(irc, msg, caller, text)
+        if result.question:
+            return _ToolCallbackResult(False, f"Not scheduled. Ask the user: {result.message}")
         self._react(irc, msg, "⏰" if result.ok else "❌")
         message = result.message
         if result.ok and result.summary:
