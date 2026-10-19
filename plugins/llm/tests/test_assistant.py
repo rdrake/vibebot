@@ -3395,13 +3395,18 @@ class TestReminderMetaHelpers:
     def test_remind_set_for_assistant_clarify(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """GIVEN clarify action WHEN _remind_set_for_assistant THEN returns clarification."""
+        """GIVEN clarify action WHEN _remind_set_for_assistant THEN nothing is set:
+        the tool fails (so the chat reply carrying the question isn't dropped as
+        a redundant ack), passes the question on, and reacts neither ⏰ nor ❌.
+        On 2026-10-19 a question read as success showed ⏰ and the user never
+        saw it."""
         from llm.service import ReminderParseResult
 
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
             action="clarify",
             confirmation="When exactly should I remind you?",
         )
+        react = mocker.patch.object(plugin, "_react")
 
         msg = mocker.MagicMock()
         msg.args = ["#test"]
@@ -3410,7 +3415,36 @@ class TestReminderMetaHelpers:
             mock_irc, msg, Caller.from_row("testuser", None, msg.args[0]), "remind me"
         )
 
-        assert "when" in result.message.lower()
+        assert result.ok is False
+        assert "When exactly should I remind you?" in result.message
+        react.assert_not_called()
+        plugin.db.save_reminder.assert_not_called()
+
+    def test_remind_command_clarify_asks_without_reacting(
+        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
+    ) -> None:
+        """GIVEN clarify action WHEN @remind runs THEN the question is the reply,
+        with no ⏰ (nothing was set) and no ❌ (nothing failed)."""
+        from llm.service import ReminderParseResult
+
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="clarify",
+            confirmation="When exactly should I remind you?",
+        )
+        react = mocker.patch.object(plugin, "_react")
+        reply = mocker.patch.object(plugin, "_safe_reply")
+
+        msg = mocker.MagicMock()
+        msg.args = ["#test"]
+
+        plugin._remind_set(
+            mock_irc, msg, Caller.from_row("testuser", None, msg.args[0]), "remind me"
+        )
+
+        react.assert_not_called()
+        reply.assert_called_once_with(
+            mock_irc, "When exactly should I remind you?", prefixNick=True
+        )
 
     def test_remind_delete_for_assistant_success(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN valid reminder ID WHEN _remind_delete_for_assistant THEN deletes."""
