@@ -18,7 +18,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from llm.plugin import Identity
+from llm.identity import Caller, Identity
 from llm.service import LLMService
 
 if TYPE_CHECKING:
@@ -120,7 +120,9 @@ def _reply(irc) -> str:
 def _alice(plugin, mocker: MockerFixture) -> None:
     """Make the caller alice, identified."""
     mocker.patch.object(
-        plugin, "_resolve_identity", return_value=Identity(raw_nick="alice", account="alice")
+        plugin,
+        "_resolve_caller",
+        return_value=Caller(Identity(raw_nick="alice", account="alice"), "#test"),
     )
 
 
@@ -352,7 +354,9 @@ class TestRendersCancel:
         """GIVEN an account-less row WHEN its nick cancels THEN ownership falls back to nick."""
         plugin, irc, msg = renders_env
         mocker.patch.object(
-            plugin, "_resolve_identity", return_value=Identity(raw_nick="Alice", account=None)
+            plugin,
+            "_resolve_caller",
+            return_value=Caller(Identity(raw_nick="Alice", account=None), "#test"),
         )
         _admin(mocker, yes=False)
         plugin.llm_service.cancel_video.return_value = True
@@ -376,7 +380,9 @@ class TestRendersCancel:
         """
         plugin, irc, msg = renders_env
         mocker.patch.object(
-            plugin, "_resolve_identity", return_value=Identity(raw_nick="alice", account=None)
+            plugin,
+            "_resolve_caller",
+            return_value=Caller(Identity(raw_nick="alice", account=None), "#test"),
         )
         _admin(mocker, yes=False)
 

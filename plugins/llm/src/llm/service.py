@@ -38,6 +38,7 @@ from supybot.utils.file import AtomicFile
 
 from . import apikeys, github, meme_render
 from .context import Role
+from .identity import Caller
 from .persistence import ScheduledLlmTaskRow, lease_until
 from .profile import (
     PROFILE_ANIMATE,
@@ -1858,15 +1859,15 @@ class AssistantResult(NamedTuple):
 
 @dataclass(frozen=True)
 class AssistantRequestContext:
-    """Normalized route metadata for a unified assistant request."""
+    """Normalized route metadata for a unified assistant request.
+
+    ``caller`` is who asked and where; the planner keys history and usage on
+    its storage key and scopes config to its reply target.
+    """
 
     entry_route: str
     profile: str
-    nick: str
-    raw_nick: str
-    account: str | None
-    channel: str | None
-    is_private: bool
+    caller: Caller
     is_owner: bool
     capabilities: frozenset[str]
 
@@ -2712,7 +2713,9 @@ class LLMService:
         and the render refresher's hold on a channel outlives a planner turn
         that ends mid-render. See ``typing_holds.TypingHolds``.
         """
-        target = msg.args[0] if (irc and msg and msg.args) else None
+        # The caller's reply target: in a PM, msg.args[0] is the bot's own
+        # nick, and an indicator sent there never reaches the sender.
+        target = Caller.from_msg(msg).reply_target if (irc and msg and msg.args) else None
         if not irc or not target:
             return lambda: None
         return self.typing.hold(irc, target)
@@ -4958,12 +4961,13 @@ class LLMService:
         delegates to the planner loop so that all assistant routes share
         a single entry point with full tool access.
         """
+        caller = request_context.caller
         self.log.info(
             "assistant_request route=%s profile=%s channel=%s nick=%s",
             request_context.entry_route,
             request_context.profile,
-            request_context.channel,
-            request_context.nick,
+            caller.reply_target,
+            caller.identity.key,
         )
 
         profile = request_context.profile
@@ -4974,15 +4978,15 @@ class LLMService:
 
         return self.assistant_completion(
             prompt,
-            nick=request_context.nick,
-            channel=request_context.channel or "",
+            nick=caller.identity.key,
+            channel=caller.reply_target,
             db=db,
             context=context,
             bot_nick=bot_nick,
             model_override=model_override,
             route_profile=profile,
             capabilities=request_context.capabilities,
-            account=request_context.account,
+            account=caller.identity.account,
             is_owner=request_context.is_owner,
             images=images,
             system_prompt=system_prompt,
@@ -9345,7 +9349,7 @@ Examples (echo → action_prompt: ""):
         if row.reply_target:
             target = row.reply_target
         else:
-            target = row.channel if ircutils.isChannel(row.channel) else row.creator_nick
+            target = Caller.from_row(row.creator_nick, row.account, row.channel).reply_target
 
         # Auto-cancel on capability revoke (Phase 2 follow-up C). The fired
         # @ask path bypasses Limnoria's wrap-time checkCapability, so we mirror
@@ -9392,9 +9396,7 @@ Examples (echo → action_prompt: ""):
             irc=irc,
             msg=msg,
             prompt=row.prompt,
-            nick=row.creator_nick,
-            account=row.account,
-            channel=row.channel,
+            caller=Caller.from_row(row.creator_nick, row.account, row.channel),
             bot_nick=irc.nick,
             entry_route="scheduled_llm_task",
             fold_instruction_into_prompt=True,

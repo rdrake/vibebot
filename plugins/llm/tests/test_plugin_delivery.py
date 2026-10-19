@@ -1278,10 +1278,11 @@ class TestPendingTaskFns:
     def test_helper_returns_unified_callables_with_owner_identity_bound(
         self, mocker: MockerFixture
     ) -> None:
-        """The helper closes over caller/irc/msg/channel and dispatches to the
+        """The helper closes over caller/irc/msg and dispatches to the
         right backend by id prefix."""
+        from llm.identity import Caller, Identity
         from llm.persistence import ScheduledLlmTaskRow
-        from llm.plugin import LLM, Identity
+        from llm.plugin import LLM
         from llm.service import ScheduleLlmTaskResult
 
         stand_in = mocker.MagicMock()
@@ -1341,10 +1342,10 @@ class TestPendingTaskFns:
         stand_in._remind_clear_for_assistant.return_value = "Cancelled 1 reminder."
 
         helper = LLM._pending_task_fns.__get__(stand_in, LLM)
-        caller = Identity(raw_nick="rdrake", account="rdrake_a")
+        caller = Caller(Identity(raw_nick="rdrake", account="rdrake_a"), "#t")
         irc = mocker.MagicMock()
         msg = mocker.MagicMock()
-        fns = helper(caller=caller, irc=irc, msg=msg, channel="#t")
+        fns = helper(caller=caller, irc=irc, msg=msg)
 
         assert set(fns.keys()) == {
             "set_reminder_fn",
@@ -1370,7 +1371,7 @@ class TestPendingTaskFns:
             user_tz=stand_in._resolve_user_tz.return_value,
         )
         # A user-initiated wall-clock schedule may probe the client clock.
-        stand_in._resolve_user_tz.assert_called_once_with(caller, irc=irc)
+        stand_in._resolve_user_tz.assert_called_once_with(caller.identity, irc=irc)
 
         # list_pending_tasks_fn merges reminders + scheduled tasks with
         # `kind` discriminators.

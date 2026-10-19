@@ -16,6 +16,7 @@ has to pick the reference out of the user's message too.
 from __future__ import annotations
 
 import pytest
+from llm.identity import Caller
 
 _IMG = "https://pics.example.com/cat.png"
 
@@ -174,9 +175,7 @@ class TestChatVideoWithReference:
             mock_irc,
             mock_msg,
             "a cat dancing on a table",
-            nick="test_account",
-            channel="#test",
-            account="test_account",
+            caller=Caller.from_msg(mock_msg, "test_account"),
         )
 
         assert plugin.llm_service.video_generation.call_args.kwargs["reference"] is not None
@@ -194,9 +193,7 @@ class TestChatVideoWithReference:
             mock_irc,
             mock_msg,
             f"{_IMG} a cat dancing",
-            nick="test_account",
-            channel="#test",
-            account="test_account",
+            caller=Caller.from_msg(mock_msg, "test_account"),
         )
 
         assert "http" not in plugin.llm_service.video_generation.call_args.args[0]
@@ -210,9 +207,7 @@ class TestChatVideoWithReference:
             mock_irc,
             mock_msg,
             "a corgi riding a unicorn",
-            nick="test_account",
-            channel="#test",
-            account="test_account",
+            caller=Caller.from_msg(mock_msg, "test_account"),
         )
 
         plugin.llm_service.fetch_reference_image.assert_not_called()

@@ -205,6 +205,7 @@ class TestImageGenerationErrors:
 
         mock_msg = mocker.Mock()
         mock_msg.args = ("#test",)
+        mock_msg.prefix = "testnick!user@host"
 
         mocker.patch(
             "llm.service.litellm.image_generation",

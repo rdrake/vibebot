@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
+from llm.identity import Caller
 from llm.service import AssistantResult, ReminderParseResult
 
 from .conftest import FAKE_PROVIDER_KEYS, make_completion_response, make_reminder_row
@@ -460,7 +461,7 @@ class TestReminderHelperMethods:
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN parent_chain at the cap WHEN scheduling THEN refuses."""
-        from llm.plugin import LLM, Identity
+        from llm.plugin import LLM
 
         plugin._MetaSynchronized_rlock = threading.RLock()
         self._stub_parse_for_schedule(plugin, action_prompt="ping (recurring: every 1m)")
@@ -475,7 +476,7 @@ class TestReminderHelperMethods:
         result = plugin._schedule_reminder(
             mock_irc,
             msg,
-            Identity(raw_nick="alice", account="alice"),
+            Caller.from_row("alice", "alice", msg.args[0]),
             "every 1m ping",
             parent_chain=parent,
         )
@@ -487,7 +488,7 @@ class TestReminderHelperMethods:
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN per-user pending cap reached WHEN scheduling fresh THEN refuses."""
-        from llm.plugin import LLM, Identity
+        from llm.plugin import LLM
 
         plugin._MetaSynchronized_rlock = threading.RLock()
         self._stub_parse_for_schedule(plugin)
@@ -511,7 +512,7 @@ class TestReminderHelperMethods:
         result = plugin._schedule_reminder(
             mock_irc,
             msg,
-            Identity(raw_nick="alice", account="alice"),
+            Caller.from_row("alice", "alice", msg.args[0]),
             "in 1m ping",
         )
         assert result.ok is False
@@ -522,7 +523,6 @@ class TestReminderHelperMethods:
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN a scheduled reminder WHEN the tool returns THEN the summary names the subject and the delay in fixed wording."""
-        from llm.plugin import Identity
 
         plugin._MetaSynchronized_rlock = threading.RLock()
         self._stub_parse_for_schedule(plugin)  # message "ping", 60 seconds
@@ -531,7 +531,7 @@ class TestReminderHelperMethods:
         result = plugin._schedule_reminder(
             mock_irc,
             msg=self._amend_msg(mocker),
-            caller=Identity(raw_nick="alice", account="alice"),
+            caller=Caller.from_row("alice", "alice", "#chan"),
             text="in 60s ping",
         )
 
@@ -542,7 +542,6 @@ class TestReminderHelperMethods:
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN a scheduled reminder WHEN set_reminder returns THEN its message carries what is pending, so the stored note does too."""
-        from llm.plugin import Identity
 
         plugin._MetaSynchronized_rlock = threading.RLock()
         self._stub_parse_for_schedule(plugin)
@@ -552,7 +551,7 @@ class TestReminderHelperMethods:
         out = plugin._remind_set_for_assistant(
             mock_irc,
             self._amend_msg(mocker),
-            Identity(raw_nick="alice", account="alice"),
+            Caller.from_row("alice", "alice", "#chan"),
             "in 60s ping",
         )
 
@@ -563,7 +562,6 @@ class TestReminderHelperMethods:
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN a reminder set moments ago WHEN the same one is restated with a new time THEN the old row is replaced, not duplicated."""
-        from llm.plugin import Identity
 
         plugin._MetaSynchronized_rlock = threading.RLock()
         self._stub_parse_for_schedule(plugin)  # 60 seconds
@@ -585,7 +583,7 @@ class TestReminderHelperMethods:
         result = plugin._schedule_reminder(
             mock_irc,
             msg=self._amend_msg(mocker),
-            caller=Identity(raw_nick="alice", account="alice"),
+            caller=Caller.from_row("alice", "alice", "#chan"),
             text="no wait, make it a minute",
         )
 
@@ -602,7 +600,6 @@ class TestReminderHelperMethods:
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN a recent reminder WHEN restated far outside the old fire-proximity window THEN it still amends rather than duplicating."""
-        from llm.plugin import Identity
 
         plugin._MetaSynchronized_rlock = threading.RLock()
         # 300s — the case that produced two live reminders before amendment.
@@ -631,7 +628,7 @@ class TestReminderHelperMethods:
         result = plugin._schedule_reminder(
             mock_irc,
             msg=self._amend_msg(mocker),
-            caller=Identity(raw_nick="alice", account="alice"),
+            caller=Caller.from_row("alice", "alice", "#chan"),
             text="make it 5 minutes",
         )
 
@@ -644,7 +641,6 @@ class TestReminderHelperMethods:
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN a same-worded reminder set long ago WHEN a new one is set THEN both stand."""
-        from llm.plugin import Identity
 
         plugin._MetaSynchronized_rlock = threading.RLock()
         self._stub_parse_for_schedule(plugin)
@@ -666,7 +662,7 @@ class TestReminderHelperMethods:
         result = plugin._schedule_reminder(
             mock_irc,
             msg=self._amend_msg(mocker),
-            caller=Identity(raw_nick="alice", account="alice"),
+            caller=Caller.from_row("alice", "alice", "#chan"),
             text="in 60s ping",
         )
 
@@ -679,7 +675,6 @@ class TestReminderHelperMethods:
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN a recurring chain rescheduling itself WHEN the parent row is still pending THEN it is not treated as an amendment."""
-        from llm.plugin import Identity
 
         plugin._MetaSynchronized_rlock = threading.RLock()
         self._stub_parse_for_schedule(plugin)
@@ -700,7 +695,7 @@ class TestReminderHelperMethods:
         result = plugin._schedule_reminder(
             mock_irc,
             msg=self._amend_msg(mocker),
-            caller=Identity(raw_nick="alice", account="alice"),
+            caller=Caller.from_row("alice", "alice", "#chan"),
             text="in 60s ping",
             parent_chain=1,
         )
@@ -713,7 +708,6 @@ class TestReminderHelperMethods:
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN no parent_chain WHEN scheduling THEN chain_position=1."""
-        from llm.plugin import Identity
 
         plugin._MetaSynchronized_rlock = threading.RLock()
         self._stub_parse_for_schedule(plugin)
@@ -726,7 +720,7 @@ class TestReminderHelperMethods:
         result = plugin._schedule_reminder(
             mock_irc,
             msg,
-            Identity(raw_nick="alice", account="alice"),
+            Caller.from_row("alice", "alice", msg.args[0]),
             "in 1m ping",
         )
         assert result.ok is True
@@ -737,7 +731,6 @@ class TestReminderHelperMethods:
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN parent_chain WHEN rescheduling THEN child increments position."""
-        from llm.plugin import Identity
 
         plugin._MetaSynchronized_rlock = threading.RLock()
         self._stub_parse_for_schedule(plugin, action_prompt="ping (recurring: every 1m)")
@@ -751,7 +744,7 @@ class TestReminderHelperMethods:
         result = plugin._schedule_reminder(
             mock_irc,
             msg,
-            Identity(raw_nick="alice", account="alice"),
+            Caller.from_row("alice", "alice", msg.args[0]),
             "every 1m ping",
             parent_chain=parent,
         )
@@ -799,7 +792,6 @@ class TestReminderHelperMethods:
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN action reminder WHEN scheduled THEN persists action_prompt."""
-        from llm.plugin import Identity
 
         msg = mocker.MagicMock()
         msg.args = ("#ops", "remind test")
@@ -822,7 +814,7 @@ class TestReminderHelperMethods:
         result = plugin._schedule_reminder(
             mock_irc,
             msg,
-            Identity(raw_nick="testnick", account="acct-testnick"),
+            Caller.from_row("testnick", "acct-testnick", msg.args[0]),
             "in 2 minutes tell the bot to post status in #ops",
         )
 
@@ -1734,11 +1726,10 @@ class TestReminderActionDelivery:
         ctx = kwargs["request_context"]
         assert ctx.entry_route == "remind_action"
         assert ctx.profile == "remind_action"
-        assert ctx.nick == "alice"
-        assert ctx.raw_nick == "alice"
-        assert ctx.account == "acct"
-        assert ctx.channel == "#ops"
-        assert ctx.is_private is False
+        assert ctx.caller.identity.raw_nick == "alice"
+        assert ctx.caller.identity.account == "acct"
+        assert ctx.caller.channel == "#ops"
+        assert ctx.caller.is_private is False
         assert ctx.is_owner is False
         # llm.ask/draw/code only — no admin/owner capabilities at fire time.
         assert ctx.capabilities == frozenset({"llm.ask", "llm.draw", "llm.code"})

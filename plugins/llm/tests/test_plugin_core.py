@@ -8,9 +8,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 from llm import ircquery
+from llm.identity import Caller, Identity
 from llm.service import AssistantResult
 
-from .conftest import make_registry_side_effect, make_reminder_row
+from .conftest import make_caller, make_registry_side_effect, make_reminder_row
 
 if TYPE_CHECKING:
     from unittest.mock import MagicMock
@@ -277,10 +278,10 @@ class TestPluginHelperMethods:
         msg.server_tags = {}  # default: no IRCv3 account-tag
         return msg
 
-    def test_resolve_identity_returns_account_when_available(
+    def test_resolve_caller_returns_account_when_available(
         self, mock_msg: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN user logged into account WHEN _resolve_identity called THEN key is account."""
+        """GIVEN user logged into account WHEN _resolve_caller called THEN key is account."""
         from llm.plugin import LLM
 
         mock_irc = mocker.MagicMock()
@@ -296,16 +297,17 @@ class TestPluginHelperMethods:
         plugin.db.migrate_user_data.return_value = 0
         plugin.context = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
-        result = plugin._resolve_identity(mock_irc, mock_msg)
+        result = plugin._resolve_caller(mock_irc, mock_msg).identity
 
         assert result.key == "MyAccount"
         assert result.account == "MyAccount"
+        assert result.personal_key == "MyAccount"
         assert result.raw_nick == "testnick"
 
-    def test_resolve_identity_falls_back_to_nick_when_no_account(
+    def test_resolve_caller_falls_back_to_nick_when_no_account(
         self, mock_msg: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN user not logged in WHEN _resolve_identity called THEN key is nick."""
+        """GIVEN user not logged in WHEN _resolve_caller called THEN key is nick."""
         from llm.plugin import LLM
 
         mock_irc = mocker.MagicMock()
@@ -313,16 +315,17 @@ class TestPluginHelperMethods:
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
-        result = plugin._resolve_identity(mock_irc, mock_msg)
+        result = plugin._resolve_caller(mock_irc, mock_msg).identity
 
         assert result.key == "testnick"
         assert result.account is None
+        assert result.personal_key is None
         assert result.raw_nick == "testnick"
 
-    def test_resolve_identity_falls_back_to_nick_on_keyerror(
+    def test_resolve_caller_falls_back_to_nick_on_keyerror(
         self, mock_msg: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN nickToAccount raises KeyError WHEN _resolve_identity called THEN key is nick."""
+        """GIVEN nickToAccount raises KeyError WHEN _resolve_caller called THEN key is nick."""
         from llm.plugin import LLM
 
         mock_irc = mocker.MagicMock()
@@ -330,35 +333,65 @@ class TestPluginHelperMethods:
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
-        result = plugin._resolve_identity(mock_irc, mock_msg)
+        result = plugin._resolve_caller(mock_irc, mock_msg).identity
 
         assert result.key == "testnick"
         assert result.account is None
 
-    def test_get_channel_extracts_channel_from_args(
+    def test_resolve_caller_in_channel_replies_to_channel(
         self, mock_msg: MagicMock, mocker: MockerFixture
     ) -> None:
-        """GIVEN message with args WHEN _get_channel called THEN returns channel."""
+        """GIVEN a channel message WHEN _resolve_caller called THEN the reply
+        target is the channel."""
         from llm.plugin import LLM
 
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
-        result = plugin._get_channel(mock_msg)
+        caller = plugin._resolve_caller(mock_irc, mock_msg)
 
-        assert result == "#testchannel"
+        assert caller.channel == "#testchannel"
+        assert caller.is_private is False
+        assert caller.reply_target == "#testchannel"
 
-    def test_get_channel_returns_unknown_for_empty_args(self, mocker: MockerFixture) -> None:
-        """GIVEN message with no args WHEN _get_channel called THEN returns unknown."""
+    def test_resolve_caller_in_pm_replies_to_sender_not_bot(self, mocker: MockerFixture) -> None:
+        """GIVEN a PM (args[0] is the bot's nick) WHEN _resolve_caller called THEN
+        the reply target is the sender's nick, never the bot's or the account."""
         from llm.plugin import LLM
 
-        mock_msg = mocker.MagicMock()
-        mock_msg.args = []
-
+        mock_irc = mocker.MagicMock()
+        mock_irc.nick = "testbot"
+        mock_msg = mocker.MagicMock(args=("testbot", "hi"), prefix="nick!u@h", server_tags={})
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
-        result = plugin._get_channel(mock_msg)
+        caller = make_caller(mock_irc, mock_msg, "rdrake", account="rdrake_acct")
+        plugin._migrated_nicks = set()
+        plugin._migrated_nicks_lock = threading.Lock()
+        plugin.db = mocker.MagicMock()
+        plugin.context = mocker.MagicMock()
+        plugin.log = mocker.MagicMock()
 
-        assert result == "unknown"
+        resolved = plugin._resolve_caller(mock_irc, mock_msg)
+
+        assert resolved == caller
+        assert resolved.channel is None
+        assert resolved.is_private is True
+        assert resolved.reply_target == "rdrake"
+
+    def test_resolve_caller_with_no_args_is_private(self, mocker: MockerFixture) -> None:
+        """GIVEN a message with no args WHEN _resolve_caller called THEN it is
+        treated as private and replies to the sender."""
+        from llm.plugin import LLM
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.nickToAccount = mocker.MagicMock(return_value=None)
+        mock_msg = mocker.MagicMock(args=[], prefix="nick!u@h", server_tags={})
+        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
+        plugin = LLM.__new__(LLM)
+
+        assert plugin._resolve_caller(mock_irc, mock_msg).reply_target == "nick"
 
     def test_is_old_message_returns_true_for_old_message(self, mocker: MockerFixture) -> None:
         """GIVEN message older than startup WHEN _is_old_message THEN returns True."""
@@ -1403,13 +1436,11 @@ class TestMemoryExtractionMigration:
         """GIVEN a successful ask WHEN the caller has no account THEN no extraction
         runs: facts would land under the raw nick, which nothing reads."""
         plugin, irc, msg = plugin_env
-        irc.state.nickToAccount.return_value = account
+        caller = make_caller(irc, msg, "testnick", account=account, channel="#test")
         extract = mocker.patch.object(plugin, "_schedule_memory_extraction")
         result = mocker.MagicMock(error=None, content="reply", cost=0.0)
 
-        plugin._store_context_and_log_usage(
-            "testnick", "#test", "ask", "hi", "reply", result, irc, msg
-        )
+        plugin._store_context_and_log_usage(caller, "ask", "hi", "reply", result, irc)
 
         assert extract.called is scheduled
 
@@ -2069,15 +2100,16 @@ class TestPluginDatabaseWiring:
         mock_db.delete_expired_reminders.assert_called_once()
 
 
-class TestRequireAccount:
-    """Test _require_account account-identification gate helper."""
+class TestRequireCaller:
+    """Test _require_caller account-identification gate helper."""
 
     def test_returns_account_when_identified(self, mocker: MockerFixture) -> None:
-        """GIVEN identified user WHEN _require_account called THEN returns account name."""
+        """GIVEN identified user WHEN _require_caller called THEN returns its Caller."""
         from llm.plugin import LLM
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
         plugin = LLM.__new__(LLM)
+        mocker.patch.object(plugin, "_maybe_migrate_nick")
 
         mock_irc = mocker.MagicMock()
         mock_irc.state.nickToAccount = mocker.MagicMock(return_value="alice_account")
@@ -2085,13 +2117,15 @@ class TestRequireAccount:
         mock_msg = mocker.MagicMock()
         mock_msg.prefix = "alice!user@host"
         mock_msg.server_tags = {}
+        mock_msg.args = ("#chan", "hi")
 
-        result = plugin._require_account(mock_irc, mock_msg)
-        assert result == "alice_account"
+        result = plugin._require_caller(mock_irc, mock_msg)
+        assert result is not None
+        assert result.identity.personal_key == "alice_account"
         mock_irc.error.assert_not_called()
 
     def test_returns_none_and_errors_when_unidentified(self, mocker: MockerFixture) -> None:
-        """GIVEN unidentified user WHEN _require_account called THEN returns None and errors."""
+        """GIVEN unidentified user WHEN _require_caller called THEN returns None and errors."""
         from llm.plugin import LLM
 
         mocker.patch.object(LLM, "__init__", lambda self, irc: None)
@@ -2106,8 +2140,9 @@ class TestRequireAccount:
         mock_msg = mocker.MagicMock()
         mock_msg.prefix = "alice!user@host"
         mock_msg.server_tags = {}
+        mock_msg.args = ("#chan", "hi")
 
-        result = plugin._require_account(mock_irc, mock_msg)
+        result = plugin._require_caller(mock_irc, mock_msg)
         assert result is None
         mock_irc.error.assert_called_once()
         err_text = mock_irc.error.call_args[0][0]
@@ -2130,8 +2165,9 @@ class TestRequireAccount:
         mock_msg = mocker.MagicMock()
         mock_msg.prefix = "alice!user@host"
         mock_msg.server_tags = {}
+        mock_msg.args = ("#chan", "hi")
 
-        result = plugin._require_account(mock_irc, mock_msg)
+        result = plugin._require_caller(mock_irc, mock_msg)
         assert result is None
         mock_irc.error.assert_called_once()
 
@@ -2153,21 +2189,24 @@ class TestRequireAccount:
         mock_msg = mocker.MagicMock()
         mock_msg.prefix = "alice!user@host"
         mock_msg.server_tags = {}
+        mock_msg.args = ("#chan", "hi")
 
-        result = plugin._require_account(mock_irc, mock_msg)
+        result = plugin._require_caller(mock_irc, mock_msg)
         assert result is None
         mock_irc.error.assert_called_once()
 
 
-class TestRequireAccountUsesResolver:
-    """_require_account must read account-tag via _account_from_msg."""
+class TestRequireCallerUsesResolver:
+    """_require_caller must read account-tag via _account_from_msg."""
 
     def test_returns_tag_when_present(self, plugin_env):
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = None  # cache empty
         mock_msg.server_tags = {"account": "tag_acct"}
 
-        assert plugin._require_account(mock_irc, mock_msg) == "tag_acct"
+        caller = plugin._require_caller(mock_irc, mock_msg)
+        assert caller is not None
+        assert caller.identity.personal_key == "tag_acct"
         mock_irc.error.assert_not_called()
 
     def test_returns_none_and_errors_when_unidentified(self, plugin_env):
@@ -2175,7 +2214,7 @@ class TestRequireAccountUsesResolver:
         mock_irc.state.nickToAccount.return_value = None
         mock_msg.server_tags = {}
 
-        assert plugin._require_account(mock_irc, mock_msg) is None
+        assert plugin._require_caller(mock_irc, mock_msg) is None
         mock_irc.error.assert_called_once()
         err_text = mock_irc.error.call_args[0][0]
         assert "NickServ" not in err_text
@@ -2367,8 +2406,8 @@ class TestRunPreflight:
 
         result = plugin._run_preflight(mock_irc, mock_msg, "hello", "ask", require_account=False)
         assert result.blocked is False
-        assert result.nick == "alice"
-        assert result.channel == "#test"
+        assert result.caller.identity.key == "alice"
+        assert result.caller.reply_target == "#test"
 
     def test_preflight_blocks_unidentified_for_draw(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN unidentified user WHEN draw preflight THEN blocked with auth_failure."""
@@ -2627,7 +2666,7 @@ class TestPreflightOptionalAccountTag:
         result = plugin._run_preflight(
             mock_irc, mock_msg, text="hi", command="ask", require_account=False
         )
-        assert result.account == "tag_acct"
+        assert result.caller.identity.account == "tag_acct"
 
 
 class TestMaybeMigrateNickCasemap:
@@ -3083,9 +3122,7 @@ def test_unattended_assistant_reads_state_under_account_key(mocker: MockerFixtur
         irc=mocker.MagicMock(),
         msg=mocker.MagicMock(),
         prompt="check the build",
-        nick="alice_away",
-        account="alice",
-        channel="#test",
+        caller=Caller(Identity("alice_away", "alice"), "#test"),
         bot_nick="vibebot",
         entry_route="reminder_action",
     )

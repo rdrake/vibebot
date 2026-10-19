@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import pytest
-from llm.plugin import LLM, Identity
+from llm.identity import Caller, Identity
+from llm.plugin import LLM
 from llm.service import ReminderParseResult
 from llm.usertz import SOURCE_CTCP, SOURCE_DEFAULT, SOURCE_SET, UTC_DEFAULT, UserTz
 
@@ -100,7 +101,9 @@ class TestResolveUserTz:
         )
         mocker.patch("llm.plugin.schedule.addEvent")
 
-        plugin._schedule_reminder(mock_irc, mock_msg, Identity("rdrake", None), "at 5pm x")
+        plugin._schedule_reminder(
+            mock_irc, mock_msg, Caller.from_row("rdrake", None, mock_msg.args[0]), "at 5pm x"
+        )
 
         assert plugin.llm_service.parse_reminder.call_args.kwargs["user_tz"] == UTC_DEFAULT
 
@@ -265,7 +268,10 @@ class TestScheduleReminderUsesZone:
         mocker.patch("llm.plugin.schedule.addEvent")
 
         plugin._schedule_reminder(
-            mock_irc, mock_msg, Identity("testnick", "testnick"), "tomorrow morning strike"
+            mock_irc,
+            mock_msg,
+            Caller.from_row("testnick", "testnick", mock_msg.args[0]),
+            "tomorrow morning strike",
         )
 
         kwargs = plugin.llm_service.parse_reminder.call_args.kwargs
@@ -279,7 +285,11 @@ class TestScheduleReminderUsesZone:
         mocker.patch("llm.plugin.schedule.addEvent")
 
         plugin._schedule_reminder(
-            mock_irc, mock_msg, Identity("testnick", "testnick"), "x", parent_chain=1
+            mock_irc,
+            mock_msg,
+            Caller.from_row("testnick", "testnick", mock_msg.args[0]),
+            "x",
+            parent_chain=1,
         )
 
         plugin._probe_ctcp_tz.assert_not_called()
@@ -292,7 +302,10 @@ class TestScheduleReminderUsesZone:
         mocker.patch("llm.plugin.schedule.addEvent")
 
         plugin._schedule_reminder(
-            mock_irc, mock_msg, Identity("Rubin", "Rubin"), "remind d0nk when its going to rain"
+            mock_irc,
+            mock_msg,
+            Caller.from_row("Rubin", "Rubin", mock_msg.args[0]),
+            "remind d0nk when its going to rain",
         )
 
         plugin._probe_ctcp_tz.assert_not_called()
@@ -309,7 +322,9 @@ class TestScheduleReminderUsesZone:
         )
         mocker.patch("llm.plugin.schedule.addEvent")
 
-        plugin._schedule_reminder(mock_irc, mock_msg, Identity("Rubin", "Rubin"), "in 1 hour x")
+        plugin._schedule_reminder(
+            mock_irc, mock_msg, Caller.from_row("Rubin", "Rubin", mock_msg.args[0]), "in 1 hour x"
+        )
 
         assert plugin.llm_service.parse_reminder.call_args.kwargs["user_tz"].tz == offset
 
@@ -320,7 +335,9 @@ class TestScheduleReminderUsesZone:
         )
         mocker.patch("llm.plugin.schedule.addEvent")
 
-        plugin._schedule_reminder(mock_irc, mock_msg, Identity("Rubin", "Rubin"), "at 5pm x")
+        plugin._schedule_reminder(
+            mock_irc, mock_msg, Caller.from_row("Rubin", "Rubin", mock_msg.args[0]), "at 5pm x"
+        )
 
         plugin._probe_ctcp_tz.assert_called_once_with(mock_irc, "Rubin")
 
@@ -477,10 +494,9 @@ class TestOwnerTz:
 class TestScheduleFnProbing:
     def _fns(self, plugin, mocker: MockerFixture, *, from_fire: bool):
         return plugin._pending_task_fns(
-            caller=Identity("rdrake", "rdrake"),
+            caller=Caller(Identity("rdrake", "rdrake"), "#t"),
             irc=mocker.MagicMock(),
             msg=mocker.MagicMock(),
-            channel="#t",
             pass_irc_msg_to_callbacks=not from_fire,
         )
 

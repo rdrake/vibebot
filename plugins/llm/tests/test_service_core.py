@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 from hypothesis import given
 from hypothesis.strategies import characters, ip_addresses, lists, sampled_from, text, tuples
+from llm.identity import Caller, Identity
 from llm.service import AssistantRequestContext, AssistantResult, LLMService, validate_external_url
 
 from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
@@ -35,11 +36,7 @@ class TestLLMService:
         request_context = AssistantRequestContext(
             entry_route="ask",
             profile="chat",
-            nick="testuser",
-            raw_nick="testuser",
-            account=None,
-            channel="#test",
-            is_private=False,
+            caller=Caller(Identity("testuser", None), "#test"),
             is_owner=False,
             capabilities=frozenset({"llm.ask"}),
         )
@@ -66,11 +63,7 @@ class TestLLMService:
         request_context = AssistantRequestContext(
             entry_route="ask",
             profile="chat",
-            nick="testuser",
-            raw_nick="testuser",
-            account=None,
-            channel="#test",
-            is_private=False,
+            caller=Caller(Identity("testuser", None), "#test"),
             is_owner=False,
             capabilities=frozenset({"llm.ask"}),
         )
@@ -99,11 +92,7 @@ class TestLLMService:
         request_context = AssistantRequestContext(
             entry_route="meta",
             profile="unknown",
-            nick="testuser",
-            raw_nick="testuser",
-            account=None,
-            channel="#test",
-            is_private=False,
+            caller=Caller(Identity("testuser", None), "#test"),
             is_owner=False,
             capabilities=frozenset({"llm.ask"}),
         )
@@ -129,11 +118,7 @@ class TestLLMService:
         request_context = AssistantRequestContext(
             entry_route="remind_action",
             profile="remind_action",
-            nick="testuser",
-            raw_nick="testuser",
-            account=None,
-            channel="#test",
-            is_private=False,
+            caller=Caller(Identity("testuser", None), "#test"),
             is_owner=False,
             capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
         )

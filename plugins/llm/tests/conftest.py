@@ -15,10 +15,12 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
+from llm.identity import Caller, Identity
 from llm.persistence import LLMDatabase, ReminderRow
 from llm.plugin import LLM
 from llm.service import LLMService
 from llm.typing_holds import TypingHolds
+from supybot import ircutils
 
 if TYPE_CHECKING:
     from unittest.mock import Mock
@@ -366,6 +368,35 @@ def make_reminder_row(
 # =============================================================================
 # litellm completion-response builders
 # =============================================================================
+
+
+def make_caller(
+    irc: Any,
+    msg: Any,
+    nick: str = "testnick",
+    *,
+    account: str | None = None,
+    channel: str | None = None,
+) -> Caller:
+    """Point ``msg`` and ``irc`` at one consistent sender; return its Caller.
+
+    Sets the nick, prefix, args, channel and IRCv3 account tag on ``msg``, and
+    makes ``irc.state.nickToAccount`` agree, so the plugin resolves exactly
+    the returned Caller. ``channel=None`` is a private message: ``args[0]``
+    becomes the bot's own nick, as it is on the wire. The message text in
+    ``args[1]`` is kept.
+    """
+    args = msg.args if isinstance(getattr(msg, "args", None), tuple) else ()
+    text = args[1] if len(args) > 1 else ""
+    msg.nick = nick
+    msg.prefix = f"{nick}!user@host"
+    msg.args = (channel or irc.nick, text)
+    msg.channel = channel
+    msg.server_tags = {"account": account} if account else {}
+    irc.state.nickToAccount = MagicMock(
+        side_effect=lambda n: account if ircutils.strEqual(n, nick) else None
+    )
+    return Caller(Identity(nick, account), channel)
 
 
 def make_tool_call(
