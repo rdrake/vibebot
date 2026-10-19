@@ -68,6 +68,7 @@ from .service import (
     ReferenceImage,
     VideoResult,
     account_from_server_tags,
+    exponential_backoff,
     irc_has_caps,
     split_reference_url,
     truncate_to_byte_budget,
@@ -2862,9 +2863,8 @@ class LLM(callbacks.Plugin):
             elif not self._llm_executor.closing:
                 now = time.time()
                 attempt = max(r.delivery_attempt_count, 0) + 1
-                delay = min(
-                    self._DELIVERY_BASE_BACKOFF * (2 ** (attempt - 1)),
-                    self._DELIVERY_MAX_BACKOFF,
+                delay = exponential_backoff(
+                    attempt - 1, base=self._DELIVERY_BASE_BACKOFF, cap=self._DELIVERY_MAX_BACKOFF
                 )
                 state = "delivery_failed" if attempt >= self._DELIVERY_MAX_ATTEMPTS else "retrying"
                 retry_at = now + delay
