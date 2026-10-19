@@ -3841,7 +3841,7 @@ class LLM(callbacks.Plugin):
             capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
         )
         channel = caller.reply_target
-        history, channel_history = self._gather_history(caller.identity.key, channel)
+        history, channel_history = self._gather_history(caller)
         personal_key = caller.identity.personal_key
         memories = self._get_user_memories(personal_key) if personal_key else []
         user_instruction = self.db.get_instruction(personal_key) if personal_key else None
@@ -6039,11 +6039,14 @@ class LLM(callbacks.Plugin):
         be preserved.
         """
         nick, channel = caller.identity.key, caller.reply_target
-        if result.model and channel:
+        if result.model and caller.channel:
             served = getattr(self, "_served_models", None)
             if served is None:
                 served = self._served_models = {}
-            served[(self._network_of(irc), channel.lower())] = (result.model, time.time())
+            served[(self._network_of(irc), caller.channel.lower())] = (
+                result.model,
+                time.time(),
+            )
         if suppress_reminder_mutations and result.last_successful_tool in _REMINDER_MUTATION_TOOLS:
             # Any text is dropped, not just empty text: told it may stay
             # quiet, gemini narrated the silence instead (2026-09-25:
@@ -6217,7 +6220,7 @@ class LLM(callbacks.Plugin):
            ``_dispatch_with_verse_routing``). This separates the canon layer
            (read/write, cheap) from the roleplay persona (explicit, heavy).
         """
-        if not self.registryValue("verseEnabled", channel):
+        if not ircutils.isChannel(channel) or not self.registryValue("verseEnabled", channel):
             return None
         # Prefer the real msg.prefix: hostmask-authed accounts can resolve to
         # a different user than a synthetic nick!*@* pattern would. The
@@ -6270,8 +6273,8 @@ class LLM(callbacks.Plugin):
         world's voice; left False for the ``@draw`` grounding path, where an
         "answer in voice" instruction has no business in an image prompt.
         """
-        channel = preflight.caller.reply_target
-        if not self.registryValue("verseEnabled", channel):
+        channel = preflight.caller.channel
+        if channel is None or not self.registryValue("verseEnabled", channel):
             return None
         try:
             store = self._get_or_create_verse_store(channel)
@@ -6422,8 +6425,8 @@ class LLM(callbacks.Plugin):
         path (draw drawn), still verse-grounded. The cooldown check reserves the
         slot, matching the verse_storybook tool handler.
         """
-        channel = preflight.caller.reply_target
-        if not self.registryValue("verseStorybookEnabled", channel):
+        channel = preflight.caller.channel
+        if channel is None or not self.registryValue("verseStorybookEnabled", channel):
             return None
         if self._ambient_verse_intent(text) != "illustrate":
             return None
@@ -6469,8 +6472,8 @@ class LLM(callbacks.Plugin):
         non-avatar speaker falls through to grounded chat instead. Best-effort:
         any failure returns False (→ the caller's normal chat/draw paths stand).
         """
-        channel = preflight.caller.reply_target
-        if not self.registryValue("verseEnabled", channel):
+        channel = preflight.caller.channel
+        if channel is None or not self.registryValue("verseEnabled", channel):
             return False
         if self._ambient_verse_intent(text) != "story":
             return False
@@ -6498,8 +6501,8 @@ class LLM(callbacks.Plugin):
         verse_record stays denied and canon only grows during @rp roleplay.
         Best-effort: returns None on any failure (→ the denial handler stands).
         """
-        channel = preflight.caller.reply_target
-        if not self.registryValue("verseEnabled", channel):
+        channel = preflight.caller.channel
+        if channel is None or not self.registryValue("verseEnabled", channel):
             return None
         if not self.registryValue("verseChatRecordEnabled", channel):
             return None
@@ -6643,7 +6646,7 @@ class LLM(callbacks.Plugin):
         # never block delivery on it. Empty when context is off for the channel.
         scene_context = ""
         try:
-            _personal, channel_history = self._gather_history(nick, channel)
+            _personal, channel_history = self._gather_history(caller)
             if channel_history:
                 scene_context = self.llm_service._format_channel_history(channel_history)[:2000]
         except Exception:
@@ -7580,26 +7583,34 @@ class LLM(callbacks.Plugin):
 
     def _gather_history(
         self,
-        nick: str,
-        channel: str,
+        caller: Caller,
         *,
         max_age_seconds: int | None = None,
     ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-        """Return (personal_history, channel_history) for the given nick/channel.
+        """Return (personal_history, channel_history) for ``caller``.
+
+        Personal history is the caller's own thread, keyed on their storage
+        key at their reply target. Channel history is the channel's shared
+        buffer, which a private message does not have: a PM caller always
+        gets ``[]``, so no one's PM can surface in another request, even
+        under a nick the earlier sender has since given up.
 
         Returns ([], []) when context is disabled for the channel or when
         ``max_age_seconds`` is 0 (callers use 0 to opt out of context while
         keeping a positive freshness window configurable). A positive value
         filters stale conversations at the context layer.
         """
+        nick, channel = caller.identity.key, caller.reply_target
         if not self._get_context_enabled(channel) or max_age_seconds == 0:
             return [], []
         ctx_cfg = self._get_context_config(channel)
         history = self.context.get_messages(
             nick, channel, config=ctx_cfg, max_age_seconds=max_age_seconds
         )
+        if caller.channel is None:
+            return history, []
         channel_history = self.context.get_channel_messages(
-            channel,
+            caller.channel,
             exclude_nick=nick,
             config=ctx_cfg,
             max_age_seconds=max_age_seconds,
@@ -7854,10 +7865,14 @@ class LLM(callbacks.Plugin):
             ctx_cfg = self._get_context_config(channel)
             self.context.add_message(nick, channel, Role.USER, text, config=ctx_cfg)
             self.context.add_message(nick, channel, Role.ASSISTANT, response, config=ctx_cfg)
-            self.context.add_channel_message(channel, nick, Role.USER, text, config=ctx_cfg)
-            self.context.add_channel_message(
-                channel, irc.nick, Role.ASSISTANT, response, config=ctx_cfg
-            )
+            # The shared buffer is the channel's; a PM never writes to it
+            # (see _gather_history).
+            if caller.channel is not None:
+                shared = caller.channel
+                self.context.add_channel_message(shared, nick, Role.USER, text, config=ctx_cfg)
+                self.context.add_channel_message(
+                    shared, irc.nick, Role.ASSISTANT, response, config=ctx_cfg
+                )
 
         # Determine status
         if result.error is None:
@@ -8022,7 +8037,8 @@ class LLM(callbacks.Plugin):
             # `// illustrate the lads` still spends a whole storybook. Gated on
             # verseEnabled because these markers only carry OOC meaning on a
             # verse channel; elsewhere they are ordinary text.
-            verse_enabled = self.registryValue("verseEnabled", channel)
+            # Verse is per channel: a PM has no verse store to read or grow.
+            verse_enabled = not caller.is_private and self.registryValue("verseEnabled", channel)
             ooc = bool(verse_enabled and is_ooc(text))
             # Prose-first ambient story, the DEFAULT for a canon mention: any
             # message that references canon becomes a multi-paragraph INLINE
@@ -8197,7 +8213,7 @@ class LLM(callbacks.Plugin):
             # Detect images for vision
             images = self.llm_service.detect_images(text)
 
-            history, channel_history = self._gather_history(nick, channel)
+            history, channel_history = self._gather_history(caller)
 
             # Personal data: read only through the personal key.
             personal_key = caller.identity.personal_key
@@ -8267,7 +8283,9 @@ class LLM(callbacks.Plugin):
                 # them it is advertised to every speaker so the channel's
                 # cacheable prompt prefix stays byte-stable.
                 if self.registryValue("ircLookupEnabled", channel):
-                    lookup_schemas, lookup_handlers = self._build_irc_lookup_tool(irc, channel)
+                    lookup_schemas, lookup_handlers = self._build_irc_lookup_tool(
+                        irc, caller.channel or ""
+                    )
                     bridge_schemas = [*(bridge_schemas or []), *lookup_schemas]
                     bridge_handlers = {**(bridge_handlers or {}), **lookup_handlers}
                 if self.registryValue("reactEnabled", channel):
@@ -8455,7 +8473,7 @@ class LLM(callbacks.Plugin):
             )
 
             with self._trace_request("code", nick, channel):
-                history, channel_history = self._gather_history(nick, channel)
+                history, channel_history = self._gather_history(caller)
 
                 personal_key = caller.identity.personal_key
                 memories = self._get_user_memories(personal_key) if personal_key else []
@@ -8581,8 +8599,7 @@ class LLM(callbacks.Plugin):
 
             with self._trace_request("draw", nick, channel):
                 history, channel_history = self._gather_history(
-                    nick,
-                    channel,
+                    caller,
                     max_age_seconds=self.registryValue("drawContextMaxAgeSeconds", channel),
                 )
 
@@ -9579,8 +9596,7 @@ class LLM(callbacks.Plugin):
 
             with self._trace_request("animate", nick, channel):
                 history, channel_history = self._gather_history(
-                    nick,
-                    channel,
+                    caller,
                     max_age_seconds=self.registryValue("drawContextMaxAgeSeconds", channel),
                 )
 

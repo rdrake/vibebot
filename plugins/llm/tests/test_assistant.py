@@ -17,7 +17,7 @@ from llm.assistant import (
     get_tools_for_profile,
 )
 from llm.identity import Caller, Identity
-from llm.plugin import LLM
+from llm.plugin import LLM, PreflightResult
 from llm.profile import PROFILE_CHAT, PROFILE_REMIND_ACTION
 from llm.prompts import CHAT_SYSTEM_PROMPT, PENDING_TASKS_GUIDANCE
 from llm.service import (
@@ -3862,12 +3862,7 @@ class TestInvalidCommandRouting:
 
         plugin._ask_impl = mocker.MagicMock()
         plugin._run_preflight = mocker.MagicMock(
-            return_value=mocker.MagicMock(
-                blocked=False,
-                nick="testuser",
-                channel="#test",
-                account=None,
-            )
+            return_value=PreflightResult(False, Caller(Identity("testuser", None), "#test"))
         )
 
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
@@ -3891,12 +3886,7 @@ class TestInvalidCommandRouting:
         plugin._ask_impl = mocker.MagicMock()
         plugin._run_meta = mocker.MagicMock()
         plugin._run_preflight = mocker.MagicMock(
-            return_value=mocker.MagicMock(
-                blocked=False,
-                nick="testuser",
-                channel="#test",
-                account=None,
-            )
+            return_value=PreflightResult(False, Caller(Identity("testuser", None), "#test"))
         )
 
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
@@ -3952,7 +3942,7 @@ class TestInvalidCommandRouting:
         mocker.patch("llm.plugin.world.SupyThread", _FakeThread)
         plugin._dispatch_with_verse_routing = mocker.MagicMock()
 
-        preflight = mocker.MagicMock(blocked=False, nick="u", channel="#c", account=None)
+        preflight = PreflightResult(False, Caller(Identity("u", None), "#c"))
         plugin._dispatch_addressed_async(
             mock_irc, msg, "hi there", preflight, entry_route="addressed"
         )
@@ -3990,7 +3980,7 @@ class TestInvalidCommandRouting:
         plugin._dispatch_with_verse_routing = mocker.MagicMock()
         plugin._llm_executor = mocker.MagicMock(closing=True)
 
-        preflight = mocker.MagicMock(blocked=False, nick="u", channel="#c", account=None)
+        preflight = PreflightResult(False, Caller(Identity("u", None), "#c"))
         plugin._dispatch_addressed_async(mock_irc, msg, "hi", preflight, entry_route="addressed")
 
         captured["target"]()  # run the worker

@@ -17,6 +17,8 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
+from llm.identity import Caller
+from llm.plugin import PreflightResult
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -150,7 +152,9 @@ class TestBotHostDetection:
         """The whole point: grok gets three replies, then quiet."""
         plugin, mock_irc, mock_msg = plugin_env
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
-        mocker.patch.object(plugin, "_run_preflight", return_value=mocker.MagicMock(blocked=False))
+        mocker.patch.object(
+            plugin, "_run_preflight", return_value=PreflightResult(False, Caller.from_msg(mock_msg))
+        )
         dispatch = mocker.patch.object(plugin, "_dispatch_addressed_async")
         mock_msg.nick = "grok"
         mock_msg.prefix = "grok!grook@grok.Bot.AfterNET.Org"
@@ -166,7 +170,9 @@ class TestBotHostDetection:
         """The host already answered the question; no WHO needed."""
         plugin, mock_irc, mock_msg = plugin_env
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
-        mocker.patch.object(plugin, "_run_preflight", return_value=mocker.MagicMock(blocked=False))
+        mocker.patch.object(
+            plugin, "_run_preflight", return_value=PreflightResult(False, Caller.from_msg(mock_msg))
+        )
         mocker.patch.object(plugin, "_dispatch_addressed_async")
         mock_msg.nick = "grok"
         mock_msg.prefix = "grok!grook@grok.Bot.AfterNET.Org"
@@ -225,7 +231,7 @@ class TestBotLoopCap:
         """Plugin whose dispatch is observable and whose preflight always passes."""
         plugin, mock_irc, mock_msg = plugin_env
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
-        preflight = mocker.MagicMock(blocked=False)
+        preflight = PreflightResult(False, Caller.from_msg(mock_msg))
         mocker.patch.object(plugin, "_run_preflight", return_value=preflight)
         dispatch = mocker.patch.object(plugin, "_dispatch_addressed_async")
         return plugin, mock_irc, mock_msg, dispatch
@@ -402,7 +408,9 @@ class TestBotLoopGuardIsSafe:
         """GIVEN the guard raises WHEN a line arrives THEN the reply still happens."""
         plugin, mock_irc, mock_msg = plugin_env
         mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
-        mocker.patch.object(plugin, "_run_preflight", return_value=mocker.MagicMock(blocked=False))
+        mocker.patch.object(
+            plugin, "_run_preflight", return_value=PreflightResult(False, Caller.from_msg(mock_msg))
+        )
         dispatch = mocker.patch.object(plugin, "_dispatch_addressed_async")
         mocker.patch.object(plugin, "_bot_loop_blocked", side_effect=RuntimeError("boom"))
 
