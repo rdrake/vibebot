@@ -370,25 +370,24 @@ class TestDeliverPendingResult:
 
         mock_irc.queueMsg.assert_called_once()
 
-    def test_logs_usage_for_completed_task(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN completed result with cost WHEN delivered THEN usage logged."""
+    def test_books_usage_for_completed_task(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN a completed durable result WHEN delivered THEN its usage is
+        booked as success, before the ack deletes the row."""
         import supybot.world as world_mod
 
         mock_irc = mocker.MagicMock()
         mock_irc.state.channels = {"#test": mocker.MagicMock()}
-        mock_irc.state.nickToAccount.return_value = "alice_account"
         mocker.patch.object(world_mod, "ircs", [mock_irc])
+        calls = mocker.MagicMock()
+        calls.attach_mock(plugin.db.book_pending_task_usage, "book")
+        calls.attach_mock(plugin.db.delete_pending_task, "delete")
 
-        r = self._make_result(cost=0.01, prompt_tokens=100, completion_tokens=50)
-        plugin._deliver_pending_result(r)
+        plugin._deliver_pending_result(self._make_result(task_id=7))
 
-        plugin.db.log_usage.assert_called_once()
-        call_args = plugin.db.log_usage.call_args[0]
-        assert call_args[2] == "ask"  # command
-        assert call_args[3] == "gpt-4"  # model
-        assert call_args[4] == 100  # prompt_tokens
-        assert call_args[5] == 50  # completion_tokens
-        assert call_args[6] == 0.01  # cost
+        assert [c[0] for c in calls.mock_calls] == ["book", "delete"]
+        plugin.db.book_pending_task_usage.assert_called_once_with(
+            7, status="success", error_detail=""
+        )
 
     def test_logs_usage_for_billed_terminal_failure(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN a retry that billed tokens but answered nothing WHEN its failure
@@ -407,11 +406,13 @@ class TestDeliverPendingResult:
             cost=0.02,
             prompt_tokens=100,
             completion_tokens=4096,
+            task_id=7,
         )
         plugin._deliver_pending_result(r)
 
-        plugin.db.log_usage.assert_called_once()
-        assert plugin.db.log_usage.call_args[0][6] == 0.02
+        plugin.db.book_pending_task_usage.assert_called_once_with(
+            7, status="error", error_detail="the model returned an empty answer"
+        )
 
     def test_logs_structured_expired_outcome(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN expired deferred result WHEN delivered THEN logs structured operator entry."""
@@ -1193,80 +1194,6 @@ class TestDeliverPendingResultUnknownStatus:
         mock_irc.sendMsg.assert_not_called()
 
 
-class TestDeliveryLogsAccountWhenPresent:
-    def test_log_usage_uses_captured_account(self, plugin_env, mocker: MockerFixture):
-        plugin, _, _ = plugin_env
-        plugin.db.log_usage = mocker.MagicMock()
-        from llm.service import PendingTaskResult
-
-        result = PendingTaskResult(
-            status="completed",
-            task_type="ask",
-            nick="alice",
-            reply_target="#chan",
-            is_channel=True,
-            prompt_preview="hi",
-            model="gpt-4",
-            cost=0.01,
-            prompt_tokens=10,
-            completion_tokens=5,
-            account="alice_acct",
-        )
-        # Avoid real world.ircs iteration in tests.
-        mocker.patch("llm.plugin.world.ircs", [mocker.MagicMock()])
-        plugin._log_pending_delivery_usage(result, nick="alice", target="#chan")
-        plugin.db.log_usage.assert_called_once_with(
-            "alice_acct", "#chan", "ask", "gpt-4", 10, 5, 0.01
-        )
-
-    def test_log_usage_falls_back_to_resolver_when_account_null(
-        self, plugin_env, mocker: MockerFixture
-    ):
-        plugin, _, _ = plugin_env
-        plugin.db.log_usage = mocker.MagicMock()
-        from llm.service import PendingTaskResult
-
-        result = PendingTaskResult(
-            status="completed",
-            task_type="ask",
-            nick="alice",
-            reply_target="#chan",
-            is_channel=True,
-            prompt_preview="hi",
-            model="gpt-4",
-            cost=0.01,
-            prompt_tokens=10,
-            completion_tokens=5,
-            account=None,
-        )
-        mocker.patch.object(plugin, "_resolve_nick_to_identity", return_value="alice")
-        mocker.patch("llm.plugin.world.ircs", [mocker.MagicMock()])
-        plugin._log_pending_delivery_usage(result, nick="alice", target="#chan")
-        plugin.db.log_usage.assert_called_once_with("alice", "#chan", "ask", "gpt-4", 10, 5, 0.01)
-
-    def test_log_usage_skipped_when_zero_cost_and_tokens(self, plugin_env, mocker: MockerFixture):
-        plugin, _, _ = plugin_env
-        plugin.db.log_usage = mocker.MagicMock()
-        from llm.service import PendingTaskResult
-
-        result = PendingTaskResult(
-            status="completed",
-            task_type="ask",
-            nick="alice",
-            reply_target="#chan",
-            is_channel=True,
-            prompt_preview="hi",
-            model="gpt-4",
-            cost=0,
-            prompt_tokens=0,
-            completion_tokens=0,
-            account="alice_acct",
-        )
-        mocker.patch("llm.plugin.world.ircs", [mocker.MagicMock()])
-        plugin._log_pending_delivery_usage(result, nick="alice", target="#chan")
-        plugin.db.log_usage.assert_not_called()
-
-
 class TestPendingTaskFns:
     """Phase 2 follow-up — unified `_pending_task_fns` helper wiring.
 
@@ -1459,3 +1386,102 @@ class TestMechanicalRescheduleEdgeCases:
 
         add_event.assert_not_called()
         plugin.db.save_reminder.assert_not_called()
+
+
+class TestPendingUsageBookedOnce:
+    """Delivery is at-least-once; the billed retry's usage row is not."""
+
+    @pytest.fixture
+    def env(self, plugin_env, mocker: MockerFixture, tmp_path):
+        import json
+
+        import supybot.world as world_mod
+        from llm.persistence import LLMDatabase
+
+        plugin, _irc, _msg = plugin_env
+        plugin.db = LLMDatabase(str(tmp_path / "pending.db"))
+        plugin._schedule_queue_wakeup = mocker.MagicMock()
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#test": mocker.MagicMock()}
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+        now = time.time()
+        task_id = plugin.db.save_pending_task(
+            task_type="ask",
+            nick="alice",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="hello",
+            model="gpt-4",
+            request_data="{}",
+            submitted_at=now,
+            expires_at=now + 600,
+            next_attempt_at=now,
+        )
+        payload = {
+            "status": "completed",
+            "content": "hi",
+            "cost": 0.01,
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+        }
+        plugin.db.update_task_for_delivery(task_id, "ready", json.dumps(payload))
+        return plugin, task_id
+
+    @staticmethod
+    def _result(task_id: int, attempts: int = 0):
+        from llm.service import PendingTaskResult
+
+        return PendingTaskResult(
+            status="completed",
+            task_type="ask",
+            nick="alice",
+            reply_target="#test",
+            is_channel=True,
+            prompt_preview="hello",
+            model="gpt-4",
+            content="hi",
+            prompt_tokens=100,
+            completion_tokens=50,
+            cost=0.01,
+            task_id=task_id,
+            delivery_attempt_count=attempts,
+        )
+
+    @staticmethod
+    def _rows(plugin) -> list[tuple]:
+        return plugin.db._connect().execute("SELECT nick, status, cost FROM usage").fetchall()
+
+    def test_failed_sends_book_once_when_delivery_fails(self, env, mocker) -> None:
+        """GIVEN every send fails WHEN retries run out THEN exactly one error row,
+        and a further pass over the dead row adds none."""
+        plugin, task_id = env
+        mocker.patch.object(plugin, "_safe_queue", return_value=False)
+        for attempt in range(plugin._DELIVERY_MAX_ATTEMPTS - 1):
+            plugin._deliver_pending_result(self._result(task_id, attempt))
+            assert self._rows(plugin) == []
+
+        plugin._deliver_pending_result(self._result(task_id, plugin._DELIVERY_MAX_ATTEMPTS - 1))
+        plugin._deliver_pending_result(self._result(task_id, plugin._DELIVERY_MAX_ATTEMPTS))
+
+        assert self._rows(plugin) == [("!alice", "error", 0.01)]
+
+    def test_redelivery_after_a_failed_ack_books_once(self, env, mocker) -> None:
+        """GIVEN the ack (delete) fails so the row re-delivers THEN one row."""
+        plugin, task_id = env
+        mocker.patch.object(plugin, "_safe_queue", return_value=True)
+        mocker.patch.object(plugin.db, "delete_pending_task", side_effect=RuntimeError("locked"))
+
+        plugin._deliver_pending_result(self._result(task_id))
+        plugin._deliver_pending_result(self._result(task_id))
+
+        assert self._rows(plugin) == [("!alice", "success", 0.01)]
+
+    def test_cancelled_task_books_its_spend(self, env) -> None:
+        """GIVEN a billed task is cancelled before delivery THEN its spend books."""
+        plugin, _task_id = env
+        plugin.llm_service.cancel_video.return_value = True
+        (row,) = plugin.db.load_pending_tasks("ask")
+
+        plugin._cancel_animate_row(row)
+
+        assert self._rows(plugin) == [("!alice", "error", 0.01)]

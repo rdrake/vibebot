@@ -106,7 +106,7 @@ if TYPE_CHECKING:
     from supybot.ircmsgs import IrcMsg
 
     from .assistant import ToolCallbackResult, ToolResult
-    from .service import MemePicture, PendingTaskResult
+    from .service import MemePicture
 
 _ = PluginInternationalization("LLM")
 
@@ -2845,6 +2845,14 @@ class LLM(callbacks.Plugin):
         # next lifetime is the correct, mutation-free behavior.
         if r.task_id is not None:
             if delivered:
+                # Booked before the ack: if the delete below fails and the row
+                # re-delivers, the task's usage_booked flag stops a second row.
+                # A delivered failure still billed its retry (an empty answer).
+                self._book_pending_usage(
+                    r.task_id,
+                    status="success" if r.status == "completed" else "error",
+                    error_detail="" if r.status == "completed" else r.reason,
+                )
                 # Best-effort ack: a transient delete failure (e.g. DB lock)
                 # after a successful send must not bubble up as a misleading
                 # "delivery failed". The row simply re-delivers next tick
@@ -2873,17 +2881,12 @@ class LLM(callbacks.Plugin):
                     delivery_attempt_count=attempt,
                     next_attempt_at=retry_at,
                 )
-                if state != "delivery_failed":
+                if state == "delivery_failed":
+                    self._book_pending_usage(
+                        r.task_id, status="error", error_detail="delivery failed"
+                    )
+                else:
                     self._schedule_queue_wakeup(at_time=retry_at)
-
-        # Log usage for completed tasks, and failures that still billed (an empty
-        # retry answer) — a durable-state write, so skip while closing.
-        if (
-            r.status in ("completed", "failed_terminal")
-            and delivered
-            and not self._llm_executor.closing
-        ):
-            self._log_pending_delivery_usage(r, nick, target)
 
     def _remember_own_msgid(self, irc: callbacks.Irc, msg: IrcMsg) -> None:
         """Record the msgid of an echoed bot line (PRIVMSG, NOTICE, or the
@@ -4591,31 +4594,17 @@ class LLM(callbacks.Plugin):
             return nick
         return Identity(nick, account or None).key
 
-    def _log_pending_delivery_usage(
-        self, result: PendingTaskResult, nick: str, target: str
-    ) -> None:
-        """Log usage for a delivered pending task.
+    def _book_pending_usage(self, task_id: int, *, status: str, error_detail: str = "") -> None:
+        """Book a pending task's billed retry at one of its end states.
 
-        Prefers the account captured at submission time; falls back to live
-        resolution by nick when the captured account is NULL (e.g., user was
-        unidentified at request time).
+        Exactly once per task (``LLMDatabase.book_pending_task_usage``), so
+        it is safe to call on every path that ends a task. Never raises: an
+        accounting write must not sink a delivery or its ack.
         """
-        if result.cost <= 0 and result.prompt_tokens <= 0:
-            return
-        # With no connection to resolve the nick on, the row still lands under
-        # the nick: the retry was billed either way.
-        identity = result.account
-        if not identity:
-            identity = self._resolve_nick_to_identity(world.ircs[0], nick) if world.ircs else nick
-        self.db.log_usage(
-            identity,
-            target,
-            result.task_type,
-            result.model,
-            result.prompt_tokens,
-            result.completion_tokens,
-            result.cost,
-        )
+        try:
+            self.db.book_pending_task_usage(task_id, status=status, error_detail=error_detail)
+        except Exception:
+            self.log.exception("pending task usage booking failed: task_id=%s", task_id)
 
     def _extract_action(self, irc: callbacks.Irc, response: str) -> str | None:
         """Return action text if *response* looks like an IRC action, else ``None``.
@@ -9691,6 +9680,7 @@ class LLM(callbacks.Plugin):
         # A row with no job id has nothing to cancel on the box, so there is
         # no refusal to report — only a row to delete.
         accepted = (not job_id) or self.llm_service.cancel_video(job_id)
+        self._book_pending_usage(row.id, status="error", error_detail="cancelled")
         self.db.delete_pending_task(row.id)
         self._render_typing_wake.set()
         return accepted

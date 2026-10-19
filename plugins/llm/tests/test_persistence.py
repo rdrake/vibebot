@@ -1355,13 +1355,13 @@ class TestSchemaV3Migration:
         assert t.delivery_attempt_count == 0
         assert t.origin_request_id == ""
 
-    def test_schema_version_is_23(self, test_db: LLMDatabase) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 23."""
+    def test_schema_version_is_24(self, test_db: LLMDatabase) -> None:
+        """GIVEN a fresh database WHEN opened THEN schema version is 24."""
         conn = test_db._connect()
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             assert row is not None
-            assert row[0] == 23
+            assert row[0] == 24
         finally:
             conn.close()
 
@@ -2827,3 +2827,90 @@ class TestLeaseOwnership:
         assert test_db.release_pending_task(task_id, now + 300, "transient", lease=fresh)
         (row,) = test_db.load_pending_tasks("draw")
         assert row.claimed_until == 0 and row.attempt_count == 1
+
+
+class TestPendingTaskUsageBooking:
+    """A stashed retry's spend is booked exactly once, whatever its end state."""
+
+    @staticmethod
+    def _ready_task(
+        db: LLMDatabase,
+        *,
+        account: str | None = None,
+        cost: float = 0.02,
+        prompt_tokens: int = 100,
+    ) -> int:
+        import json
+
+        now = time.time()
+        task_id = db.save_pending_task(
+            task_type="ask",
+            nick="alice",
+            reply_target="#chan",
+            is_channel=True,
+            prompt_preview="write me an epic",
+            model="m",
+            request_data="{}",
+            submitted_at=now,
+            expires_at=now + 60,
+            next_attempt_at=now,
+            account=account,
+        )
+        payload = {
+            "status": "completed",
+            "content": "ok",
+            "cost": cost,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": 10,
+        }
+        db.update_task_for_delivery(task_id, "ready", json.dumps(payload))
+        return task_id
+
+    @staticmethod
+    def _usage(db: LLMDatabase) -> list[tuple]:
+        return (
+            db._connect()
+            .execute("SELECT nick, channel, command, cost, status, error_detail FROM usage")
+            .fetchall()
+        )
+
+    def test_books_once_across_repeated_calls(self, test_db: LLMDatabase) -> None:
+        """GIVEN a delivery that is retried (or re-delivered after a failed ack)
+        WHEN every attempt books THEN one row lands, under the storage key."""
+        task_id = self._ready_task(test_db)
+
+        assert test_db.book_pending_task_usage(task_id, status="success") is True
+        assert test_db.book_pending_task_usage(task_id, status="success") is False
+        assert test_db.book_pending_task_usage(task_id, status="error") is False
+
+        assert self._usage(test_db) == [("!alice", "#chan", "ask", 0.02, "success", "")]
+
+    def test_books_under_the_account_when_authenticated(self, test_db: LLMDatabase) -> None:
+        task_id = self._ready_task(test_db, account="alice_acct")
+        test_db.book_pending_task_usage(task_id, status="success")
+        assert self._usage(test_db)[0][0] == "alice_acct"
+
+    def test_no_row_without_spend(self, test_db: LLMDatabase) -> None:
+        task_id = self._ready_task(test_db, cost=0.0, prompt_tokens=0)
+        assert test_db.book_pending_task_usage(task_id, status="success") is False
+        assert self._usage(test_db) == []
+
+    def test_gone_task_books_nothing(self, test_db: LLMDatabase) -> None:
+        assert test_db.book_pending_task_usage(999, status="success") is False
+
+    def test_expiry_books_an_unbooked_billed_task(self, test_db: LLMDatabase) -> None:
+        """GIVEN a billed retry that never got delivered WHEN its TTL passes
+        THEN the sweep books it as an error before deleting it."""
+        self._ready_task(test_db)
+        assert len(test_db.delete_expired_pending_tasks(time.time() + 3600)) == 1
+        assert self._usage(test_db) == [
+            ("!alice", "#chan", "ask", 0.02, "error", "expired before delivery")
+        ]
+
+    def test_expiry_skips_an_already_booked_task(self, test_db: LLMDatabase) -> None:
+        """GIVEN delivery_failed already booked the task WHEN it expires THEN
+        no second row."""
+        task_id = self._ready_task(test_db)
+        test_db.book_pending_task_usage(task_id, status="error", error_detail="delivery failed")
+        test_db.delete_expired_pending_tasks(time.time() + 3600)
+        assert [row[4:] for row in self._usage(test_db)] == [("error", "delivery failed")]
