@@ -60,7 +60,8 @@ def _usage_rows(plugin) -> list[tuple]:
 
 
 def _history(plugin) -> list[dict[str, str]]:
-    return plugin.context.get_messages("testnick", "#test")
+    # The unauthenticated caller's storage key (Identity.key).
+    return plugin.context.get_messages("!testnick", "#test")
 
 
 def test_delivered_reply_is_booked_and_stored(seam_env, mocker: MockerFixture) -> None:
