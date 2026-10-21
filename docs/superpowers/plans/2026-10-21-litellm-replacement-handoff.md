@@ -10,7 +10,15 @@ All local, still **not pushed**:
 - `0edd691`: `_grounded_completion` logs through `_log_completion_timing`, and `_ask_completion` failures log at WARNING.
 - `scripts/provider_smoke.py`: the smoke test, ready to run, and **not yet run** (it needs the owner's OK). It prints whether ticks match `completion + reasoning` or `completion` alone. If they match `completion` alone, the reasoning fold in `_xai_reply` double-counts and must be reverted.
 
-Still to do: the smoke test, the `completion()` shrink (about 90 test call sites), video removal, docs. `_filter_images` no longer passes `data:` URLs, so animate's vision reference is already dead.
+**Smoke test run 2026-10-21 on the prod host (about $0.06). Every call returned 200; `User-Agent: vibebot` was accepted.**
+- Haiku: the second call read 11,783 cached tokens ($0.0015 → $0.00014). Tool calls round-trip.
+- xAI chat (grok-4.3, grok-4-1-fast-reasoning): `cost_in_usd_ticks` is present, and `completion_tokens` excludes `reasoning_tokens`. Ticks equal the table priced on completion + reasoning to the cent fraction ($0.001721 both), so **the reasoning fold is right**, and so are the 1e-10 tick unit and the grok-4.3 prices.
+- JSON mode on grok-4-1-fast-non-reasoning returned `{"ok": true}`.
+- Responses + web_search: grounded. Here `output_tokens` already includes reasoning (input + output = total), so `_responses_reply` correctly does not fold it. Ticks ($0.0279) exceed the table ($0.0179) by $0.01, the fee for two web_search calls; ticks are present, so they are what gets booked.
+- images/generations: 200, ticks = $0.02.
+- images/edits: **not run** (it needs a public image URL). The body only lost `n`.
+
+Still to do: the `completion()` shrink (about 90 test call sites), video removal, docs. `_filter_images` no longer passes `data:` URLs, so animate's vision reference is already dead.
 
 ## Where things stand
 
