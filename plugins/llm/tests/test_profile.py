@@ -88,7 +88,6 @@ class TestBehaviorPreservation:
     EXPECTED_FORCE_SEARCH = {"chat", "remind_action"}
     # Per-profile sampling overrides; absent → None (provider default). Verse
     # alone tunes sampling to dampen its non-reasoning quality-collapse spiral.
-    EXPECTED_TEMPERATURE = {"verse": 0.8}
     EXPECTED_PROMPT_IDS = {
         "chat": "chat",
         "code": "code",
@@ -131,13 +130,6 @@ class TestBehaviorPreservation:
     )
     def test_force_search(self, pid):
         assert profile.PROFILES[pid].force_search_on_explicit == (pid in self.EXPECTED_FORCE_SEARCH)
-
-    @pytest.mark.parametrize(
-        "pid",
-        ["chat", "code", "draw", "animate", "verse", "remind_action"],
-    )
-    def test_temperature(self, pid):
-        assert profile.PROFILES[pid].temperature == self.EXPECTED_TEMPERATURE.get(pid)
 
     @pytest.mark.parametrize(
         "pid",

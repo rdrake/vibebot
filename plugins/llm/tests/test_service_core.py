@@ -1542,9 +1542,7 @@ class TestTimeoutStashing:
 
         self.mocker.patch(
             "llm.service.provider.chat",
-            side_effect=provider.RequestTimeoutError(
-                "Request timed out", model="gpt-4", provider="openai"
-            ),
+            side_effect=provider.RequestTimeoutError("Request timed out"),
         )
 
         result = self.service.completion("hello", command="ask", msg=mock_msg)
@@ -1566,9 +1564,7 @@ class TestTimeoutStashing:
 
         self.mocker.patch(
             "llm.service.provider.chat",
-            side_effect=provider.RequestTimeoutError(
-                "Request timed out", model="gpt-4", provider="openai"
-            ),
+            side_effect=provider.RequestTimeoutError("Request timed out"),
         )
 
         self.service.completion("sort", command="code", msg=mock_msg)
@@ -1586,9 +1582,7 @@ class TestTimeoutStashing:
 
         self.mocker.patch(
             "llm.service.provider.draw",
-            side_effect=provider.RequestTimeoutError(
-                "Request timed out", model="dall-e-3", provider="openai"
-            ),
+            side_effect=provider.RequestTimeoutError("Request timed out"),
         )
 
         result = self.service.image_generation("a cat", msg=mock_msg)
@@ -1614,9 +1608,7 @@ class TestTimeoutStashing:
 
         self.mocker.patch(
             "llm.service.provider.chat",
-            side_effect=provider.RequestTimeoutError(
-                "Request timed out", model="gpt-4", provider="openai"
-            ),
+            side_effect=provider.RequestTimeoutError("Request timed out"),
         )
 
         service.completion("hello", command="ask", msg=mock_msg)
@@ -1762,9 +1754,7 @@ class TestCheckPendingTasks:
 
         self.mocker.patch(
             "llm.service.provider.chat",
-            side_effect=provider.AuthenticationError(
-                "Invalid key", model="gpt-4", provider="openai"
-            ),
+            side_effect=provider.AuthenticationError("Invalid key"),
         )
 
         self.service.check_pending_tasks({"#test"})
@@ -1783,7 +1773,7 @@ class TestCheckPendingTasks:
 
         self.mocker.patch(
             "llm.service.provider.chat",
-            side_effect=provider.RequestTimeoutError("timed out", model="gpt-4", provider="openai"),
+            side_effect=provider.RequestTimeoutError("timed out"),
         )
 
         results = self.service.check_pending_tasks({"#test"})
@@ -1821,7 +1811,7 @@ class TestCheckPendingTasks:
 
         def slow_then_fail(*args, **kwargs):
             clock["t"] += slow_work_seconds  # provider call burns wall time
-            raise provider.RequestTimeoutError("timed out", model="gpt-4", provider="openai")
+            raise provider.RequestTimeoutError("timed out")
 
         self.mocker.patch("llm.service.provider.chat", side_effect=slow_then_fail)
 
@@ -1934,9 +1924,7 @@ class TestProviderDeliverySplit:
 
         self.mocker.patch(
             "llm.service.provider.chat",
-            side_effect=provider.AuthenticationError(
-                "Invalid key", model="gpt-4", provider="openai"
-            ),
+            side_effect=provider.AuthenticationError("Invalid key"),
         )
 
         self.service.check_pending_tasks({"#test"})

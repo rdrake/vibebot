@@ -33,9 +33,7 @@ class TestProviderSpecificErrors:
         """GIVEN timeout error WHEN completing THEN returns user-friendly message."""
         mocker.patch(
             "llm.service.provider.chat",
-            side_effect=provider.RequestTimeoutError(
-                "Request timed out", model="xai/grok-4.3", provider="xai"
-            ),
+            side_effect=provider.RequestTimeoutError("Request timed out"),
         )
         result = service.completion("test", command="ask")
 
@@ -46,9 +44,7 @@ class TestProviderSpecificErrors:
         """GIVEN rate limit error WHEN completing THEN returns user-friendly message."""
         mocker.patch(
             "llm.service.provider.chat",
-            side_effect=provider.RateLimitError(
-                "Rate limit exceeded", model="xai/grok-4.3", provider="xai"
-            ),
+            side_effect=provider.RateLimitError("Rate limit exceeded"),
         )
         result = service.completion("test", command="ask")
 
@@ -59,9 +55,7 @@ class TestProviderSpecificErrors:
         """GIVEN auth error WHEN completing THEN returns user-friendly message."""
         mocker.patch(
             "llm.service.provider.chat",
-            side_effect=provider.AuthenticationError(
-                "Invalid API key", model="xai/grok-4.3", provider="xai"
-            ),
+            side_effect=provider.AuthenticationError("Invalid API key"),
         )
         result = service.completion("test", command="ask")
 
@@ -72,9 +66,7 @@ class TestProviderSpecificErrors:
         """GIVEN content policy error WHEN completing THEN returns user-friendly message."""
         mocker.patch(
             "llm.service.provider.chat",
-            side_effect=provider.ContentPolicyViolationError(
-                "Content violates policy", model="xai/grok-4.3", provider="xai"
-            ),
+            side_effect=provider.ContentPolicyViolationError("Content violates policy"),
         )
         result = service.completion("test", command="ask")
         assert any(word in result.content.lower() for word in ("safety", "policy"))
@@ -88,8 +80,6 @@ class TestProviderSpecificErrors:
             "llm.service.provider.chat",
             side_effect=provider.RefusalError(
                 "Content violates usage guidelines. Team: abc, category: harassment",
-                model="xai/grok-4.3",
-                provider="xai",
             ),
         )
         result = service.completion("test", command="ask")
@@ -103,9 +93,6 @@ class TestProviderSpecificErrors:
             "llm.service.provider.chat",
             side_effect=provider.ProviderError(
                 "API error with key sk-secret123456789",
-                model="xai/grok-4.3",
-                provider="xai",
-                status_code=500,
             ),
         )
         result = service.completion("test", command="ask")
@@ -149,9 +136,7 @@ class TestImageGenerationErrors:
         """GIVEN timeout WHEN generating image THEN returns timeout message."""
         mocker.patch(
             "llm.service.provider.draw",
-            side_effect=provider.RequestTimeoutError(
-                "Generation timed out", model="xai/grok-imagine-image", provider="xai"
-            ),
+            side_effect=provider.RequestTimeoutError("Generation timed out"),
         )
         result = service.image_generation("test prompt")
 

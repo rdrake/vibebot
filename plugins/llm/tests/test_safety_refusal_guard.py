@@ -416,9 +416,7 @@ class TestRefusalFallback:
 
     def test_provider_refusal_error_reruns_on_fallback(self, run) -> None:  # type: ignore[no-untyped-def]
         """A provider refusal raised by the primary is retried on the fallback."""
-        refused = provider.RefusalError(
-            "Output blocked: content violates usage guidelines", model="gpt-4"
-        )
+        refused = provider.RefusalError("Output blocked: content violates usage guidelines")
         result, calls, served = run([refused, "sure thing"])
 
         assert result.content == "sure thing"

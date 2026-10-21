@@ -592,9 +592,7 @@ class TestDrawAutoRewrite:
         self.mocker.patch(
             "llm.service.provider.draw",
             side_effect=[
-                provider.ContentPolicyViolationError(
-                    "blocked", model="xai/grok-imagine-image", provider="xai"
-                ),
+                provider.ContentPolicyViolationError("blocked"),
                 success_resp,
             ],
         )
@@ -728,9 +726,7 @@ class TestDrawAutoRewrite:
         """GIVEN timeout error WHEN generating THEN no rewrite attempted."""
         self.mocker.patch(
             "llm.service.provider.draw",
-            side_effect=provider.RequestTimeoutError(
-                "timed out", model="xai/grok-imagine-image", provider="xai"
-            ),
+            side_effect=provider.RequestTimeoutError("timed out"),
         )
         mock_completion = self.mocker.patch("llm.service.provider.chat")
         result = self.service.image_generation("test prompt")
@@ -742,9 +738,7 @@ class TestDrawAutoRewrite:
         """GIVEN authentication error WHEN generating THEN no rewrite attempted."""
         self.mocker.patch(
             "llm.service.provider.draw",
-            side_effect=provider.AuthenticationError(
-                "invalid key", model="xai/grok-imagine-image", provider="xai"
-            ),
+            side_effect=provider.AuthenticationError("invalid key"),
         )
         mock_completion = self.mocker.patch("llm.service.provider.chat")
         result = self.service.image_generation("test prompt")
@@ -795,8 +789,6 @@ class TestDrawAutoRewrite:
             "llm.service.provider.draw",
             side_effect=provider.BadRequestError(
                 "Invalid image size parameter",
-                model="xai/grok-imagine-image",
-                provider="xai",
             ),
         )
         mock_completion = self.mocker.patch("llm.service.provider.chat")
@@ -934,9 +926,7 @@ class TestImageGenerationPaths:
         """GIVEN image_generation times out and stashing fails WHEN called THEN returns error."""
         self.mocker.patch(
             "llm.service.provider.draw",
-            side_effect=provider.RequestTimeoutError(
-                "Request timed out", model="xai/grok-imagine-image", provider="xai"
-            ),
+            side_effect=provider.RequestTimeoutError("Request timed out"),
         )
         self.mocker.patch.object(self.service, "_stash_timeout", return_value=False)
 
@@ -1274,9 +1264,6 @@ class TestXaiModerationArmsTheRewrite:
     def _xai_error(self) -> Exception:
         return provider.ContentPolicyViolationError(
             self.XAI_MODERATION_ERROR,
-            model="xai/grok-imagine-image",
-            provider="xai",
-            status_code=400,
             billed=True,
         )
 
@@ -1503,9 +1490,7 @@ class TestRefusalMessagesSayWhatHappened:
     )
 
     def _refusal(self) -> provider.RefusalError:
-        return provider.RefusalError(
-            self.XAI_HARD_REFUSAL, model="xai/grok-4.3", provider="xai", status_code=403
-        )
+        return provider.RefusalError(self.XAI_HARD_REFUSAL)
 
     def test_a_refusal_is_named_as_one(self, make_service) -> None:  # type: ignore[no-untyped-def]
         """The one thing the user needs: it was the content, not the bot."""
@@ -1594,8 +1579,6 @@ class TestExhaustedRewriteMessage:
         refusal = provider.ContentPolicyViolationError(
             "{'code': 'imagine:content-moderated', "
             "'error': 'Generated image rejected by content moderation.'}",
-            model="xai/grok-imagine-image",
-            provider="xai",
         )
         mocker.patch("llm.service.provider.draw", side_effect=[refusal, refusal])
         mocker.patch(
@@ -1618,8 +1601,6 @@ class TestExhaustedRewriteMessage:
         refusal = provider.ContentPolicyViolationError(
             "{'code': 'imagine:content-moderated', "
             "'error': 'Generated image rejected by content moderation.'}",
-            model="xai/grok-imagine-image",
-            provider="xai",
         )
         mocker.patch("llm.service.provider.draw", side_effect=[refusal, refusal, refusal])
         mocker.patch(

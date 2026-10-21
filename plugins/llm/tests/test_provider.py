@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import base64
 import copy
+import http.client
 import io
 import json
 import urllib.error
+import urllib.request
 from email.message import Message
 from pathlib import Path
 from typing import Any
@@ -76,7 +78,7 @@ class FakePost:
         self.reply = reply if reply is not None else {}
         self.calls: list[dict[str, Any]] = []
 
-    def __call__(self, url, headers, body, *, timeout, model, provider):  # noqa: ANN001
+    def __call__(self, url, headers, body, *, timeout, provider):  # noqa: ANN001
         self.calls.append({"url": url, "headers": headers, "body": copy.deepcopy(body)})
         return self.reply
 
@@ -115,7 +117,6 @@ class TestAnthropicRequest:
             tools=TOOLS,
             tool_choice="required",
             max_tokens=400,
-            temperature=0.9,
         )
         expected = _without_custom_type(wire("haiku_assistant_step")["body"])
         # litellm filled the empty assistant text with a placeholder sentence
@@ -125,12 +126,6 @@ class TestAnthropicRequest:
         assert post.body == expected
         assert post.calls[-1]["url"] == "https://api.anthropic.com/v1/messages"
         assert post.calls[-1]["headers"]["anthropic-version"] == "2023-06-01"
-
-    def test_temperature_never_reaches_anthropic(self, post: FakePost) -> None:
-        provider.chat(
-            HAIKU, SYSTEM + [{"role": "user", "content": "hi"}], timeout=30, temperature=0.9
-        )
-        assert "temperature" not in post.body
 
     def test_forced_tool_choice(self, post: FakePost) -> None:
         provider.chat(
@@ -196,10 +191,6 @@ class TestAnthropicRequest:
         )
         assert "output_config" not in post.body
 
-    def test_effort(self, post: FakePost) -> None:
-        provider.chat(HAIKU, SYSTEM + [{"role": "user", "content": "x"}], timeout=30, effort="low")
-        assert post.body["output_config"] == {"effort": "low"}
-
     def test_system_messages_hoisted_and_first_one_cached(self, post: FakePost) -> None:
         provider.chat(
             HAIKU,
@@ -217,26 +208,6 @@ class TestAnthropicRequest:
         assert post.body["system"][0]["cache_control"] == {"type": "ephemeral"}
         assert "cache_control" not in post.body["system"][1]
         assert post.body["messages"] == expected["messages"]
-
-    def test_data_url_image_goes_as_base64(self, post: FakePost) -> None:
-        provider.chat(
-            HAIKU,
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
-                    ],
-                }
-            ],
-            timeout=30,
-        )
-        assert post.body["messages"][0]["content"] == [
-            {
-                "type": "image",
-                "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"},
-            }
-        ]
 
     def test_missing_key_is_auth_failure(
         self, post: FakePost, monkeypatch: pytest.MonkeyPatch
@@ -289,7 +260,6 @@ class TestAnthropicReply:
         )
         # 100×0.10 + 1000×0.125 + 4000×0.01 + 50×0.50, per million
         assert reply.cost == pytest.approx((10 + 125 + 40 + 25) / 1e6)
-        assert reply.id == "msg_1"
 
     def test_turn_round_trips_thinking_verbatim(self, post: FakePost) -> None:
         post.reply = ANTHROPIC_TOOL_REPLY
@@ -336,26 +306,19 @@ class TestXaiChat:
             tools=TOOLS,
             tool_choice="required",
             max_tokens=400,
-            temperature=0.9,
             cache_key="abc",
         )
         captured = wire("grok_completion")
         expected = captured["body"]
         # litellm passed Anthropic's thinking blocks to xAI, which ignored them.
         del expected["messages"][2]["thinking_blocks"]
+        # Recorded with temperature=0.9; temperature is no longer sent.
+        del expected["temperature"]
         assert post.body == expected
-        assert post.calls[-1]["headers"]["x-grok-conv-id"] == captured["headers"]["x-grok-conv-id"]
+        # Cache routing rides on the documented prompt_cache_key body field
+        # alone; the x-grok-conv-id header litellm also sent is dropped.
+        assert "x-grok-conv-id" not in post.calls[-1]["headers"]
         assert post.calls[-1]["url"] == captured["url"]
-
-    def test_effort(self, post: FakePost) -> None:
-        provider.chat(
-            "xai/grok-4.3",
-            SYSTEM + [{"role": "user", "content": "announce"}],
-            timeout=30,
-            max_tokens=800,
-            effort="low",
-        )
-        assert post.body == wire("grok_reasoning_effort")["body"]
 
     def test_json_reply(self, post: FakePost) -> None:
         provider.chat(GROK, [{"role": "user", "content": "x"}], timeout=30, json_reply=True)
@@ -405,6 +368,8 @@ class TestXaiChat:
         reply = provider.chat(
             "xai/grok-4-1-fast-reasoning", [{"role": "user", "content": "x"}], timeout=30
         )
+        # Reasoning counts as output, as litellm reported it.
+        assert reply.usage.output_tokens == 100
         # 200 fresh × 1.25 + 800 cached × 0.20 + 100 output × 2.50, per million
         assert reply.cost == pytest.approx((250 + 160 + 250) / 1e6)
 
@@ -483,6 +448,7 @@ class TestDraw:
         provider.draw("xai/grok-imagine-image", "add a hat", timeout=60, edit_url="https://h/x.png")
         assert post.calls[-1]["url"] == "https://api.x.ai/v1/images/edits"
         assert post.body["image"] == {"url": "https://h/x.png"}
+        assert "n" not in post.body  # the old edit call never sent it
 
     def test_b64_picture_and_ticks(self, post: FakePost) -> None:
         post.reply = {
@@ -495,7 +461,7 @@ class TestDraw:
 
     def test_priced_from_table_without_ticks(self, post: FakePost) -> None:
         post.reply = {"data": [{"b64_json": base64.b64encode(b"PNG").decode()}]}
-        assert provider.draw("xai/grok-imagine-image-quality", "a cat", timeout=60).cost == 0.05
+        assert provider.draw("xai/grok-imagine-image", "a cat", timeout=60).cost == 0.02
 
     def test_needs_xai(self, post: FakePost) -> None:
         with pytest.raises(provider.BadRequestError):
@@ -522,9 +488,11 @@ class TestErrors:
                 provider.ContentPolicyViolationError,
             ),
             (
-                400,
-                '{"error":{"message":"moderation_blocked"}}',
-                provider.ContentPolicyViolationError,
+                # A refusal that also mentions moderation is a refusal: it
+                # needs the chat fallback, not the image rewrite loop.
+                403,
+                '{"error":"Content violates usage guidelines (content moderation)."}',
+                provider.RefusalError,
             ),
             (
                 403,
@@ -537,8 +505,8 @@ class TestErrors:
                 provider.AuthenticationError,
             ),
             (401, "{}", provider.AuthenticationError),
-            (404, "{}", provider.NotFoundError),
-            (408, "{}", provider.RequestTimeoutError),
+            (404, "{}", provider.BadRequestError),
+            (408, "{}", provider.BadRequestError),
             (429, "{}", provider.RateLimitError),
             (400, '{"error":"bad aspect ratio"}', provider.BadRequestError),
             (422, "{}", provider.BadRequestError),
@@ -547,9 +515,9 @@ class TestErrors:
         ],
     )
     def test_classification(self, status: int, body: str, cls: type) -> None:
-        error = provider._http_error(status, body, "xai/m", "xai")
+        error = provider._http_error(status, body, "xai")
         assert type(error) is cls
-        assert error.status_code == status
+        assert f"HTTP {status}" in str(error)
         assert body[:50] in str(error)
 
     def test_blocked_and_refused_are_terminal_bad_requests(self) -> None:
@@ -561,26 +529,60 @@ class TestErrors:
         billed = provider._http_error(
             400,
             '{"code":"imagine:content-moderated","usage":{"cost_in_usd_ticks":200000000}}',
-            "m",
             "xai",
         )
-        free = provider._http_error(400, '{"code":"imagine:content-moderated"}', "m", "xai")
+        free = provider._http_error(400, '{"code":"imagine:content-moderated"}', "xai")
         assert (billed.billed, free.billed) == (True, False)
 
 
 class TestTransport:
-    def _urlopen(self, monkeypatch: pytest.MonkeyPatch, effect: Any) -> None:
+    def _urlopen(self, monkeypatch: pytest.MonkeyPatch, effect: Any) -> list[Any]:
+        sent: list[Any] = []
+
         def fake(request, timeout):  # noqa: ANN001
+            sent.append(request)
             if isinstance(effect, BaseException):
                 raise effect
             return io.BytesIO(effect)
 
-        monkeypatch.setattr(provider.urllib.request, "urlopen", fake)
+        monkeypatch.setattr(provider._opener, "open", fake)
+        return sent
 
     def _post(self) -> dict[str, Any]:
-        return provider._post(
-            "https://api.x.ai/v1/x", {}, {}, timeout=5, model="xai/m", provider="xai"
-        )
+        return provider._post("https://api.x.ai/v1/x", {}, {}, timeout=5, provider="xai")
+
+    def test_sends_user_agent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sent = self._urlopen(monkeypatch, b"{}")
+        self._post()
+        assert sent[0].get_header("User-agent") == "vibebot"
+
+    @pytest.mark.parametrize(
+        "effect",
+        [ConnectionResetError("reset"), http.client.IncompleteRead(b"par")],
+    )
+    def test_broken_connection_is_transient(
+        self, monkeypatch: pytest.MonkeyPatch, effect: BaseException
+    ) -> None:
+        self._urlopen(monkeypatch, effect)
+        with pytest.raises(provider.ProviderError) as info:
+            self._post()
+        assert type(info.value) is provider.ProviderError
+
+    def test_unreadable_error_body_still_classified(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class Broken(io.BytesIO):
+            def read(self, *args: Any) -> bytes:
+                raise ConnectionResetError("reset mid-body")
+
+        self._urlopen(monkeypatch, urllib.error.HTTPError("u", 429, "slow", Message(), Broken()))
+        with pytest.raises(provider.RateLimitError):
+            self._post()
+
+    def test_redirect_is_refused(self) -> None:
+        request = urllib.request.Request("https://api.x.ai/v1/x", data=b"{}", method="POST")
+        with pytest.raises(urllib.error.HTTPError, match="refused redirect"):
+            provider._NoRedirect().redirect_request(
+                request, io.BytesIO(), 307, "moved", Message(), "https://elsewhere.example/"
+            )
 
     def test_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._urlopen(monkeypatch, b'{"ok": 1}')

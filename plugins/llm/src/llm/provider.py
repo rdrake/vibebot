@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import http.client
 import json
 import logging
 import urllib.error
@@ -36,6 +37,7 @@ _log = logging.getLogger("supybot.plugins.LLM.provider")
 ANTHROPIC_URL = "https://api.anthropic.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
 XAI_URL = "https://api.x.ai/v1"
+USER_AGENT = "vibebot"
 
 # Anthropic requires max_tokens. litellm filled in the model's 128K ceiling;
 # nothing an IRC bot says comes close to this one.
@@ -82,7 +84,6 @@ PRICES: dict[str, Price] = {
 # Per image. xAI's own ticks win when present; this is the fallback, and the
 # price of a billed refusal, whose ticks are not trusted as a unit.
 IMAGE_PRICES: dict[str, float] = {
-    "xai/grok-imagine-image-quality": 0.05,
     "xai/grok-imagine-image": 0.02,
 }
 
@@ -136,7 +137,6 @@ class Reply:
     finish_reason: str = "stop"
     usage: Usage = field(default_factory=Usage)
     cost: float = 0.0
-    id: str = ""
     grounded: bool = False  # search only: the web was actually consulted
     thinking: tuple[dict[str, Any], ...] = ()  # opaque, returned verbatim
 
@@ -169,7 +169,6 @@ class Picture:
 
     data: bytes | None = None
     cost: float = 0.0
-    id: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -184,20 +183,8 @@ class ProviderError(Exception):
     charges for a draw its output filter rejected, and says so this way.
     """
 
-    def __init__(
-        self,
-        message: str = "",
-        *,
-        model: str = "",
-        provider: str = "",
-        status_code: int | None = None,
-        billed: bool = False,
-    ) -> None:
+    def __init__(self, message: str = "", *, billed: bool = False) -> None:
         super().__init__(message)
-        self.message = message
-        self.model = model
-        self.provider = provider
-        self.status_code = status_code
         self.billed = billed
 
 
@@ -213,12 +200,9 @@ class AuthenticationError(ProviderError):
     """Missing, invalid or unauthorised key. Terminal."""
 
 
-class NotFoundError(ProviderError):
-    """Unknown model or endpoint. Terminal."""
-
-
 class BadRequestError(ProviderError):
-    """The provider rejected the request itself. Terminal."""
+    """The provider rejected the request itself (any 4xx not classed
+    otherwise). Terminal."""
 
 
 class ContentPolicyViolationError(BadRequestError):
@@ -237,65 +221,66 @@ class RefusalError(BadRequestError):
 
 
 # Matched on prose because xAI's permission-denied code is also what a key
-# with no access to a model gets. Both a code and its prose are listed where a
-# provider has both, so a change to either alone does not silently disarm the
-# rewrite loop again (it never ran for xAI until 2026-08-15).
-_BLOCKED_MARKERS = (
-    "moderation_blocked",
-    "safety system",
-    "content policy",
-    "safety filter",
-    "content-moderated",
-    "content moderation",
-)
-_REFUSED_MARKERS = (
-    "violates usage guidelines",
-    "content violates",
-    "safety_check",
-    "usage policies",
-)
+# with no access to a model gets. Only markers seen from our two providers are
+# listed: xAI's image filter, and xAI chat's 403 refusal.
+_BLOCKED_MARKERS = ("content-moderated", "content moderation")
+_REFUSED_MARKERS = ("violates usage guidelines", "content violates")
 
 
 def _billed(body: str) -> bool:
     try:
         parsed = json.loads(body)
     except ValueError:
-        return "cost_in_usd_ticks" in body
+        return False
     return isinstance(parsed, dict) and bool(parsed.get("usage"))
 
 
-def _http_error(status: int, body: str, model: str, provider: str) -> ProviderError:
-    """The typed error for a non-2xx response."""
+def _http_error(status: int, body: str, provider: str) -> ProviderError:
+    """The typed error for a non-2xx response.
+
+    Refusal is checked before block: a chat refusal that also mentions
+    moderation must reach the fallback model, not the image rewrite loop.
+    """
     lowered = body.lower()
     cls: type[ProviderError]
-    if 400 <= status < 500 and any(m in lowered for m in _BLOCKED_MARKERS):
-        cls = ContentPolicyViolationError
-    elif 400 <= status < 500 and any(m in lowered for m in _REFUSED_MARKERS):
+    if 400 <= status < 500 and any(m in lowered for m in _REFUSED_MARKERS):
         cls = RefusalError
-    elif status in (401, 403):
-        cls = AuthenticationError
-    elif status == 404:
-        cls = NotFoundError
-    elif status == 408:
-        cls = RequestTimeoutError
+    elif 400 <= status < 500 and any(m in lowered for m in _BLOCKED_MARKERS):
+        cls = ContentPolicyViolationError
     elif status == 429:
         cls = RateLimitError
-    elif status in (400, 413, 422):
+    elif status in (401, 403):
+        cls = AuthenticationError
+    elif 400 <= status < 500:
         cls = BadRequestError
     else:
         cls = ProviderError
-    return cls(
-        f"{provider} HTTP {status}: {body[:1000]}",
-        model=model,
-        provider=provider,
-        status_code=status,
-        billed=_billed(body),
-    )
+    return cls(f"{provider} HTTP {status}: {body[:1000]}", billed=_billed(body))
 
 
 # ---------------------------------------------------------------------------
 # Transport
 # ---------------------------------------------------------------------------
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects. urllib would follow a POST's redirect as a GET and
+    carry the API key header to whatever host it names."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+        raise urllib.error.HTTPError(
+            req.full_url, code, f"refused redirect to {newurl}", headers, fp
+        )
+
+
+_opener = urllib.request.build_opener(_NoRedirect)
+
+
+def _error_body(exc: urllib.error.HTTPError) -> str:
+    try:
+        return exc.read().decode("utf-8", "replace")
+    except (OSError, http.client.HTTPException, AttributeError):
+        return ""
 
 
 def _post(
@@ -304,7 +289,6 @@ def _post(
     body: dict[str, Any],
     *,
     timeout: float,
-    model: str,
     provider: str,
 ) -> dict[str, Any]:
     """POST ``body`` as JSON and return the decoded JSON reply, or raise a
@@ -312,65 +296,48 @@ def _post(
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json", **headers},
+        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT, **headers},
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 — fixed https hosts
+        with _opener.open(request, timeout=timeout) as response:
             raw = response.read()
     except urllib.error.HTTPError as exc:
-        raise _http_error(exc.code, exc.read().decode("utf-8", "replace"), model, provider) from exc
+        raise _http_error(exc.code, _error_body(exc), provider) from exc
     except TimeoutError as exc:
-        raise RequestTimeoutError(
-            f"{provider} timed out after {timeout}s", model=model, provider=provider
-        ) from exc
+        raise RequestTimeoutError(f"{provider} timed out after {timeout}s") from exc
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, TimeoutError):
-            raise RequestTimeoutError(
-                f"{provider} timed out after {timeout}s", model=model, provider=provider
-            ) from exc
-        raise ProviderError(
-            f"{provider} unreachable: {exc.reason}", model=model, provider=provider
-        ) from exc
+            raise RequestTimeoutError(f"{provider} timed out after {timeout}s") from exc
+        raise ProviderError(f"{provider} unreachable: {exc.reason}") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        # A reset or truncated read after the connection opened.
+        raise ProviderError(f"{provider} connection failed: {exc!r}") from exc
     try:
         parsed = json.loads(raw)
     except ValueError as exc:
-        raise ProviderError(
-            f"{provider} returned non-JSON: {raw[:200]!r}", model=model, provider=provider
-        ) from exc
+        raise ProviderError(f"{provider} returned non-JSON: {raw[:200]!r}") from exc
     if not isinstance(parsed, dict):
-        raise ProviderError(
-            f"{provider} returned {type(parsed).__name__}", model=model, provider=provider
-        )
+        raise ProviderError(f"{provider} returned {type(parsed).__name__}")
     return parsed
 
 
 def _split(model: str) -> tuple[str, str]:
     provider, sep, name = model.partition("/")
     if not sep or not name:
-        raise BadRequestError(f"model {model!r} is not provider/name", model=model)
+        raise BadRequestError(f"model {model!r} is not provider/name")
     return provider.lower(), name
 
 
 def _key(model: str, provider: str) -> str:
     key = apikeys.api_key_for(model)
     if not key:
-        raise AuthenticationError(
-            f"no API key for {provider} (set {apikeys.env_var_for(model)})",
-            model=model,
-            provider=provider,
-        )
+        raise AuthenticationError(f"no API key for {provider} (set {apikeys.env_var_for(model)})")
     return key
 
 
-def _xai_headers(key: str, cache_key: str | None) -> dict[str, str]:
-    headers = {"Authorization": f"Bearer {key}"}
-    if cache_key:
-        # Sticky routing to the server holding this prefix's cache. Sent with
-        # the body's prompt_cache_key, the documented field; without that the
-        # load balancer scattered chat requests and cached_tokens stayed 0.
-        headers["x-grok-conv-id"] = cache_key
-    return headers
+def _xai_headers(key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {key}"}
 
 
 # ---------------------------------------------------------------------------
@@ -386,8 +353,6 @@ def chat(
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict[str, Any] | None = None,
     max_tokens: int | None = None,
-    temperature: float | None = None,
-    effort: str | None = None,
     json_reply: bool | dict[str, Any] = False,
     cache_key: str | None = None,
 ) -> Reply:
@@ -398,10 +363,6 @@ def chat(
     "function": {"name": ...}}``. ``json_reply`` is True for "answer with a
     JSON object" or a JSON Schema the answer must match. ``cache_key`` pins
     xAI's prompt-cache routing; Anthropic caching is automatic.
-
-    ``temperature`` reaches xAI only: Claude Haiku 5.5 rejects non-default
-    sampling. ``effort`` is Anthropic's ``output_config.effort`` and xAI's
-    ``reasoning_effort``.
     """
     provider, name = _split(model)
     if provider == "anthropic":
@@ -411,7 +372,6 @@ def chat(
             tools=tools,
             tool_choice=tool_choice,
             max_tokens=max_tokens,
-            effort=effort,
             json_reply=json_reply,
         )
         headers = {"x-api-key": _key(model, provider), "anthropic-version": ANTHROPIC_VERSION}
@@ -420,7 +380,6 @@ def chat(
             headers,
             body,
             timeout=timeout,
-            model=model,
             provider=provider,
         )
         return _anthropic_reply(model, data)
@@ -431,22 +390,22 @@ def chat(
             tools=tools,
             tool_choice=tool_choice,
             max_tokens=max_tokens,
-            temperature=temperature,
-            effort=effort,
             json_reply=json_reply,
         )
         if cache_key:
+            # Sticky routing to the server holding this prefix's cache;
+            # without it the load balancer scattered requests and
+            # cached_tokens stayed 0.
             body["prompt_cache_key"] = cache_key
         data = _post(
             f"{XAI_URL}/chat/completions",
-            _xai_headers(_key(model, provider), cache_key),
+            _xai_headers(_key(model, provider)),
             body,
             timeout=timeout,
-            model=model,
             provider=provider,
         )
         return _xai_reply(model, data)
-    raise BadRequestError(f"no chat provider {provider!r} (use anthropic/ or xai/)", model=model)
+    raise BadRequestError(f"no chat provider {provider!r} (use anthropic/ or xai/)")
 
 
 def _text_of(content: Any) -> str:
@@ -462,16 +421,6 @@ def _text_of(content: Any) -> str:
     return ""
 
 
-def _anthropic_image(url: str) -> dict[str, Any]:
-    if url.startswith("data:") and ";base64," in url:
-        media_type, _, data = url[5:].partition(";base64,")
-        return {
-            "type": "image",
-            "source": {"type": "base64", "media_type": media_type, "data": data},
-        }
-    return {"type": "image", "source": {"type": "url", "url": url}}
-
-
 def _anthropic_user_blocks(content: Any) -> list[dict[str, Any]]:
     if isinstance(content, str):
         return [{"type": "text", "text": content}] if content else []
@@ -484,13 +433,11 @@ def _anthropic_user_blocks(content: Any) -> list[dict[str, Any]]:
         elif part.get("type") == "image_url":
             url = (part.get("image_url") or {}).get("url")
             if url:
-                blocks.append(_anthropic_image(url))
+                blocks.append({"type": "image", "source": {"type": "url", "url": url}})
     return blocks
 
 
 def _tool_input(arguments: Any) -> dict[str, Any]:
-    if isinstance(arguments, dict):
-        return arguments
     try:
         parsed = json.loads(arguments or "{}")
     except (TypeError, ValueError):
@@ -505,7 +452,6 @@ def _anthropic_request(
     tools: list[dict[str, Any]] | None,
     tool_choice: str | dict[str, Any] | None,
     max_tokens: int | None,
-    effort: str | None,
     json_reply: bool | dict[str, Any],
 ) -> dict[str, Any]:
     """OpenAI-format messages as a Messages API request body.
@@ -587,14 +533,9 @@ def _anthropic_request(
     choice = _anthropic_tool_choice(tool_choice)
     if choice:
         body["tool_choice"] = choice
-    output_config: dict[str, Any] = {}
-    if effort:
-        output_config["effort"] = effort
     if isinstance(json_reply, dict):
-        output_config["format"] = {"type": "json_schema", "schema": json_reply}
+        body["output_config"] = {"format": {"type": "json_schema", "schema": json_reply}}
     # json_reply=True has no Anthropic switch; the prompt asks for JSON.
-    if output_config:
-        body["output_config"] = output_config
     return body
 
 
@@ -617,15 +558,11 @@ def _anthropic_tool_choice(choice: str | dict[str, Any] | None) -> dict[str, Any
         return {"type": "tool", "name": name} if name else None
     # Forced choice ("any", "tool") still works on Haiku 5.5; Opus 5.5,
     # Sonnet 5.5 and Fable 5.1 reject it with a 400.
-    return {"auto": {"type": "auto"}, "required": {"type": "any"}, "none": {"type": "none"}}.get(
-        choice
-    )
+    return {"required": {"type": "any"}, "none": {"type": "none"}}.get(choice)
 
 
 _ANTHROPIC_FINISH = {
     "end_turn": "stop",
-    "stop_sequence": "stop",
-    "pause_turn": "stop",
     "tool_use": "tool_calls",
     "max_tokens": "length",
     "refusal": "refusal",
@@ -672,7 +609,6 @@ def _anthropic_reply(model: str, data: dict[str, Any]) -> Reply:
         finish_reason=_ANTHROPIC_FINISH.get(data.get("stop_reason") or "", "stop"),
         usage=Usage(input_tokens=fresh + written + read, output_tokens=output, cached_tokens=read),
         cost=cost,
-        id=data.get("id") or "",
         thinking=tuple(thinking),
     )
 
@@ -684,8 +620,6 @@ def _xai_request(
     tools: list[dict[str, Any]] | None,
     tool_choice: str | dict[str, Any] | None,
     max_tokens: int | None,
-    temperature: float | None,
-    effort: str | None,
     json_reply: bool | dict[str, Any],
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
@@ -701,10 +635,6 @@ def _xai_request(
         body["tool_choice"] = tool_choice
     if max_tokens:
         body["max_tokens"] = max_tokens
-    if temperature is not None:
-        body["temperature"] = temperature
-    if effort:
-        body["reasoning_effort"] = effort
     if isinstance(json_reply, dict):
         body["response_format"] = {
             "type": "json_schema",
@@ -741,18 +671,16 @@ def _xai_reply(model: str, data: dict[str, Any]) -> Reply:
     usage = data.get("usage") or {}
     prompt = int(usage.get("prompt_tokens") or 0)
     cached = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
-    output = int(usage.get("completion_tokens") or 0)
-    # Reasoning is billed as output. Whether completion_tokens already counts
-    # it is not documented; this assumes not. It only matters when the
-    # response carries no cost_in_usd_ticks.
+    # Reasoning is billed as output and is not in completion_tokens; litellm
+    # folded it in, and usage rows and @usage expect it there.
     reasoning = int((usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0)
+    output = int(usage.get("completion_tokens") or 0) + reasoning
     return Reply(
         text=message.get("content") or "",
         tool_calls=calls,
         finish_reason=choice.get("finish_reason") or "stop",
         usage=Usage(input_tokens=prompt, output_tokens=output, cached_tokens=cached),
-        cost=_xai_cost(model, usage, prompt - cached, cached, output + reasoning),
-        id=data.get("id") or "",
+        cost=_xai_cost(model, usage, prompt - cached, cached, output),
     )
 
 
@@ -767,16 +695,15 @@ def search(model: str, prompt: str, *, timeout: float, cache_key: str | None = N
     ``Reply.grounded`` says whether the search actually ran."""
     provider, name = _split(model)
     if provider != "xai":
-        raise BadRequestError(f"web search needs an xai/ model, not {model!r}", model=model)
+        raise BadRequestError(f"web search needs an xai/ model, not {model!r}")
     body: dict[str, Any] = {"model": name, "input": prompt, "tools": [{"type": "web_search"}]}
     if cache_key:
         body["prompt_cache_key"] = cache_key
     data = _post(
         f"{XAI_URL}/responses",
-        _xai_headers(_key(model, provider), cache_key),
+        _xai_headers(_key(model, provider)),
         body,
         timeout=timeout,
-        model=model,
         provider=provider,
     )
     return _responses_reply(model, data)
@@ -805,7 +732,6 @@ def _responses_reply(model: str, data: dict[str, Any]) -> Reply:
         text="".join(texts),
         usage=Usage(input_tokens=prompt, output_tokens=output, cached_tokens=cached),
         cost=_xai_cost(model, usage, prompt - cached, cached, output),
-        id=data.get("id") or "",
         grounded=grounded,
     )
 
@@ -828,10 +754,12 @@ def draw(
     ``edit_url``. ``hires`` asks for high quality at 2K."""
     provider, name = _split(model)
     if provider != "xai":
-        raise BadRequestError(f"images need an xai/ model, not {model!r}", model=model)
-    body: dict[str, Any] = {"model": name, "prompt": prompt, "n": 1, "response_format": "b64_json"}
+        raise BadRequestError(f"images need an xai/ model, not {model!r}")
+    body: dict[str, Any] = {"model": name, "prompt": prompt, "response_format": "b64_json"}
     if edit_url:
         body["image"] = {"url": edit_url}
+    else:
+        body["n"] = 1
     if aspect_ratio:
         body["aspect_ratio"] = aspect_ratio
     if hires:
@@ -839,10 +767,9 @@ def draw(
         body["resolution"] = "2k"
     data = _post(
         f"{XAI_URL}/images/{'edits' if edit_url else 'generations'}",
-        _xai_headers(_key(model, provider), None),
+        _xai_headers(_key(model, provider)),
         body,
         timeout=timeout,
-        model=model,
         provider=provider,
     )
     ticks = (data.get("usage") or {}).get("cost_in_usd_ticks")
@@ -857,4 +784,4 @@ def draw(
         image = base64.b64decode(b64) if isinstance(b64, str) else None
     except (binascii.Error, ValueError):
         image = None
-    return Picture(data=image or None, cost=cost, id=data.get("id") or "")
+    return Picture(data=image or None, cost=cost)

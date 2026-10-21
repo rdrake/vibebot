@@ -107,7 +107,7 @@ def test_stashed_timeout_is_booked_as_timeout_and_not_stored(
     plugin, irc, msg = seam_env
     mocker.patch(
         "llm.service.provider.chat",
-        side_effect=provider.RequestTimeoutError("timed out", model="xai/grok-4", provider="xai"),
+        side_effect=provider.RequestTimeoutError("timed out"),
     )
 
     plugin.ask(irc, msg, ["write me an epic"])

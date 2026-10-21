@@ -395,14 +395,6 @@ class TestReferenceVisionCopy:
 class TestVisionImageFilter:
     """Our own inline copy has to survive the URL filter that guards vision."""
 
-    def test_our_data_url_survives(self, make_service, animate_env) -> None:
-        """GIVEN an inline image WHEN filtered THEN it is kept."""
-        service, _ = _service(make_service)
-
-        assert service._filter_images(["data:image/jpeg;base64,Y2F0"]) == [
-            "data:image/jpeg;base64,Y2F0"
-        ]
-
     def test_non_image_data_url_is_dropped(self, make_service, animate_env) -> None:
         """GIVEN a data URL that is not an image WHEN filtered THEN it is dropped."""
         service, _ = _service(make_service)

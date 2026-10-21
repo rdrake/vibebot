@@ -3231,10 +3231,7 @@ class LLMService:
             True if the error is terminal and should not be retried.
         """
         # BadRequestError covers ContentPolicyViolationError and RefusalError.
-        return isinstance(
-            error,
-            (provider.AuthenticationError, provider.BadRequestError, provider.NotFoundError),
-        )
+        return isinstance(error, (provider.AuthenticationError, provider.BadRequestError))
 
     @staticmethod
     def _compute_backoff(attempt_count: int, task_type: str = "") -> float:
@@ -3311,7 +3308,6 @@ class LLMService:
         # matches the foreground call (unbounded output otherwise collapses into
         # run-on gibberish on the long-form verse/ask profiles).
         max_tokens = request_data.get("max_tokens")
-        temperature = request_data.get("temperature")
         reply = self._timed_completion(
             "pending_retry",
             model=task.model,
@@ -3319,7 +3315,6 @@ class LLMService:
             channel=task.reply_target,
             timeout=timeout,
             max_tokens=max_tokens if isinstance(max_tokens, int) else None,
-            temperature=temperature if isinstance(temperature, (int, float)) else None,
         )
 
         content = reply.text
@@ -3757,7 +3752,6 @@ class LLMService:
                 channel=channel,
                 timeout=timeout,
             )
-            self.log.info("completion response: id=%s", reply.id or "n/a")
 
             return CompletionResult(
                 content=reply.text,
@@ -4175,14 +4169,13 @@ class LLMService:
             # a rejected parameter (an aspect ratio xAI does not take); a
             # WARNING reaches docker logs, INFO does not.
             self.log.warning(
-                "completion_timing op=%s model=%s elapsed_ms=%.0f result=error http=%s body=%s",
+                "completion_timing op=%s model=%s elapsed_ms=%.0f result=error body=%s",
                 op,
                 model,
                 (time.monotonic() - t0) * 1000.0,
-                exc.status_code,
-                self._sanitize(exc.message)[:200],
+                self._sanitize(str(exc))[:200],
             )
-            refused = exc.status_code in (400, 403, 422)
+            refused = isinstance(exc, provider.BadRequestError)
             return (
                 None,
                 self._billed_failure_cost(exc, model),
@@ -4463,8 +4456,8 @@ Examples (echo → action_prompt: ""):
         model = self.plugin.registryValue("assistantModel")
         # One sentence plus whatever thinking the model does first: Gemini's
         # thinking took 110-550 tokens and starved a 120 cap, so this cap is
-        # sized for both. Low effort keeps the thinking short; the cap and the
-        # finish_reason check below are what make a leak harmless. The wire
+        # sized for both. The cap and the finish_reason check below are what
+        # make a leak harmless. The wire
         # length is bounded by _STATUS_ANNOUNCE_MAX_LEN, not by this.
         reply = self._timed_completion(
             "status_announce",
@@ -4476,7 +4469,6 @@ Examples (echo → action_prompt: ""):
             channel=channel,
             timeout=self.plugin.registryValue("timeout"),
             max_tokens=800,
-            effort="low",
         )
         # A cut-off sentence is worse than no rewrite: the caller's post-checks
         # are all negative (no foreign host, service named), so a fragment like
@@ -5351,13 +5343,6 @@ Examples (echo → action_prompt: ""):
             if profile.max_output_tokens is not None:
                 optional_kwargs["max_tokens"] = profile.max_output_tokens
 
-            # Per-profile sampling override (data-driven, like max_tokens
-            # above). Verse sets a modest temperature to dampen the run-on
-            # spiral a non-reasoning model falls into over a long roleplay
-            # thread; other profiles leave it None and keep provider defaults.
-            if profile.temperature is not None:
-                optional_kwargs["temperature"] = profile.temperature
-
             # Canonical, deduplicated, capped source list, plus the frozen
             # name -> source mapping. Read once: they gate both the tool
             # callback and the schema below, and registryValue is not free.
@@ -6013,7 +5998,6 @@ Examples (echo → action_prompt: ""):
                     request_data={
                         "messages": stash_messages,
                         "max_tokens": profile.max_output_tokens,
-                        "temperature": profile.temperature,
                     },
                     submitted_at=time.time(),
                     account=stash_account,
@@ -6767,9 +6751,7 @@ Examples (echo → action_prompt: ""):
             # Transient — a bounced box should not lose a job that may still be
             # running. Raise so the poller releases it with backoff.
             raise provider.RequestTimeoutError(  # noqa: TRY301
-                f"Video poll failed: status={status}",
-                model=task.model or "animate",
-                provider="vllm",
+                f"Video poll failed: status={status}"
             )
 
         job_status = str(payload.get("status") or "")
@@ -6777,9 +6759,7 @@ Examples (echo → action_prompt: ""):
             return _fail(self._animate_error_text(payload)[:200])
         if job_status != "completed":
             raise provider.RequestTimeoutError(  # noqa: TRY301
-                f"Video still rendering: status={job_status}",
-                model=task.model or "animate",
-                provider="vllm",
+                f"Video still rendering: status={job_status}"
             )
 
         code, data = self._animate_request(f"/v1/videos/{job_id}/content", raw=True)
@@ -7436,19 +7416,10 @@ Examples (echo → action_prompt: ""):
             return None
 
     def _filter_images(self, images: list[str] | None) -> list[str] | None:
-        """Drop invalid URLs, log how many were dropped, return None if empty.
-
-        Inline ``data:image/...`` URLs pass without the URL policy because they
-        are not fetched from anywhere: the only thing that mints one is
-        ``reference_vision_url``, from bytes this service already validated.
-        Anything else inline is still dropped — a data URL is a fine way to
-        smuggle a non-image past a filter that only reads schemes.
-        """
+        """Drop invalid URLs, log how many were dropped, return None if empty."""
         if not images:
             return None
-        valid = [
-            url for url in images if url.startswith("data:image/") or self.validate_image_url(url)
-        ]
+        valid = [url for url in images if self.validate_image_url(url)]
         if len(valid) != len(images):
             self.log.warning("Filtered out %i invalid image URLs", len(images) - len(valid))
         return valid or None
