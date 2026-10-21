@@ -16,7 +16,7 @@ All local, still **not pushed**:
 - JSON mode on grok-4-1-fast-non-reasoning returned `{"ok": true}`.
 - Responses + web_search: grounded. Here `output_tokens` already includes reasoning (input + output = total), so `_responses_reply` correctly does not fold it. Ticks ($0.0279) exceed the table ($0.0179) by $0.01, the fee for two web_search calls; ticks are present, so they are what gets booked.
 - images/generations: 200, ticks = $0.02.
-- images/edits: **not run** (it needs a public image URL). The body only lost `n`.
+- images/edits: 200 in 6.5 s against a freshly drawn image hosted briefly on bot.hextalk.org (deleted after), ticks = $0.022.
 
 Still to do: the `completion()` shrink (about 90 test call sites), video removal, docs. `_filter_images` no longer passes `data:` URLs, so animate's vision reference is already dead.
 
