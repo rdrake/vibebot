@@ -6,7 +6,7 @@ ships two first-party plugins. Load either one from IRC with
 
 | Plugin | What it does |
 |--------|--------------|
-| [LLM](llm.md) | The main AI surface: `@ask`, `@code`, `@draw`, `@story`, memory, reminders, scheduled tasks, the verse roleplay engine, and the Limnoria-as-tools bridge. |
+| [LLM](llm.md) | The main AI surface: `@ask`, `@draw`, `@story`, memory, reminders, scheduled tasks, the verse roleplay engine, and the Limnoria-as-tools bridge. |
 | [NickInMiddle](nickinmiddle.md) | A small `inFilter` plugin that recognises the bot's nick mid-sentence, so Limnoria's normal addressing logic fires. |
 
 Both plugins live in the same uv workspace (`plugins/<name>/`) and share

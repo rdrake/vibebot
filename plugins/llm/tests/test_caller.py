@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 from llm.identity import Caller, Identity
-from llm.service import AssistantResult, CompletionResult, Spend, StorybookResult
+from llm.service import AssistantResult, Spend, StorybookResult
 
-from .conftest import make_caller, make_registry_side_effect
+from .conftest import assistant_result, make_caller, make_registry_side_effect
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -163,7 +163,7 @@ class TestPrivateMessagesAreKeyedPerSender:
         location is the nick, so the shared channel buffer must stay out of
         PMs entirely, and personal history is keyed on the storage key."""
         plugin, irc, msg = plugin_env
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="noted", grounding_used=False, model="gpt-4"
         )
         make_caller(irc, msg, NICK, account=ACCOUNT)

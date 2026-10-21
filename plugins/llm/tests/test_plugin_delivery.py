@@ -93,25 +93,8 @@ class TestSafetyPollGuard:
         plugin._llm_executor.submit.assert_not_called()
 
 
-class TestCompletionResultUsageData:
+class TestResultUsageData:
     """Test that result NamedTuples carry usage data for logging."""
-
-    def test_completion_result_carries_usage_data(self) -> None:
-        """GIVEN CompletionResult with usage WHEN accessed THEN data available for logging."""
-        from llm.service import CompletionResult
-
-        result = CompletionResult(
-            content="response",
-            grounding_used=False,
-            prompt_tokens=150,
-            completion_tokens=75,
-            cost=0.002,
-            model="gemini/flash",
-        )
-        assert result.prompt_tokens == 150
-        assert result.completion_tokens == 75
-        assert result.cost == 0.002
-        assert result.model == "gemini/flash"
 
     def test_image_result_carries_usage_data(self) -> None:
         """GIVEN ImageResult with usage WHEN accessed THEN data available for logging."""
@@ -184,7 +167,6 @@ class TestDeliverPendingResult:
         plugin = LLM.__new__(LLM)
         plugin.llm_service = mocker.MagicMock()
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
-        plugin.llm_service.save_code_to_http.return_value = None
         plugin.db = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
         plugin._llm_executor = mocker.MagicMock()
@@ -477,7 +459,6 @@ class TestDeliveryRetry:
         plugin = LLM.__new__(LLM)
         plugin.llm_service = mocker.MagicMock()
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
-        plugin.llm_service.save_code_to_http.return_value = None
         plugin.db = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
         plugin._next_wakeup_time = None
@@ -873,7 +854,6 @@ class TestWakeupTriggers:
         plugin = LLM.__new__(LLM)
         plugin.llm_service = mocker.MagicMock()
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
-        plugin.llm_service.save_code_to_http.return_value = None
         plugin.db = mocker.MagicMock()
         plugin.log = mocker.MagicMock()
         plugin._next_wakeup_time = None
@@ -1024,57 +1004,6 @@ class TestDeliverPendingResultCodeBranch:
         }
         defaults.update(overrides)
         return PendingTaskResult(**defaults)
-
-    def test_code_result_with_url_sends_code_is_ready(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN completed code result WHEN save_code_to_http returns URL THEN sends 'code is ready' message."""
-        import supybot.world as world_mod
-
-        mock_irc = mocker.MagicMock()
-        mock_irc.state.channels = {"#test": mocker.MagicMock()}
-        mock_irc.state.nickToAccount.return_value = "alice"
-        mocker.patch.object(world_mod, "ircs", [mock_irc])
-
-        plugin.llm_service.save_code_to_http.return_value = "http://example.com/code_abc.html"
-
-        r = self._make_result(
-            task_type="code",
-            nick="alice",
-            content="print('hello')",
-            prompt_preview="hello world",
-            task_id=1,
-        )
-        plugin._deliver_pending_result(r)
-
-        mock_irc.queueMsg.assert_called_once()
-        msg = mock_irc.queueMsg.call_args[0][0]
-        msg_text = str(msg)
-        assert "code is ready" in msg_text
-        assert "http://example.com/code_abc.html" in msg_text
-        assert "alice" in msg_text
-
-    def test_code_result_without_url_sends_content(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN completed code result WHEN save_code_to_http returns None THEN sends raw content."""
-        import supybot.world as world_mod
-
-        mock_irc = mocker.MagicMock()
-        mock_irc.state.channels = {"#test": mocker.MagicMock()}
-        mock_irc.state.nickToAccount.return_value = "alice"
-        mocker.patch.object(world_mod, "ircs", [mock_irc])
-
-        plugin.llm_service.save_code_to_http.return_value = None
-
-        r = self._make_result(
-            task_type="code",
-            nick="alice",
-            content="print('hello')",
-            prompt_preview="hello world",
-        )
-        plugin._deliver_pending_result(r)
-
-        mock_irc.queueMsg.assert_called_once()
-        msg_text = str(mock_irc.queueMsg.call_args[0][0])
-        assert "print('hello')" in msg_text
-        assert "code is ready" not in msg_text
 
 
 class TestDeliverPendingResultUnknownStatus:

@@ -402,8 +402,8 @@ class TestHTTPFileManagement:
         assert http_root == "/tmp/web"
         assert "localhost:8080" in url_base
 
-    def test_save_code_to_http_oserror_returns_none(self) -> None:
-        """GIVEN mkdir raises OSError WHEN save_code_to_http called THEN returns None."""
+    def test_save_markdown_to_http_oserror_returns_none(self) -> None:
+        """GIVEN mkdir raises OSError WHEN save_markdown_to_http called THEN returns None."""
         self.mocker.patch.object(
             self.service,
             "get_http_paths",
@@ -411,7 +411,7 @@ class TestHTTPFileManagement:
         )
         self.mocker.patch("llm.service.Path.mkdir", side_effect=OSError("disk full"))
 
-        result = self.service.save_code_to_http("# hello world")
+        result = self.service.save_markdown_to_http("# hello world")
 
         assert result is None
 

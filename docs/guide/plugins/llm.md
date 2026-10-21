@@ -11,7 +11,7 @@ tools.
 
 | Family | Commands | Notes |
 |--------|----------|-------|
-| Core AI | `@ask`, `@code`, `@draw`, `@meme`, `@story` | Chat with vision, code with HTTP links, images, captioned memes, illustrated pages. |
+| Core AI | `@ask`, `@draw`, `@meme`, `@story` | Chat with vision, images, captioned memes, illustrated pages. |
 | Memory | `@forget`, `@memories`, `@instruct` | Volatile context, durable facts, persistent instructions. |
 | Reminders | `@remind`, `@tz` | Natural-language reminders with recurring support, read in your time zone. |
 | Accounting | `@usage` | Per-account and per-channel API usage. |
@@ -24,7 +24,7 @@ and capability requirements, and the
 [configuration guide](../operator/configuration.md) for every registry
 key.
 
-`@ask`, `@code` and `@draw` also work through plain language: mention
+`@ask` and `@draw` also work through plain language: mention
 the bot by name or send it a PM. `@story` does not — an illustrated page
 comes from the command, or from an explicit illustrate cue in a verse
 channel with `verseStorybookEnabled` on. Memory, Reminders and Accounting are
@@ -38,7 +38,7 @@ route sees.
 ## Capabilities
 
 Limnoria capabilities gate the AI and verse commands: `llm.ask` (`@ask`,
-`@forget`), `llm.code`, `llm.draw` (also covers `@story`), `llm.verse`
+`@forget`), `llm.draw` (also covers `@story`), `llm.verse`
 (`@rp`, `@verseopt`, `@verse`, `@look`, `@who`), `llm.verse.edit`
 (`@canon`, `@versedit`), and `llm.verse.gm` (`@versedump`,
 `@versepurge`, `@versecompact`).

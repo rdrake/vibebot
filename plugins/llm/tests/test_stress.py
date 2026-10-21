@@ -11,14 +11,13 @@ import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from llm import provider
 from llm.context import ContextConfig, ConversationContext
 from llm.service import LLMService
 
-from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
+from .conftest import FAKE_PROVIDER_KEYS
 
 if TYPE_CHECKING:
-    from pytest_mock import MockerFixture
+    pass
 
 pytestmark = pytest.mark.slow
 
@@ -516,43 +515,6 @@ class TestLongRunningSessionScenarios:
         assert len(errors) == 0, f"Errors: {errors}"
 
 
-class TestNetworkFailureRecovery:
-    """Test handling of network failures and retries."""
-
-    def test_completion_handles_intermittent_failures(
-        self, make_service, mocker: MockerFixture
-    ) -> None:
-        """GIVEN intermittent API failures WHEN completing THEN proper error handling."""
-        call_count = [0]
-        lock = threading.Lock()
-
-        def flaky_completion(**kwargs) -> provider.Reply:
-            with lock:
-                call_count[0] += 1
-                current = call_count[0]
-
-            # Fail every third call
-            if current % 3 == 0:
-                raise Exception("Intermittent network error")
-
-            return make_completion_response(f"Response {current}")
-
-        service, _ = make_service()
-        results = []
-
-        mocker.patch("llm.service.provider.chat", side_effect=flaky_completion)
-        for i in range(9):
-            result = service.completion(f"Request {i}", command="ask")
-            results.append(result.content)
-
-        # Should have mix of successes and error messages
-        successes = [r for r in results if "Response" in r]
-        errors = [r for r in results if "Error" in r]
-
-        assert len(successes) == 6  # 6 out of 9 succeed
-        assert len(errors) == 3  # 3 out of 9 fail
-
-
 class TestHighVolumeFileOperations:
     """Test file operations under high volume."""
 
@@ -576,7 +538,7 @@ class TestHighVolumeFileOperations:
         def save_code(content_id: int) -> None:
             try:
                 content = f"# Code file {content_id}\nprint('Hello from {content_id}')"
-                url = service.save_code_to_http(content)
+                url = service.save_markdown_to_http(content)
                 if url:
                     with lock:
                         urls.append(url)

@@ -859,7 +859,6 @@ class TestCommandRegistry:
         names = {cmd.name for cmd in COMMAND_REGISTRY}
         expected = {
             "ask",
-            "code",
             "draw",
             "meme",
             "story",
@@ -1099,7 +1098,6 @@ class TestWrapCapabilityGate:
         ("command", "capability", "args"),
         [
             ("ask", "llm.ask", ["hello"]),
-            ("code", "llm.code", ["Python", "hello"]),
             ("draw", "llm.draw", ["a", "sunset"]),
         ],
     )

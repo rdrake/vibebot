@@ -8,7 +8,6 @@ The full guide lives at **[rdrake.github.io/vibebot-v8](https://rdrake.github.io
 
 - **Multi-provider AI**: OpenAI, Anthropic, Google Gemini, and xAI Grok behind one LiteLLM interface, with per-channel model overrides
 - **Assistant with tools**: `@ask` answers with conversation context, vision for image URLs, web search, and a bounded tool loop
-- **Code generation**: `@code` writes code and posts it as an HTTP link
 - **Image generation**: `@draw` renders images with xAI grok-imagine (`xai/grok-imagine-image` by default, on `XAI_API_KEY`) or Google Imagen; Vertex AI Imagen works too, but needs `VERTEXAI_PROJECT` and `VERTEXAI_LOCATION`
 - **Illustrated pages**: `@story` builds an illustrated story or explainer and posts the link
 - **Two memory layers**: volatile conversation context that expires on its own, plus durable per-user facts — picked up automatically once they recur, or saved at once when you say "remember this"
@@ -42,7 +41,6 @@ export ANTHROPIC_API_KEY=...
 | Command | Description |
 |---------|-------------|
 | `@ask <question>` | Ask the assistant; supports context, vision, and tools |
-| `@code <request>` | Generate code, delivered as an HTTP link |
 | `@draw <prompt>` | Generate an image (authenticated account required) |
 | `@story <brief>` | Generate an illustrated story or explainer page |
 | `@forget [channel]` | Clear your conversation context |
@@ -59,7 +57,6 @@ Models and behaviour live in the Limnoria registry under `supybot.plugins.LLM.*`
 
 ```
 supybot.plugins.LLM.assistantModel: gemini/gemini-flash-latest
-supybot.plugins.LLM.codeModel: gemini/gemini-flash-latest
 supybot.plugins.LLM.imageModel: gemini/imagen-4.0-fast-generate-001
 ```
 

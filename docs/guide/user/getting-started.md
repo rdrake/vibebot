@@ -85,12 +85,11 @@ See [AI commands](ai-commands.md#the-verse) for the verse command list.
 | Command | Description | Details |
 |---------|-------------|---------|
 | `@ask` | Ask the AI a question (supports vision and follow-ups) | [AI commands](ai-commands.md#ask) |
-| `@code` | Generate code, delivered as a highlighted web page | [AI commands](ai-commands.md#code) |
 | `@draw` | Generate an image from a text description | [AI commands](ai-commands.md#draw) |
 | `@story` | Generate an illustrated story or explainer page | [AI commands](ai-commands.md#story) |
 | `@forget` | Clear your conversation context, plus the channel's shared recent history when run in that channel | [Memory](memory.md#conversation-context) |
 | `@memories` | Manage stored facts about you | [Memory](memory.md#saved-memories) |
-| `@instruct` | Set persistent instructions for `@ask`, mentions, and `@code` | [Memory](memory.md#custom-instructions) |
+| `@instruct` | Set persistent instructions for `@ask` and mentions | [Memory](memory.md#custom-instructions) |
 | `@avatar` | Set your verse avatar's persona | [Memory](memory.md#avatar-persona) |
 | `@remind` | Set reminders with natural language | [Reminders](reminders.md#remind) |
 | `@usage` | View API usage statistics | [AI commands](ai-commands.md#usage) |

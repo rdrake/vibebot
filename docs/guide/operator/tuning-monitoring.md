@@ -8,7 +8,6 @@ The model surface splits by workload so cost and quality can differ per task. Ev
 |---------|----------|
 | `assistantModel` | Chat, the planner loop, bridge tool selection, reminder parsing, memory cleanup, image-prompt rewrites, scheduled tasks |
 | `memoryModel` | Memory extraction after every reply. Falls back to `assistantModel` when empty |
-| `codeModel` | The code-generation one-shot behind `@code` and the `generate_code` tool. The `@code` planner loop that calls it runs on `assistantModel` |
 | `imageModel` | Image generation |
 | `searchModel` | Web search and URL fetch tools. Falls back to `assistantModel` when empty. GitHub links are read through GitHub's API instead |
 | `subjectResearchModel` | The subject-research pre-stage in front of the `@draw` planner. Falls back to `searchModel`, then `assistantModel` |
@@ -110,7 +109,7 @@ Plugins that nest sub-leaves under a `Commands` group (notably `RSS`'s `announce
 
 ## HTTP output
 
-`@code`, `@draw`, and `@story` save output as files served over HTTP.
+`@draw`, `@story`, and long replies save output as files served over HTTP.
 
 - **Built-in server (default).** With `httpRoot` empty, files land in Limnoria's web directory (`data/web/llm/`) and its built-in HTTP server serves them. See the [Limnoria HTTP server documentation](https://docs.limnoria.net/use/httpserver.html) for port and public URL setup.
 - **External server.** Set `httpRoot` to a filesystem path (for example `/var/www/llm`) and `httpUrlBase` to the matching public URL. You serve the directory with nginx, caddy, or similar.
@@ -270,7 +269,7 @@ Reminders, usage statistics, and memories live in one SQLite database: `data/LLM
 - Check `contextTimeoutMinutes`; a short timeout expires context between messages.
 - Users clear their own context with `@forget`.
 
-**No link from `@code` or `@draw`.**
+**No link from `@draw` or `@story`.**
 
 - Built-in server: confirm Limnoria's HTTP server is enabled and its public URL is set.
 - External server: confirm the bot can write to `httpRoot` and that `httpUrlBase` matches what your web server serves.

@@ -19,7 +19,7 @@ from llm import provider
 from llm.identity import Caller, Identity
 from llm.persistence import LLMDatabase, ReminderRow
 from llm.plugin import LLM
-from llm.service import LLMService
+from llm.service import AssistantResult, LLMService, Spend
 from llm.typing_holds import TypingHolds
 from supybot import ircutils
 
@@ -487,6 +487,26 @@ def make_tool_call(
     return provider.ToolCall(id=call_id, name=name, arguments=arguments_str)
 
 
+def assistant_result(
+    content: str,
+    *,
+    grounding_used: bool = False,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    cost: float = 0.0,
+    model: str = "",
+    error: str | None = None,
+) -> AssistantResult:
+    """An ``AssistantResult`` from the flat usage fields a test cares about."""
+    return AssistantResult(
+        content=content,
+        grounding_used=grounding_used,
+        spend=Spend(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, cost=cost),
+        model=model,
+        error=error,
+    )
+
+
 def make_completion_response(
     content: str | None = "response text",
     *,
@@ -602,77 +622,6 @@ def plugin_env(mocker: MockerFixture, tmp_path: Path):
     # this, and the bare mock would hand them a non-iterable MagicMock.
     plugin.llm_service.list_scheduled_llm_tasks.return_value = []
 
-    # During the unified-assistant transition, ask-style command tests still
-    # exercise the existing completion bridge through assistant_completion().
-    # The bridge wraps CompletionResult into AssistantResult so the chat
-    # impl's structured-signal suppression check (last_successful_tool /
-    # final_text_after_tools) sees defaults rather than AttributeError.
-    def _assistant_completion_bridge(
-        prompt: str,
-        *,
-        nick=None,
-        channel=None,
-        account=None,
-        is_owner=False,
-        capabilities=None,
-        route_profile=None,
-        entry_route="",
-        db=None,
-        context=None,
-        bot_nick=None,
-        images=None,
-        history=None,
-        channel_history=None,
-        irc=None,
-        msg=None,
-        system_prompt=None,
-        memories=None,
-        user_instruction=None,
-        search_fn=None,
-        fetch_fn=None,
-        code_fn=None,
-        draw_fn=None,
-        cleanup_fn=None,
-        set_reminder_fn=None,
-        list_pending_tasks_fn=None,
-        cancel_pending_task_fn=None,
-        cancel_all_pending_tasks_fn=None,
-        schedule_llm_task_fn=None,
-        extra_tools=None,
-        extra_handlers=None,
-        model_override=None,
-        manage_typing=True,
-        exclude_tools=frozenset(),
-    ):
-        from llm.service import AssistantResult as _AssistantResult
-        from llm.service import Spend
-
-        completion_result = plugin.llm_service.completion(
-            prompt,
-            command="ask",
-            images=images,
-            history=history,
-            channel_history=channel_history,
-            irc=irc,
-            msg=msg,
-            system_prompt=system_prompt,
-            memories=memories,
-            user_instruction=user_instruction,
-        )
-        return _AssistantResult(
-            content=completion_result.content,
-            spend=Spend(
-                prompt_tokens=completion_result.prompt_tokens,
-                completion_tokens=completion_result.completion_tokens,
-                cost=completion_result.cost,
-            ),
-            model=completion_result.model,
-            grounding_used=completion_result.grounding_used,
-            error=completion_result.error,
-        )
-
-    plugin.llm_service.assistant_completion.side_effect = _assistant_completion_bridge
-
     try:
         yield plugin, mock_irc, mock_msg
     finally:
@@ -729,9 +678,6 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "contextEnabled": True,
         "channelContextMaxMessages": 10,
         "privacyOptInOnly": True,
-        # Code command
-        "codeModel": TEST_MODEL,
-        "codeSystemPrompt": "You write code.",
         # Bot-to-bot loop guard
         "botLoopReplyLimit": 3,
         "botLoopWindow": 300,
@@ -746,7 +692,6 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "drawContextMaxAgeSeconds": 60,
         # Expiry (pending task retry)
         "askExpiry": 60,
-        "codeExpiry": 60,
         "drawExpiry": 60,
         # Memory extraction
         "memoryEnabled": True,
@@ -773,13 +718,6 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "askTrustedRateLimitWindow": 60,
         "askUnregRateLimitCount": 15,
         "askUnregRateLimitWindow": 60,
-        # code
-        "codeRateLimitCount": 10,
-        "codeRateLimitWindow": 60,
-        "codeTrustedRateLimitCount": 0,
-        "codeTrustedRateLimitWindow": 60,
-        "codeUnregRateLimitCount": 2,
-        "codeUnregRateLimitWindow": 60,
         # draw
         "drawRateLimitCount": 2,
         "drawRateLimitWindow": 300,

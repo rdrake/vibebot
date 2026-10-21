@@ -49,8 +49,8 @@ For `plugins/llm/src/llm/`:
 - `plugin.py`: IRC protocol layer, command routing, and command wrappers
 - `service.py`: LiteLLM integration and business logic
 - `assistant.py`: tool-using chat profile, tool schemas, and tool wrappers
-- `profile.py`: route profiles (`chat`, `verse`, `code`, `draw`, `remind_action`) that decide which tools an entry point advertises
-- `prompts.py`: the five framework system prompts, the memory-pipeline prompts, and the shared `IRC_OUTPUT_FORMAT` block
+- `profile.py`: route profiles (`chat`, `verse`, `draw`, `remind_action`) that decide which tools an entry point advertises
+- `prompts.py`: the four framework system prompts, the memory-pipeline prompts, and the shared `IRC_OUTPUT_FORMAT` block
 - `executor.py`: `LLMExecutor` (`BoundedSemaphore` + `ThreadPoolExecutor`); every blocking LLM call goes through `permit()` or `submit()`
 - `persistence.py`: SQLite store for memories, reminders, scheduled tasks, and usage; uses the `_write_txn` context manager for atomic writes
 - `limnoria_bridge.py`: allowlisted Limnoria-as-tool surface (mutation gating plus a curated default allowlist)
@@ -103,8 +103,8 @@ Keep those boundaries intact:
 
 ### Changing LLM behaviour
 
-- Framework prompts live in `prompts.py` (see Architecture); verse prompt assembly is `build_verse_system_prompt` in `verse/avatar.py`. Only `assistantSystemPrompt` and `codeSystemPrompt` are channel-overridable registry settings.
-- Model selection is per-purpose: `assistantModel`, `codeModel`, `imageModel`, `searchModel`, `verseModel`, and `verseCompactionModel`. Bumping the chat model does not move verse; update both when that is the intent.
+- Framework prompts live in `prompts.py` (see Architecture); verse prompt assembly is `build_verse_system_prompt` in `verse/avatar.py`. Only `assistantSystemPrompt` is a channel-overridable registry setting.
+- Model selection is per-purpose: `assistantModel`, `imageModel`, `searchModel`, `verseModel`, and `verseCompactionModel`. Bumping the chat model does not move verse; update both when that is the intent.
 - API keys are resolved from the environment at call time, keyed on the provider of the model being called (`apikeys.api_key_for`). Providers outside the four this deployment pays for directly — vertex_ai, openrouter, azure, bedrock — use their own native credentials (ADC, IAM, their own variables).
 
 ## Important files

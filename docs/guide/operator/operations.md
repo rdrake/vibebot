@@ -198,7 +198,7 @@ make uninstall-timer
 make uninstall-service
 ```
 
-Both targets leave `~/.config/vibebot/` alone: `bot.conf`, the `env` file, and the `conf/`, `data/`, `logs/`, and `backup/` subdirectories are preserved. `data/` holds `LLM.db` (conversations, memories, usage), the per-channel verse databases under `data/verse/`, and — while `httpRoot` is empty — the `@code` and `@draw` output under `data/web/llm/`. Delete that directory only when you are sure you no longer want any of it.
+Both targets leave `~/.config/vibebot/` alone: `bot.conf`, the `env` file, and the `conf/`, `data/`, `logs/`, and `backup/` subdirectories are preserved. `data/` holds `LLM.db` (conversations, memories, usage), the per-channel verse databases under `data/verse/`, and — while `httpRoot` is empty — the `@draw` and `@story` output under `data/web/llm/`. Delete that directory only when you are sure you no longer want any of it.
 
 If you set `httpRoot`, that output lands there instead, outside `~/.config/vibebot/`; the shipped unit mounts `/var/www/llm` for that case, and removing the config directory leaves it behind.
 

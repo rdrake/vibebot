@@ -21,9 +21,15 @@ from llm.context import Role
 from llm.identity import Caller, Identity
 from llm.persistence import UsageBreakdown, UsageRank, UsageSummary
 from llm.plugin import LLM, PreflightResult
-from llm.service import AssistantResult, CompletionResult, ReminderParseResult, Spend
+from llm.service import AssistantResult, ReminderParseResult, Spend
 
-from .conftest import make_registry_side_effect, make_reminder_row, put_reminder, reminder_names
+from .conftest import (
+    assistant_result,
+    make_registry_side_effect,
+    make_reminder_row,
+    put_reminder,
+    reminder_names,
+)
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -78,7 +84,7 @@ class TestAskCommand:
         """GIVEN a normal prompt WHEN ask is called THEN irc.reply receives the completion content."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="Hello from AI",
             grounding_used=False,
             prompt_tokens=10,
@@ -95,7 +101,7 @@ class TestAskCommand:
         """GIVEN a successful completion WHEN ask is called THEN conversation context is stored."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="response text",
             prompt_tokens=10,
             completion_tokens=5,
@@ -116,7 +122,7 @@ class TestAskCommand:
         """GIVEN completion with cost WHEN ask completes THEN usage is logged in db."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="ok",
             prompt_tokens=100,
             completion_tokens=50,
@@ -152,7 +158,7 @@ class TestAskCommand:
         """GIVEN grounding_used is True WHEN ask completes THEN reply has globe icon prefix."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="searched result",
             grounding_used=True,
             prompt_tokens=10,
@@ -171,7 +177,7 @@ class TestAskCommand:
         """GIVEN completion returns an error WHEN ask completes THEN context is NOT stored."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="Error: something went wrong",
             error="Error: something went wrong",
         )
@@ -186,7 +192,7 @@ class TestAskCommand:
         """GIVEN context disabled WHEN ask completes THEN no context stored."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="reply",
             prompt_tokens=1,
             completion_tokens=1,
@@ -208,7 +214,7 @@ class TestAskCommand:
         """GIVEN LLM responds with /me WHEN ask called THEN sends IRC action."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="/me shrugs",
             grounding_used=False,
             prompt_tokens=10,
@@ -229,7 +235,7 @@ class TestAskCommand:
         """GIVEN LLM responds normally WHEN ask called THEN uses irc.reply."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="The capital is Paris.",
             grounding_used=False,
             prompt_tokens=10,
@@ -343,7 +349,7 @@ class TestAskCommand:
         """GIVEN LLM responds with /me WHEN ask called THEN context stores * BotNick text."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="/me thinks about it",
             grounding_used=False,
             prompt_tokens=10,
@@ -364,7 +370,7 @@ class TestAskCommand:
         """GIVEN /me response with grounding WHEN ask called THEN action includes globe icon."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="/me looks it up",
             grounding_used=True,
             prompt_tokens=10,
@@ -382,7 +388,7 @@ class TestAskCommand:
         """GIVEN LLM responds with '/me' with no trailing text WHEN ask called THEN uses reply."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="/me",
             grounding_used=False,
             prompt_tokens=10,
@@ -399,7 +405,7 @@ class TestAskCommand:
         """GIVEN LLM responds with '* BotNick ...' WHEN ask called THEN sent as IRC action."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="* testbot nudges a pair of glasses toward you",
             grounding_used=False,
             prompt_tokens=10,
@@ -416,175 +422,6 @@ class TestAskCommand:
 
 # ---------------------------------------------------------------------------
 # code
-# ---------------------------------------------------------------------------
-
-
-class TestCodeCommand:
-    """Tests for the real LLM.code method."""
-
-    def _make_code_result(self, **overrides):
-        """Build a AssistantResult with sensible defaults for code tests."""
-        defaults = {
-            "content": "Here is your code — http://x/code.html",
-            "grounding_used": False,
-            "model": "gpt-4",
-        }
-        spend = {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.001}
-        for key in spend:
-            if key in overrides:
-                spend[key] = overrides.pop(key)
-        defaults.update(overrides)
-        defaults["spend"] = Spend(**spend)
-        return AssistantResult(**defaults)  # ty: ignore[invalid-argument-type]
-
-    def test_code_routes_through_assistant_completion(self, plugin_env, mocker: MockerFixture):
-        """GIVEN code WHEN executed THEN it uses assistant_completion with code profile."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = self._make_code_result()
-
-        plugin.code(mock_irc, mock_msg, ["Python", "hello"])
-
-        plugin.llm_service.assistant_completion.assert_called_once()
-        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
-        assert kwargs["route_profile"] == "code"
-        assert kwargs["entry_route"] == "code"
-
-    def test_code_replies_with_planner_content(self, plugin_env, mocker: MockerFixture):
-        """GIVEN planner returns summary with URL WHEN code called THEN reply contains it."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = self._make_code_result(
-            content="Fibonacci function — http://localhost:8080/llm/code_abc.html",
-        )
-
-        plugin.code(mock_irc, mock_msg, ["Python", "hello"])
-
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert "http://localhost:8080/llm/code_abc.html" in reply_text
-        assert "Fibonacci function" in reply_text
-
-    def test_code_stores_context(self, plugin_env, mocker: MockerFixture):
-        """GIVEN code command succeeds WHEN executed THEN conversation context is stored."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = self._make_code_result(
-            content="code output",
-        )
-
-        plugin.code(mock_irc, mock_msg, ["generate", "something"])
-
-        messages = plugin.context.get_messages("!testnick", "#test")
-        assert len(messages) == 2
-        assert messages[0]["role"] == "user"
-        assert messages[1]["role"] == "assistant"
-
-    def test_code_logs_usage(self, plugin_env, mocker: MockerFixture):
-        """GIVEN code completion with cost WHEN code completes THEN usage is logged."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = self._make_code_result(
-            content="x = 1",
-            prompt_tokens=50,
-            completion_tokens=20,
-            cost=0.003,
-        )
-
-        plugin.code(mock_irc, mock_msg, ["assign"])
-
-        plugin.db.log_usage.assert_called_once_with(
-            "!testnick",
-            "#test",
-            "code",
-            "gpt-4",
-            50,
-            20,
-            0.003,
-            prompt="assign",
-            status="success",
-            error_detail="",
-        )
-
-    def test_code_skips_znc_playback(self, plugin_env, mocker: MockerFixture):
-        """GIVEN an old message WHEN code called THEN nothing happens."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_msg.time = plugin.startup_time - 100
-
-        plugin.code(mock_irc, mock_msg, ["hello"])
-
-        mock_irc.reply.assert_not_called()
-
-    def test_code_grounding_icon_in_reply(self, plugin_env, mocker: MockerFixture):
-        """GIVEN grounding_used is True WHEN code response returned THEN reply has globe icon."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = self._make_code_result(
-            content="summary — http://x/c.html",
-            grounding_used=True,
-        )
-
-        plugin.code(mock_irc, mock_msg, ["test"])
-
-        reply_text = mock_irc.reply.call_args[0][0]
-        assert reply_text.startswith("\U0001f310")
-
-    def test_code_action_with_grounding_icon(self, plugin_env, mocker: MockerFixture):
-        """GIVEN /me-style code response with grounding WHEN code called THEN action carries globe icon."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = self._make_code_result(
-            content="/me runs the unit tests",
-            grounding_used=True,
-        )
-
-        mock_action = mocker.patch("llm.plugin.ircmsgs.action")
-        plugin.code(mock_irc, mock_msg, ["run", "tests"])
-
-        mock_action.assert_called_once_with("#test", "\U0001f310 runs the unit tests")
-
-    def test_code_preserves_preflight(self, plugin_env, mocker: MockerFixture):
-        """GIVEN code WHEN executed THEN preflight checks still run."""
-        plugin, mock_irc, mock_msg = plugin_env
-        # Make preflight block the request (e.g. rate limited)
-        mocker.patch.object(
-            plugin,
-            "_run_preflight",
-            return_value=mocker.MagicMock(blocked=True),
-        )
-
-        plugin.code(mock_irc, mock_msg, ["test"])
-
-        plugin.llm_service.assistant_completion.assert_not_called()
-        mock_irc.reply.assert_not_called()
-
-    def test_code_user_instruction_layers_on_facade_prompt(self, plugin_env):
-        """GIVEN user has instruction WHEN code called THEN planner sees CODE_SYSTEM_PROMPT.
-
-        Regression: a user instruction must not replace the assistant facade
-        prompt with the (inner-call) registry codeSystemPrompt — otherwise
-        the planner stops calling generate_code and the pastebin breaks. The
-        instruction itself now rides as user_instruction (user-role data), not
-        prepended to the facade.
-        """
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount.return_value = "testnick"
-        plugin.db.get_instruction.return_value = "You are Captain Picard."
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = self._make_code_result()
-
-        plugin.code(mock_irc, mock_msg, ["fibonacci"])
-
-        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
-        system_prompt = kwargs["system_prompt"]
-        # Facade preserved (planner still told to call generate_code)...
-        assert "generate_code" in system_prompt
-        # ...but the instruction is relocated out of the system prompt.
-        assert "Picard" not in system_prompt
-        assert kwargs["user_instruction"] == "You are Captain Picard."
-
-
-# ---------------------------------------------------------------------------
-# _send_long_reply (single-line or pastebin teaser)
 # ---------------------------------------------------------------------------
 
 
@@ -605,7 +442,7 @@ class TestPendingTaskGate:
         """The chat entry route threads the gate into assistant_completion."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="ok",
             prompt_tokens=1,
             completion_tokens=1,
@@ -1279,7 +1116,7 @@ class TestDispatchAssistantReply:
     # grounding-icon prefix — all three commands
     # ------------------------------------------------------------------
 
-    @pytest.mark.parametrize("command", ["ask", "code", "draw"])
+    @pytest.mark.parametrize("command", ["ask", "draw"])
     def test_grounding_icon_prefixed_consistently(self, command, plugin_env, mocker: MockerFixture):
         """GIVEN grounding_used=True and a normal text reply WHEN each command is called THEN sent line starts with GROUNDING_ICON."""
         plugin, mock_irc, mock_msg = plugin_env
@@ -2868,7 +2705,7 @@ class TestAccountBasedIdentity:
         """GIVEN user with NickServ account WHEN ask completes THEN usage logged under account."""
         plugin, mock_irc, mock_msg = account_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="ok",
             prompt_tokens=10,
             completion_tokens=5,
@@ -2887,31 +2724,6 @@ class TestAccountBasedIdentity:
             5,
             0.001,
             prompt="hello",
-            status="success",
-            error_detail="",
-        )
-
-    def test_code_logs_usage_under_account(self, account_env, mocker: MockerFixture):
-        """GIVEN user with NickServ account WHEN code completes THEN usage logged under account."""
-        plugin, mock_irc, mock_msg = account_env
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = AssistantResult(
-            content="x = 1",
-            spend=Spend(prompt_tokens=50, completion_tokens=20, cost=0.003),
-            model="gpt-4",
-        )
-
-        plugin.code(mock_irc, mock_msg, ["assign"])
-
-        plugin.db.log_usage.assert_called_once_with(
-            "MyAccount",
-            "#test",
-            "code",
-            "gpt-4",
-            50,
-            20,
-            0.003,
-            prompt="assign",
             status="success",
             error_detail="",
         )
@@ -2948,7 +2760,7 @@ class TestAccountBasedIdentity:
         """GIVEN user with NickServ account WHEN ask completes THEN context stored under account."""
         plugin, mock_irc, mock_msg = account_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="response",
             prompt_tokens=10,
             completion_tokens=5,
@@ -3009,7 +2821,7 @@ class TestAccountBasedIdentity:
         plugin, mock_irc, mock_msg = plugin_env
         # nickToAccount returns None (default in plugin_env fixture)
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="ok",
             prompt_tokens=10,
             completion_tokens=5,
@@ -3037,7 +2849,7 @@ class TestAccountBasedIdentity:
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount = mocker.MagicMock(side_effect=KeyError("unknown"))
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="ok",
             prompt_tokens=10,
             completion_tokens=5,
@@ -3064,7 +2876,7 @@ class TestAccountBasedIdentity:
         """GIVEN user without account WHEN ask completes THEN context stored under nick."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="response",
             prompt_tokens=10,
             completion_tokens=5,
@@ -3266,50 +3078,6 @@ class TestRemindEdgeCases:
         assert save_call[0][3] == "in 1m something"  # message arg = original text
 
 
-class TestCodeEdgeCases:
-    """Additional edge-case tests for code command."""
-
-    def test_code_skips_context_when_disabled(self, plugin_env, mocker: MockerFixture):
-        """GIVEN context disabled WHEN code called THEN no context stored."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = AssistantResult(
-            content="print('hi')",
-            spend=Spend(prompt_tokens=10, completion_tokens=5, cost=0.001),
-            model="gpt-4",
-        )
-
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect({"contextEnabled": False})
-        )
-
-        plugin.code(mock_irc, mock_msg, ["hello"])
-
-        mock_irc.reply.assert_called_once()
-        messages = plugin.context.get_messages("testnick", "#test")
-        assert len(messages) == 0
-
-    def test_code_empty_response_triggers_error(self, plugin_env, mocker: MockerFixture):
-        """GIVEN planner returns empty content WHEN code called THEN irc.error is sent."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = AssistantResult(
-            content="",
-            spend=Spend(prompt_tokens=10, completion_tokens=0, cost=0.0),
-            model="gpt-4",
-        )
-
-        plugin.code(mock_irc, mock_msg, ["generate"])
-
-        mock_irc.error.assert_called_once()
-        mock_irc.reply.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Rate limiting: draw respects per-command rate limits
-# ---------------------------------------------------------------------------
-
-
 class TestResolveTier:
     """Tests for _resolve_tier user classification."""
 
@@ -3401,7 +3169,7 @@ class TestRateLimitIntegration:
         """GIVEN user under ask rate limit WHEN ask called THEN request succeeds."""
         plugin, mock_irc, mock_msg = plugin_env
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="hello",
             prompt_tokens=5,
             completion_tokens=10,
@@ -3410,20 +3178,6 @@ class TestRateLimitIntegration:
         )
 
         plugin.ask(mock_irc, mock_msg, ["hello"])
-
-        mock_irc.reply.assert_called_once()
-
-    def test_code_succeeds_under_limit(self, plugin_env, mocker: MockerFixture):
-        """GIVEN user under code rate limit WHEN code called THEN request succeeds."""
-        plugin, mock_irc, mock_msg = plugin_env
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = AssistantResult(
-            content="print('hi') — http://x/code.html",
-            spend=Spend(prompt_tokens=5, completion_tokens=10, cost=0.001),
-            model="gpt-4",
-        )
-
-        plugin.code(mock_irc, mock_msg, ["hello"])
 
         mock_irc.reply.assert_called_once()
 
@@ -3534,7 +3288,7 @@ class TestRateLimitIntegration:
         plugin, mock_irc, mock_msg = plugin_env
         mock_irc.state.nickToAccount.return_value = "trusted_account"
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="hello",
             prompt_tokens=5,
             completion_tokens=10,
@@ -3666,9 +3420,9 @@ class TestAskWithInstruction:
     def _authenticated(self, plugin_env) -> None:
         plugin_env[1].state.nickToAccount.return_value = "testnick"
 
-    @pytest.mark.parametrize("command", ["ask", "code"])
+    @pytest.mark.parametrize("command", ["ask"])
     def test_unauthenticated_caller_gets_no_instruction_or_memories(self, plugin_env, command):
-        """GIVEN no account WHEN ask/code runs THEN the account-or-nick key is
+        """GIVEN no account WHEN ask runs THEN the account-or-nick key is
         not read: a caller on someone's nick must not get their @instruct or
         memories."""
         plugin, mock_irc, mock_msg = plugin_env
@@ -3695,7 +3449,7 @@ class TestAskWithInstruction:
         plugin, mock_irc, mock_msg = plugin_env
         plugin.db.get_instruction.return_value = "You are Captain Picard."
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="Make it so.",
             grounding_used=False,
             prompt_tokens=10,
@@ -3716,7 +3470,7 @@ class TestAskWithInstruction:
         plugin, mock_irc, mock_msg = plugin_env
         plugin.db.get_instruction.return_value = None
         plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="Hello!",
             grounding_used=False,
             prompt_tokens=10,

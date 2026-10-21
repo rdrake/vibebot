@@ -37,7 +37,7 @@ API keys are **not** part of the Limnoria registry. They come from environment v
 | `OPENAI_API_KEY` | OpenAI |
 | `ANTHROPIC_API_KEY` | Anthropic (Claude) |
 
-Any other provider LiteLLM recognises — `vertex_ai`, `openrouter`, `azure`, `bedrock`, and so on — resolves to no key from this plugin, so LiteLLM falls back to that provider's own native credentials: Application Default Credentials, IAM, or its own environment variables. With the defaults, a fresh install needs `ANTHROPIC_API_KEY` for chat and `@code`, `XAI_API_KEY` for search and `@draw` (the default `imageModel` is `xai/grok-imagine-image`).
+Any other provider LiteLLM recognises — `vertex_ai`, `openrouter`, `azure`, `bedrock`, and so on — resolves to no key from this plugin, so LiteLLM falls back to that provider's own native credentials: Application Default Credentials, IAM, or its own environment variables. With the defaults, a fresh install needs `ANTHROPIC_API_KEY` for chat, `XAI_API_KEY` for search and `@draw` (the default `imageModel` is `xai/grok-imagine-image`).
 
 ### Running on local models
 
@@ -55,7 +55,7 @@ A local server (Ollama, vLLM, LM Studio) takes no key from this plugin. Set its 
 
 Don't use `openai/<model>` with `OPENAI_API_BASE` for a local server. That redirects every OpenAI call in the bot and sends `OPENAI_API_KEY` to your box.
 
-The chat path calls tools, so the local model must support function calling. Each role has its own model setting (`assistantModel`, `searchModel`, `codeModel`, `memoryModel`, `verseModel` and the rest under [Model selection](#model-selection)). Any role left on a hosted provider still sends its requests there. That matters when you turn off `privacyOptInOnly`: keep every model a channel uses local, or overheard lines can still reach a hosted provider.
+The chat path calls tools, so the local model must support function calling. Each role has its own model setting (`assistantModel`, `searchModel`, `memoryModel`, `verseModel` and the rest under [Model selection](#model-selection)). Any role left on a hosted provider still sends its requests there. That matters when you turn off `privacyOptInOnly`: keep every model a channel uses local, or overheard lines can still reach a hosted provider.
 
 ### Opting in to Vertex AI
 
@@ -78,7 +78,6 @@ Models follow [LiteLLM's provider/model format](https://docs.litellm.ai/docs/pro
 |---------|-------|---------|-------------|
 | `assistantModel` | channel | `anthropic/claude-haiku-5-5` | All assistant text and tool work: chat, planner, memory, reminders, scheduled tasks. Needs vision support if users paste image URLs |
 | `refusalFallbackModel` | channel | `xai/grok-4-1-fast-non-reasoning` | Re-runs a chat turn once when its model refuses: a policy refusal that survives its one retry, or a provider refusal error. The fallback gets the original request without the refusal. Empty turns it off. Skipped when the turn already runs on this model, when its provider has no key, or when a tool that changes something (a reminder, an image, a memory) already worked this turn, since the re-run would repeat it. Its cost books at `xai/grok-4.3` rates, the model behind the alias |
-| `codeModel` | channel | `anthropic/claude-haiku-5-5` | The code-generation one-shot behind `@code` and the `generate_code` tool. The `@code` planner loop itself runs on `assistantModel` |
 | `imageModel` | channel | `xai/grok-imagine-image` | Model for `@draw` |
 | `searchModel` | channel | `xai/grok-4.3` | Model for web search and URL fetch. Falls back to `assistantModel`. Only xAI and Gemini models search; any other provider answers from its own knowledge. GitHub links skip it: they are read through GitHub's API. A request can run at most three searches |
 | `memoryModel` | channel | empty | Model for the memory extraction that runs after every reply. Falls back to `assistantModel`. A flash-lite class model is enough |
@@ -137,9 +136,8 @@ System prompts define the bot's personality and constraints. Both are channel-ov
 | Setting | Description |
 |---------|-------------|
 | `assistantSystemPrompt` | Personality and constraints for all assistant work. Verse mode layers scene context on top of this prompt rather than replacing it |
-| `codeSystemPrompt` | Instructions for `@code` output format |
 
-Both defaults carry constraints worth keeping: `assistantSystemPrompt` holds replies to one to three lines of plain text with no markdown, and `codeSystemPrompt` keeps the code body in the tool's URL rather than in the channel. Read the shipped text before you replace it — `@config default plugins.LLM.assistantSystemPrompt` — because a replacement drops those constraints with it.
+The default carries constraints worth keeping: `assistantSystemPrompt` holds replies to one to three lines of plain text with no markdown. Read the shipped text before you replace it — `@config default plugins.LLM.assistantSystemPrompt` — because a replacement drops those constraints with it.
 
 Example: give a channel a specialised personality:
 
@@ -206,7 +204,7 @@ See [Memory promotion](memory-promotion.md) for how the two-stage pipeline works
 
 ## Rate limiting
 
-Rate limits follow the pattern `{command}{tier}RateLimitCount` and `{command}{tier}RateLimitWindow` for the commands `ask`, `code`, `draw`, `meme`, and `story`. All rate-limit settings are global. See [Rate limiting and security](rate-limiting-security.md) for tiers, defaults, and the observe-only switch `enforceRateLimits`.
+Rate limits follow the pattern `{command}{tier}RateLimitCount` and `{command}{tier}RateLimitWindow` for the commands `ask`, `draw`, `meme`, and `story`. All rate-limit settings are global. See [Rate limiting and security](rate-limiting-security.md) for tiers, defaults, and the observe-only switch `enforceRateLimits`.
 
 ## Bot-to-bot loops
 
@@ -314,7 +312,6 @@ When an API call times out, the bot retries in the background for a bounded wind
 | `timeout` | global | `30` | Timeout for LLM API calls, in seconds |
 | `drawTimeout` | global | `120` | Timeout for image generation. `0` uses the global timeout |
 | `askExpiry` | global | `60` | Seconds to keep retrying a timed-out `@ask`. `0` disables |
-| `codeExpiry` | global | `60` | Seconds to keep retrying a timed-out `@code`. `0` disables |
 | `drawExpiry` | global | `60` | Seconds to keep retrying a timed-out `@draw`. `0` disables |
 
 ## Draw behaviour

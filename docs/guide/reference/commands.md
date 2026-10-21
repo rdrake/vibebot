@@ -34,7 +34,6 @@ Use the commands below when you want direct, predictable behaviour.
 | Command | Arguments | Description |
 |---------|-----------|-------------|
 | `@ask` | `<question>` | Ask the AI a question. Supports follow-ups and image URLs. Requires `llm.ask`. |
-| `@code` | `<request>` | Generate code, served as an HTTP link with syntax highlighting. Requires `llm.code`. |
 | `@draw` | `<prompt>` | Generate an image from text. Requires `llm.draw` and an authenticated account. |
 | `@story` | `<brief>` | Generate an illustrated page (tale or explainer) and post a link when ready. Same gate as `@draw`. |
 
@@ -50,16 +49,6 @@ questions and vision for image URLs.
 ```
 
 See [AI commands](../user/ai-commands.md) for full details.
-
-### code
-
-Generate code from your request. The bot saves the code to an HTTP link
-with syntax highlighting and keeps context, so you can iterate.
-
-```
-@code Python function to calculate fibonacci numbers
-@code Now add memoization to that
-```
 
 ### draw
 
@@ -91,7 +80,7 @@ with the verse storybook tool.
 |---------|-----------|-------------|
 | `@forget` | `[<channel>]` | Clear volatile conversation context: your own thread, plus the channel's shared recent history when run in that channel. Naming another channel clears only your own thread there. Requires `llm.ask`. |
 | `@memories` | `[<nick> \| del <id> [<id>...] \| edit <id> <text> \| clear \| cleanup [<nick>]]` | Manage stored facts. `del` takes several ids at once. The `<nick>` forms — viewing and cleaning up another user's memories — are owner-only. Needs an authenticated account. |
-| `@instruct` | `[<instruction> \| clear]` | Set a persistent instruction that rides `@ask`, plain mentions, `@rp` and verse turns, `@code`, and reminder fires. `@draw` ignores it. Empty shows the current one. Needs an authenticated account. |
+| `@instruct` | `[<instruction> \| clear]` | Set a persistent instruction that rides `@ask`, plain mentions, `@rp` and verse turns, and reminder fires. `@draw` ignores it. Empty shows the current one. Needs an authenticated account. |
 
 ```
 @memories

@@ -27,7 +27,7 @@ to expose)`. `search_bridge_commands` substring-searches that same list
 
 Both tools ride `@ask`, nick-addressed mentions, PMs, and `@rp`/verse
 turns — everything that reaches `_ask_impl`, which builds the pair
-unconditionally. `@code`, `@draw`, reminder fires, and scheduled tasks
+unconditionally. `@draw`, reminder fires, and scheduled tasks
 never carry them.
 
 The bridge exposes a command when **all** of these hold:
@@ -194,11 +194,10 @@ it is offered depends on the route that handled the message:
 
 | Route | Entry points | Tools offered |
 |-------|--------------|---------------|
-| chat | `@ask`, nick-addressed mentions, PMs | `check_service_status`, `fetch_url`, `generate_code`, `generate_image`, `save_memory`, `search_web`; plus `set_reminder` and `schedule_llm_task` where `pendingTasksEnabled` is on. Six with the shipped defaults; eight when `pendingTasksEnabled` is on; one fewer in each case when both `statusPageUrls` and `statusQueryablePages` are empty. |
-| verse | `@rp`, a live sticky `@rp` session, the one-shot ambient-prose promotion | `fetch_url`, `generate_code`, `generate_image`, `save_memory`, `search_web` (5) |
-| code | `@code` | `fetch_url`, `generate_code`, `search_web` (3) |
+| chat | `@ask`, nick-addressed mentions, PMs | `check_service_status`, `fetch_url`, `generate_image`, `save_memory`, `search_web`; plus `set_reminder` and `schedule_llm_task` where `pendingTasksEnabled` is on. Five with the shipped defaults; seven when `pendingTasksEnabled` is on; one fewer in each case when both `statusPageUrls` and `statusQueryablePages` are empty. |
+| verse | `@rp`, a live sticky `@rp` session, the one-shot ambient-prose promotion | `fetch_url`, `generate_image`, `save_memory`, `search_web` (4) |
 | draw | `@draw` | `generate_image` (1) |
-| remind_action | reminder and scheduled-task fires | all 21 |
+| remind_action | reminder and scheduled-task fires | all 20 |
 
 `assistant.py` defines 21 tool schemas, but defining one is not
 advertising it. Thirteen are hidden from chat and verse because each

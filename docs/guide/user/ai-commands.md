@@ -64,32 +64,6 @@ Use `@instruct` to set persistent instructions that shape how `@ask` responds to
 
 ---
 
-## `code`
-
-Generate code, delivered as a syntax-highlighted web page. The bot can search the web for current documentation before generating.
-
-**Usage:** `@code <request>`
-
-```
-@code Python function to calculate Fibonacci numbers
-@code JavaScript async fetch with error handling
-```
-
-### Iterating on code
-
-Conversation context carries over, so you can refine across requests:
-
-```
-@code Python function to sort a list of dictionaries by key
-  → https://bot.example.com/llm/abc123.html
-@code Now add type hints and handle empty lists
-  → https://bot.example.com/llm/def456.html
-```
-
-If the page cannot be saved, the bot answers without a link — ask your operator to check `httpRoot` and `httpUrlBase`. A `@code` request that times out is retried in the background and delivered later, pasted inline if the page still cannot be saved.
-
----
-
 ## `draw`
 
 Generate an image from a text description.

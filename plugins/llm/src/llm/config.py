@@ -102,18 +102,6 @@ conf.registerChannelValue(
     ),
 )
 
-conf.registerChannelValue(
-    LLM,
-    "codeSystemPrompt",
-    registry.String(
-        "You are a helpful code assistant. Explain your code and provide context. "
-        "Replies go to IRC: keep prose to one or two short lines, plain text, no "
-        "markdown. Code itself is delivered via the generate_code tool's URL — "
-        "do not paste the code body into the chat reply.",
-        _("""System prompt for code command"""),
-    ),
-)
-
 # ============================================================================
 # Model Configuration (channel-specific with global defaults)
 # ============================================================================
@@ -139,15 +127,6 @@ conf.registerChannelValue(
         refusal error. The fallback sees the original request only, never the
         refusal. Empty disables. Skipped when the turn already runs on this
         model or its provider has no key."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "codeModel",
-    ValidatedModelName(
-        "anthropic/claude-haiku-5-5",
-        _("""Model for code generation"""),
     ),
 )
 
@@ -570,16 +549,6 @@ conf.registerGlobalValue(
 
 conf.registerGlobalValue(
     LLM,
-    "codeExpiry",
-    registry.NonNegativeInteger(
-        60,
-        _("""Maximum seconds to keep retrying timed-out code requests.
-        Set to 0 to disable background retry for code."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
     "drawExpiry",
     registry.NonNegativeInteger(
         60,
@@ -589,7 +558,7 @@ conf.registerGlobalValue(
 )
 
 # ============================================================================
-# HTTP Server Settings (for code/image/answer output)
+# HTTP Server Settings (for image/answer output)
 # ============================================================================
 
 conf.registerGlobalValue(
@@ -597,7 +566,7 @@ conf.registerGlobalValue(
     "httpRoot",
     registry.String(
         "",
-        _("""Filesystem path to save code/image files. If empty, uses
+        _("""Filesystem path to save image and page files. If empty, uses
         Limnoria's web directory (data/web/llm/) and built-in HTTP server.
         If set, files are saved there and Limnoria's HTTP server is NOT
         used (external server like nginx expected)."""),
@@ -852,13 +821,6 @@ _register_rate_limit_block(
     windows=(60, 60, 60),
 )
 
-# --- code ---
-_register_rate_limit_block(
-    "code",
-    counts=(10, 0, 2),
-    windows=(60, 60, 60),
-)
-
 # --- draw (expensive) ---
 # Unregistered is the STRICTEST tier: 1 image/hour, not 0. A count of 0 means
 # "rate limiting disabled" (see _is_rate_limited), so 0 would give accountless
@@ -886,7 +848,7 @@ _register_rate_limit_block(
 )
 
 # ============================================================================
-# Assistant Tool-Calling Backend (shared by @ask, @code, @draw, invalidCommand)
+# Assistant Tool-Calling Backend (shared by @ask, @draw, invalidCommand)
 # ============================================================================
 
 conf.registerGlobalValue(

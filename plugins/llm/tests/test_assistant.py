@@ -71,7 +71,7 @@ class TestMetaTools:
 
     def test_tool_count(self) -> None:
         """GIVEN ASSISTANT_TOOLS WHEN counted THEN has expected number of tools."""
-        assert len(ASSISTANT_TOOLS) == 21
+        assert len(ASSISTANT_TOOLS) == 20
 
     def test_tools_have_function_format(self) -> None:
         """GIVEN each tool WHEN checked THEN follows OpenAI function calling schema."""
@@ -541,20 +541,6 @@ class TestAssistantToolExecutor:
         )
         assert executor._fetch_fn is fetch_fn
 
-    def test_executor_accepts_code_fn(
-        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """AssistantToolExecutor accepts code_fn callable."""
-        code_fn = mocker.MagicMock(return_value=ToolResult(content="code"))
-        executor = make_executor(
-            db=mock_db,
-            context=mock_context,
-            nick="testuser",
-            channel="#test",
-            code_fn=code_fn,
-        )
-        assert executor._code_fn is code_fn
-
     def test_execute_returns_tool_result(self, executor: AssistantToolExecutor) -> None:
         """execute() returns ToolResult for existing tools."""
         result = executor.execute("set_instruction", {"text": "be brief"})
@@ -733,46 +719,6 @@ class TestAssistantToolExecutor:
         )
         result = executor.execute("fetch_url", {"url": "https://example.com"})
         assert "unavailable" in result.content.lower() or "error" in result.content.lower()
-
-    def test_tool_generate_code_calls_fn(
-        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """generate_code handler calls code_fn with prompt."""
-        code_fn = mocker.MagicMock(
-            return_value=ToolResult(content="https://paste.example/abc"),
-        )
-        executor = make_executor(
-            db=mock_db,
-            context=mock_context,
-            nick="testuser",
-            channel="#test",
-            route_profile="code",
-            capabilities=frozenset({"llm.ask", "llm.code"}),
-            code_fn=code_fn,
-        )
-        result = executor.execute("generate_code", {"prompt": "fizzbuzz in rust"})
-        code_fn.assert_called_once_with("fizzbuzz in rust")
-        assert result.content == "https://paste.example/abc"
-
-    def test_tool_generate_code_no_fn_returns_error(
-        self, mock_db: MagicMock, mock_context: MagicMock
-    ) -> None:
-        """generate_code returns error when code_fn is None."""
-        executor = make_executor(
-            db=mock_db,
-            context=mock_context,
-            nick="testuser",
-            channel="#test",
-            route_profile="code",
-            capabilities=frozenset({"llm.ask", "llm.code"}),
-        )
-        result = executor.execute("generate_code", {"prompt": "hello world"})
-        assert "unavailable" in result.content.lower() or "error" in result.content.lower()
-
-
-# =========================================================================
-# assistant_completion() service-level tests
-# =========================================================================
 
 
 class TestMetaCompletion:
@@ -1539,7 +1485,7 @@ class TestMetaCompletion:
     def test_assistant_completion_passes_search_fn_to_executor(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
-        """assistant_completion passes search_fn/fetch_fn/code_fn to AssistantToolExecutor."""
+        """assistant_completion passes search_fn/fetch_fn to AssistantToolExecutor."""
         mock_response = make_completion_response("Done.")
 
         mocker.patch("llm.service.provider.chat", return_value=mock_response)
@@ -1548,7 +1494,6 @@ class TestMetaCompletion:
 
         sentinel_search = mocker.Mock()
         sentinel_fetch = mocker.Mock()
-        sentinel_code = mocker.Mock()
 
         service.assistant_completion(
             prompt="hello",
@@ -1559,13 +1504,11 @@ class TestMetaCompletion:
             bot_nick="VibeBot",
             search_fn=sentinel_search,
             fetch_fn=sentinel_fetch,
-            code_fn=sentinel_code,
         )
 
         call_kwargs = mock_executor_cls.call_args[1]
         assert call_kwargs["search_fn"] is sentinel_search
         assert call_kwargs["fetch_fn"] is sentinel_fetch
-        assert call_kwargs["code_fn"] is sentinel_code
 
     def test_explicit_search_prompt_forces_search_web_tool_choice(
         self, service: LLMService, mocker: MockerFixture
@@ -1819,9 +1762,9 @@ class TestMetaCompletion:
 
     @pytest.mark.parametrize(
         ("route_profile", "expected_task_type"),
-        [("chat", "ask"), ("code", "code"), ("verse", "ask")],
+        [("chat", "ask"), ("verse", "ask")],
     )
-    def test_timeout_stashes_for_chat_code_and_verse(
+    def test_timeout_stashes_for_chat_and_verse(
         self,
         service: LLMService,
         mocker: MockerFixture,
@@ -3664,100 +3607,6 @@ class TestDrawForMeta:
         )
 
 
-class TestCodeForAssistant:
-    """Tests for _code_for_assistant helper used by meta generate_code tool."""
-
-    @pytest.fixture
-    def plugin(self, mocker: MockerFixture, mock_irc: MagicMock):  # type: ignore[no-untyped-def]
-        import threading
-
-        plugin_init_patches(mocker)
-        plugin = LLM(mock_irc)
-        plugin.registryValue = mocker.Mock(
-            side_effect=make_registry_side_effect({"codeSystemPrompt": "You are a coder."})
-        )
-        plugin.llm_service = mocker.MagicMock()
-        plugin.db = mocker.MagicMock()
-        plugin._MetaSynchronized_rlock = threading.RLock()
-        return plugin
-
-    def test_code_for_assistant_returns_url(self, plugin) -> None:
-        """_code_for_assistant saves code to HTTP and returns URL."""
-        from llm.service import CompletionResult
-
-        plugin.llm_service.completion.return_value = CompletionResult(
-            content="print('hello')",
-            prompt_tokens=10,
-            completion_tokens=5,
-            cost=0.001,
-            model="gpt-4",
-        )
-        plugin.llm_service.save_code_to_http.return_value = "https://example.com/code/abc123"
-
-        result = plugin._code_for_assistant("write hello world", "#test")
-
-        import json
-
-        data = json.loads(result.content)
-        assert data["url"] == "https://example.com/code/abc123"
-        plugin.llm_service.save_code_to_http.assert_called_once_with(
-            "print('hello')", title="write hello world"
-        )
-
-    def test_code_for_assistant_includes_code_in_result(self, plugin) -> None:
-        """_code_for_assistant includes code content for context."""
-        from llm.service import CompletionResult
-
-        plugin.llm_service.completion.return_value = CompletionResult(
-            content="def foo(): pass",
-            prompt_tokens=10,
-            completion_tokens=5,
-            cost=0.001,
-            model="gpt-4",
-        )
-        plugin.llm_service.save_code_to_http.return_value = "https://example.com/code/xyz"
-
-        result = plugin._code_for_assistant("write a function", "#test")
-
-        import json
-
-        data = json.loads(result.content)
-        assert data["code"] == "def foo(): pass"
-        assert result.prompt_tokens == 10
-        assert result.completion_tokens == 5
-        assert result.cost == 0.001
-
-    def test_code_for_assistant_handles_error(self, plugin) -> None:
-        """_code_for_assistant returns sanitized error ToolResult on failure."""
-        plugin.llm_service.completion.side_effect = RuntimeError("API down")
-
-        result = plugin._code_for_assistant("write something", "#test")
-
-        import json
-
-        data = json.loads(result.content)
-        assert "error" in data
-        # Internal exception text must NOT leak into the tool payload
-        assert "API down" not in data["error"]
-        assert data["error"] == "Code generation failed."
-
-    def test_code_for_assistant_handles_completion_error(self, plugin) -> None:
-        """_code_for_assistant returns error ToolResult when completion has error."""
-        from llm.service import CompletionResult
-
-        plugin.llm_service.completion.return_value = CompletionResult(
-            content="",
-            error="Content blocked",
-        )
-
-        result = plugin._code_for_assistant("bad prompt", "#test")
-
-        import json
-
-        data = json.loads(result.content)
-        assert data["error"] == "Content blocked"
-
-
 class TestInvalidCommandRouting:
     """Tests for invalidCommand routing directly through chat profile."""
 
@@ -4230,7 +4079,7 @@ class TestChatToolSurfaceStaysSmall:
     def test_chat_keeps_the_tools_that_do_real_work(self) -> None:
         """Generation and research must survive any future trimming."""
         names = {t["function"]["name"] for t in get_tools_for_profile("chat")}
-        for tool in ("search_web", "fetch_url", "generate_image", "generate_code"):
+        for tool in ("search_web", "fetch_url", "generate_image"):
             assert tool in names, f"{tool} missing from chat profile"
 
     def test_save_memory_survives_but_the_readers_do_not(self) -> None:
@@ -4261,29 +4110,13 @@ class TestToolSpecVisibility:
         specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert "chat" in specs["search_web"].visible_in
 
-    def test_search_web_visible_in_code(self) -> None:
-        specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
-        assert "code" in specs["search_web"].visible_in
-
     def test_search_web_not_visible_in_draw(self) -> None:
         specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert "draw" not in specs["search_web"].visible_in
 
-    def test_fetch_url_visible_in_chat_code_and_remind_action(self) -> None:
+    def test_fetch_url_visible_in_chat_verse_and_remind_action(self) -> None:
         specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
-        assert specs["fetch_url"].visible_in == frozenset(
-            {"chat", "verse", "code", "remind_action"}
-        )
-
-    def test_generate_code_capability_is_llm_code(self) -> None:
-        specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
-        assert specs["generate_code"].capability == "llm.code"
-
-    def test_generate_code_visible_in_chat_and_code_and_remind_action(self) -> None:
-        specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
-        assert specs["generate_code"].visible_in == frozenset(
-            {"chat", "verse", "code", "remind_action"}
-        )
+        assert specs["fetch_url"].visible_in == frozenset({"chat", "verse", "remind_action"})
 
     def test_generate_image_visible_in_chat_draw_and_remind_action(self) -> None:
         specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
@@ -4338,18 +4171,17 @@ class TestToolSpecVisibility:
             "search_web",
             "fetch_url",
             "generate_image",
-            "generate_code",
             "save_memory",
         ):
             assert tool in names, f"{tool} missing from verse profile"
         for tool in ("list_memories", "delete_memory", "update_memory"):
             assert tool not in names, f"{tool} should be hidden from verse"
 
-    def test_profile_tools_remind_action_includes_search_fetch_code_image(self) -> None:
+    def test_profile_tools_remind_action_includes_search_fetch_image(self) -> None:
         """Action reminders need the union of @ask + @draw tool surfaces."""
         tools = get_tools_for_profile("remind_action")
         names = {t["function"]["name"] for t in tools}
-        for required in ("search_web", "fetch_url", "generate_code", "generate_image"):
+        for required in ("search_web", "fetch_url", "generate_image"):
             assert required in names, f"{required} missing from remind_action profile"
         # Sanity: also includes ordinary chat tools (defaults to chat+remind_action)
         assert "list_pending_tasks" in names
@@ -4359,7 +4191,6 @@ class TestToolSpecVisibility:
         tools = get_tools_for_profile("chat")
         names = {t["function"]["name"] for t in tools}
         assert "search_web" in names
-        assert "generate_code" in names
         assert "generate_image" in names
 
     def test_profile_tools_draw_includes_generate_image(self) -> None:
@@ -4371,18 +4202,10 @@ class TestToolSpecVisibility:
         tools = get_tools_for_profile("draw")
         names = {t["function"]["name"] for t in tools}
         assert "search_web" not in names
-        assert "generate_code" not in names
-
-    def test_profile_tools_code_includes_search_and_code(self) -> None:
-        tools = get_tools_for_profile("code")
-        names = {t["function"]["name"] for t in tools}
-        assert "search_web" in names
-        assert "fetch_url" in names
-        assert "generate_code" in names
 
     def test_set_reminder_visible_in_chat_and_remind_action(self) -> None:
         """set_reminder routes through chat (deferred entry point) and remind_action
-        (self-rescheduling). Immediate-execution profiles (@draw, @code) defer via
+        (self-rescheduling). The immediate-execution @draw profile defers via
         chat using @remind, so they should NOT expose the reminder tools."""
         for profile in ("chat", "remind_action"):
             tools = get_tools_for_profile(profile)
@@ -4400,18 +4223,6 @@ class TestToolSpecVisibility:
             "cancel_all_pending_tasks",
         ):
             assert tool not in names, f"{tool} should not be visible in draw profile"
-
-    def test_reminder_tools_not_visible_in_code_profile(self) -> None:
-        """@code is immediate-execution; deferred code generation goes via @remind."""
-        tools = get_tools_for_profile("code")
-        names = {t["function"]["name"] for t in tools}
-        for tool in (
-            "set_reminder",
-            "list_pending_tasks",
-            "cancel_pending_task",
-            "cancel_all_pending_tasks",
-        ):
-            assert tool not in names, f"{tool} should not be visible in code profile"
 
 
 class TestScheduleLlmTaskFamily:
