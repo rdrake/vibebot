@@ -142,7 +142,7 @@ systemctl --user restart vibebot
 
 ## Rolling back a deploy
 
-Rollback is manual. A revert push through CI takes 10-20 minutes end to end, and `docker.yml` only builds after `CI` succeeds across a three-version Python matrix (3.12, 3.13, 3.14) — one flaky test blocks the image from ever publishing. When production needs to go back to a known-good build now, pin the previous image directly rather than waiting on a revert.
+Rollback is manual. A revert push through CI takes 10-20 minutes end to end, and `docker.yml` only builds after `CI` succeeds on both Python versions (3.14, 3.15) — one flaky test blocks the image from ever publishing. When production needs to go back to a known-good build now, pin the previous image directly rather than waiting on a revert.
 
 Every image build is tagged with the commit SHA (`type=sha` in `docker.yml`, alongside `:latest`), so every build keeps a permanent `sha-<short-sha>` tag and stays pullable after `:latest` moves past it.
 

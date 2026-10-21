@@ -7,7 +7,7 @@ To ask a chat assistant about setup, give it [llms-full.txt](https://rdrake.gith
 You need one of:
 
 - **Docker** (recommended): a systemd deployment needs the binary at `/usr/bin/docker`, which the unit calls directly.
-- **Python 3.12 or newer** with [uv](https://docs.astral.sh/uv/): for manual and development installs.
+- **Python 3.14 or newer** with [uv](https://docs.astral.sh/uv/): for manual and development installs.
 
 VibeBot is a [Limnoria](https://docs.limnoria.net/) plugin. If you have never used Limnoria before, follow the [Limnoria getting started guide](https://docs.limnoria.net/use/getting_started.html) to create your initial `bot.conf`. You need a working `bot.conf` before proceeding.
 

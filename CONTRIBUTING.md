@@ -31,14 +31,14 @@ The hooks check:
 
 If a check fails, fix the issue and commit again. Run `make pre-commit` to run the pre-commit hooks on every file, including ones you have not touched.
 
-The config also defines a pre-push hook that runs `make check-fast` (lint, format-check, typecheck, syntax-check); the test suite stays in CI so pushes stay quick. `make install-hooks` installs the pre-commit shim only — run `uv run prek install -t pre-push` to catch a broken push before CI does.
+The config also defines a pre-push hook that runs `make check-fast` (lint, format-check, typecheck); the test suite stays in CI so pushes stay quick. `make install-hooks` installs the pre-commit shim only — run `uv run prek install -t pre-push` to catch a broken push before CI does.
 
 ## Code quality
 
 Run the full gate before calling any change done:
 
 ```bash
-make preflight  # format, then lint + format-check + typecheck + syntax-check + test
+make preflight  # format, then lint + format-check + typecheck + test
 ```
 
 Individual checks:
@@ -47,7 +47,6 @@ Individual checks:
 make lint         # ruff check
 make format       # ruff format
 make typecheck    # ty
-make syntax-check # Python 3.12 to 3.14 compatibility
 make test         # pytest, skipping slow tests
 make test-all     # full suite, including slow tests
 ```
@@ -85,7 +84,7 @@ Write [conventional commits](https://www.conventionalcommits.org/): `type(scope)
 The maintainer commits to `main` directly. Outside contributions arrive as pull requests from feature branches, and CI must pass before merge:
 
 - `lint`: prek hooks plus the syntax check
-- `check (3.12 / 3.13 / 3.14)`: the full test suite on each supported Python
+- `check (3.14 / 3.15)`: the full test suite on the image's Python and the next one
 - `secrets`: gitleaks scanning
 - `docker`: builds the container image on pull requests; advisory, never a required check
 
@@ -104,6 +103,6 @@ The release workflow generates notes with git-cliff, creates the GitHub release,
 
 ## Dependencies
 
-- Python 3.12 or newer (CI tests 3.12, 3.13, and 3.14)
+- Python 3.14 or newer (the image runs 3.14; CI also tests 3.15)
 - [uv](https://github.com/astral-sh/uv) manages the workspace and lockfile
 - Dependabot proposes weekly updates; fold lockfile bumps into a single `uv lock` rather than merging per-package PRs

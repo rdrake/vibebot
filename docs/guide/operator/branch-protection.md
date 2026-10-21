@@ -18,9 +18,8 @@ In **Settings → Rules → Rulesets**, add a branch ruleset targeting `main`. *
 
 Add these checks after the first CI run on a PR; they do not appear in the picker before then:
 
-- `check (3.12)`
-- `check (3.13)`
 - `check (3.14)`
+- `check (3.15)`
 - `lint`
 - `secrets`
 
@@ -38,7 +37,7 @@ The `docker` job in `ci.yml` is deliberately not required. That job is a PR-only
 
 ## Why the docker check is advisory
 
-For PRs, CI runs four jobs: `lint`, `check` (a 3.12/3.13/3.14 matrix), `secrets`, and `docker`. The `docker` job builds the image but never pushes. The production build and push is a separate workflow, `docker.yml`, triggered after CI succeeds on `main`.
+For PRs, CI runs four jobs: `lint`, `check` (a 3.14/3.15 matrix), `secrets`, and `docker`. The `docker` job builds the image but never pushes. The production build and push is a separate workflow, `docker.yml`, triggered after CI succeeds on `main`.
 
 **Risk accepted:** a PR that breaks the Dockerfile can merge. CI passes, `docker.yml` then fails on `main`, and the previous image keeps serving production until a fix lands.
 

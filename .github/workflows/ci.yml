@@ -39,15 +39,13 @@ jobs:
       - name: Pre-commit hooks (ruff, ruff-format, ty, gitleaks, hygiene)
         run: uv run prek run --all-files
 
-      - name: Syntax compatibility (3.12-3.14)
-        run: make syntax-check
-
   check:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13", "3.14"]
+        # 3.14 is what the image runs; 3.15 is the next upgrade.
+        python-version: ["3.14", "3.15"]
     steps:
       - uses: actions/checkout@v7
 

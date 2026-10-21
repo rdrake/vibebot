@@ -27,7 +27,6 @@ The bot's command prefix on AfterNet is `@` (for example `@ask`). The `%` prefix
 - Before considering work complete, run `make preflight`.
 - If `make preflight` is too expensive for a narrow change, run the most specific checks that cover the edited area and state what you did not run.
 - Use `make test` for the normal suite and `make test-all` when slow tests are relevant.
-- Run `make syntax-check` when changes could affect Python 3.12 to 3.14 compatibility.
 - Run `make docs` when changing MkDocs content or navigation, and `vale <files>` on changed prose.
 
 Key targets:
