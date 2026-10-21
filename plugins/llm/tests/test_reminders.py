@@ -1737,8 +1737,8 @@ class TestReminderActionDelivery:
         assert kwargs["account"] == "acct"
         assert kwargs["channel"] == "#ops"
         assert kwargs["is_owner"] is False
-        # llm.ask/draw/code only — no admin/owner capabilities at fire time.
-        assert kwargs["capabilities"] == frozenset({"llm.ask", "llm.draw", "llm.code"})
+        # llm.ask/draw only — no admin/owner capabilities at fire time.
+        assert kwargs["capabilities"] == frozenset({"llm.ask", "llm.draw"})
 
         synthetic_msg = kwargs["msg"]
         assert synthetic_msg.prefix == "alice!~remind@scheduled"
@@ -1755,7 +1755,6 @@ class TestReminderActionDelivery:
         assert kwargs["user_instruction"] == "Be direct."
         assert callable(kwargs["search_fn"])
         assert callable(kwargs["fetch_fn"])
-        assert callable(kwargs["code_fn"])
         assert callable(kwargs["draw_fn"])
         assert callable(kwargs["cleanup_fn"])
         assert callable(kwargs["list_pending_tasks_fn"])

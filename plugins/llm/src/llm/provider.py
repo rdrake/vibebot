@@ -67,8 +67,8 @@ class Price:
 _GROK_43 = Price(input=1.25, output=2.50, cache_read=0.20)
 
 # Every chat model prod runs. Missing a model is not a rounding error: its spend
-# books at $0 (logged once), which is how grok-4-1-fast-reasoning, prod's
-# codeModel, went unpriced under litellm.
+# books at $0 (logged once), which is how grok-4-1-fast-reasoning went
+# unpriced under litellm.
 PRICES: dict[str, Price] = {
     # Rates for prompts up to 100K tokens; nothing here sends more.
     "anthropic/claude-haiku-5-5": Price(

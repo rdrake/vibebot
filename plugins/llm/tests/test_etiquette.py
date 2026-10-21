@@ -61,22 +61,6 @@ class TestSystemPromptEtiquette:
 
         assert "tight" in prompt or "one line" in prompt
 
-    def test_code_default_prompt_delivers_code_via_url_not_chat(self) -> None:
-        """GIVEN shipped codeSystemPrompt default WHEN read THEN code is delivered via URL, not pasted.
-
-        The code *reply* itself is still plain-text IRC ("no markdown"); only
-        the linked code page is rendered. This pins that contract — earlier
-        tests wrongly asserted the reply "allows markdown".
-        """
-        import llm.config  # noqa: F401
-        import supybot.conf as conf
-
-        prompt = conf.supybot.plugins.LLM.codeSystemPrompt().lower()
-
-        assert "url" in prompt
-        assert "do not paste" in prompt
-        assert "no markdown" in prompt
-
 
 class TestResponseLengthHandling:
     """Tests for response length handling to prevent IRC flooding."""
@@ -95,18 +79,11 @@ class TestResponseLengthHandling:
     def test_code_save_returns_http_url(self) -> None:
         """GIVEN code content WHEN saved THEN returns HTTP URL."""
         code = "def hello():\n    print('Hello, World!')\n"
-        url = self.service.save_code_to_http(code)
+        url = self.service.save_markdown_to_http(code)
 
         assert url is not None
         assert url.startswith("https://example.com/llm/")
         assert url.endswith(".html")
-
-    def test_code_url_contains_code_prefix(self) -> None:
-        """GIVEN code content WHEN saved THEN URL contains 'code' prefix."""
-        code = "print('test')"
-        url = self.service.save_code_to_http(code)
-
-        assert "code_" in url
 
     def test_line_count_calculation(self) -> None:
         """GIVEN multi-line text WHEN counted THEN accurate line count."""

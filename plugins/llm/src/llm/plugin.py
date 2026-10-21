@@ -52,7 +52,6 @@ from .identity import UNAUTHENTICATED_KEY_PREFIX, Caller, Identity
 from .persistence import LLMDatabase, ReminderRow, ScheduledLlmTaskRow
 from .profile import (
     PROFILE_CHAT,
-    PROFILE_CODE,
     PROFILE_DRAW,
     PROFILE_REMIND_ACTION,
     PROFILE_VERSE,
@@ -117,7 +116,7 @@ GROUNDING_ICON = "\U0001f310"  # 🌐 (globe with meridians)
 REWORDED_ICON = "\U0001f501"  # 🔁 (clockwise arrows)
 
 # Commands that support long-term memory extraction
-_MEMORY_COMMANDS = frozenset({"ask", "code"})
+_MEMORY_COMMANDS = frozenset({"ask"})
 
 # Usage-row label for image spend. Namespaced like "compaction:compact" rather
 # than reusing "draw", because a turn writes BOTH a text row and an image row
@@ -150,7 +149,6 @@ _STATUS_PAGE_NAME_RE = re.compile(r"\A[A-Za-z0-9._-]{1,32}\Z")
 _REQUEST_CONTEXT_CAPABILITIES = frozenset(
     {
         "llm.ask",
-        "llm.code",
         "llm.draw",
         "llm.verse",
         "llm.verse.gm",
@@ -365,19 +363,6 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "@ask What is the capital of France?",
             "@ask Describe this: https://example.com/image.jpg",
             "@ask And what about Germany?  (follow-up using context)",
-        ),
-        category="generation",
-    ),
-    CommandInfo(
-        name="code",
-        args="<request>",
-        description=(
-            "Generate code based on your request. "
-            "Code is saved to an HTTP link with syntax highlighting."
-        ),
-        examples=(
-            "@code Python function to calculate fibonacci numbers",
-            "@code Now add memoization to that",
         ),
         category="generation",
     ),
@@ -2661,17 +2646,7 @@ class LLM(callbacks.Plugin):
             )
         elif r.status == "completed":
             content = self.llm_service.sanitize_output(r.content)
-            if r.task_type == "code":
-                # Deliberately pastes the RAW body: the HTML path runs its own
-                # sanitizer, and IRC-sanitizing code would mangle it. The
-                # sanitized ``content`` above is only the inline fallback. The
-                # prompt makes a better page <title> than the constant "Code".
-                url = self.llm_service.save_code_to_http(r.content, title=prompt_preview)
-                if url:
-                    text = f'{nick}: your code is ready! "{prompt_preview}" \u2192 {url}'
-                else:
-                    text = f"{nick}: {content}"
-            elif r.task_type == "draw":
+            if r.task_type == "draw":
                 text = f'{nick}: your image is ready! "{prompt_preview}" \u2192 {content}'
             else:
                 # ask or fallback (incl. recovered verse, which is unbounded —
@@ -3801,8 +3776,8 @@ class LLM(callbacks.Plugin):
             profile=PROFILE_REMIND_ACTION,
             caller=caller,
             is_owner=False,
-            # Same per-feature caps as @ask/@draw/@code; owner/admin excluded.
-            capabilities=frozenset({"llm.ask", "llm.draw", "llm.code"}),
+            # Same per-feature caps as @ask/@draw; owner/admin excluded.
+            capabilities=frozenset({"llm.ask", "llm.draw"}),
         )
         channel = caller.reply_target
         history, channel_history = self._gather_history(caller)
@@ -3830,7 +3805,6 @@ class LLM(callbacks.Plugin):
             system_prompt=system_prompt,
             search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
             fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
-            code_fn=lambda p: self._code_for_assistant(p, channel),
             draw_fn=lambda p, _irc=irc, _msg=msg, **kw: self._draw_for_assistant(
                 _irc, _msg, p, **kw
             ),
@@ -6674,29 +6648,6 @@ class LLM(callbacks.Plugin):
             icons.append(REWORDED_ICON)
         return f"{' '.join(icons)} {text}" if icons else text
 
-    def _code_for_assistant(self, prompt: str, channel: str) -> ToolResult:
-        """Generate code and save to HTTP for the generate_code tool."""
-        from .assistant import ToolResult
-
-        try:
-            result = self.llm_service.completion(
-                prompt,
-                command="code",
-                system_prompt=self.registryValue("codeSystemPrompt", channel),
-            )
-            if result.error:
-                return ToolResult(content=json.dumps({"error": result.error}))
-            url = self.llm_service.save_code_to_http(result.content, title=prompt)
-            return ToolResult(
-                content=json.dumps({"url": url or "", "code": result.content}),
-                prompt_tokens=result.prompt_tokens,
-                completion_tokens=result.completion_tokens,
-                cost=result.cost,
-            )
-        except Exception:
-            self.log.exception("_code_for_assistant failed")
-            return ToolResult(content=json.dumps({"error": "Code generation failed."}))
-
     def _resolve_caller(self, irc: callbacks.Irc, msg: IrcMsg) -> Caller:
         """Resolve the sender of ``msg`` to a :class:`Caller`.
 
@@ -7344,7 +7295,7 @@ class LLM(callbacks.Plugin):
 
         Args:
             caller: Who asked, and where
-            command: Command name ("ask", "code", or "draw")
+            command: Command name ("ask" or "draw")
             text: Original user input
             response: Text to store in context (e.g. LLM response or
                 ``"[Generated image: <url>]"``)
@@ -7883,7 +7834,6 @@ class LLM(callbacks.Plugin):
                     model_override=model_override,
                     search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
                     fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
-                    code_fn=lambda p: self._code_for_assistant(p, channel),
                     draw_fn=lambda p, **kw: self._draw_for_assistant(irc, msg, p, **kw),
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                     extra_tools=extra_tools,
@@ -7911,106 +7861,6 @@ class LLM(callbacks.Plugin):
                     response=response,
                     suppress_reminder_mutations=True,
                 )
-
-    def code(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        args: list,
-        text: str,
-    ) -> None:
-        """<request>
-
-        Generate code based on your request. Code is saved to HTTP link.
-        Supports conversation context for iterating on code.
-
-        Examples:
-          @code Python function to calculate fibonacci numbers
-          @code Now add memoization to that
-          @code JavaScript async fetch with error handling
-        """
-        # Skip ZNC playback messages
-        if self._is_old_message(msg):
-            return
-
-        pf = self._run_preflight(
-            irc,
-            msg,
-            text,
-            "code",
-            require_account=False,
-        )
-        if pf.blocked:
-            return
-        caller = pf.caller
-        nick, channel = caller.identity.key, caller.reply_target
-
-        # Typing fires before any DB work (history, memory, executor
-        # permit) so the user sees "is composing" within ~50ms instead
-        # of after several seconds of synchronous setup.
-        stop_typing = self.llm_service._begin_typing(irc, msg)
-        try:
-            request_context = self._build_request_context(
-                irc,
-                msg,
-                pf,
-                entry_route=PROFILE_CODE,
-                profile=PROFILE_CODE,
-            )
-
-            with self._trace_request("code", nick, channel):
-                history, channel_history = self._gather_history(caller)
-
-                personal_key = caller.identity.personal_key
-                memories = self._get_user_memories(personal_key) if personal_key else []
-                user_instruction = self.db.get_instruction(personal_key) if personal_key else None
-                # CODE_SYSTEM_PROMPT is the facade prompt that tells the planner
-                # to call generate_code (not the registry codeSystemPrompt, the
-                # inner-call prompt used by _code_for_assistant). The user's
-                # @instruct now rides as user-role data (user_instruction below)
-                # instead of being prepended here, so it cannot pose as system
-                # authority. The system_prompt selection is unchanged: facade
-                # when an instruction exists, else None (profile supplies it).
-                from .prompts import CODE_SYSTEM_PROMPT
-
-                effective_prompt = CODE_SYSTEM_PROMPT if user_instruction else None
-
-                with self._allow_concurrent(), self._llm_executor.permit():
-                    result = self.llm_service.assistant_completion(
-                        text,
-                        **request_context.completion_kwargs(),
-                        db=self.db,
-                        context=self.context,
-                        bot_nick=irc.nick,
-                        history=history,
-                        channel_history=channel_history,
-                        irc=irc,
-                        msg=msg,
-                        memories=memories,
-                        user_instruction=user_instruction,
-                        system_prompt=effective_prompt,
-                        search_fn=lambda q: self.llm_service.search_completion(q, channel=channel),
-                        fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
-                        code_fn=lambda p: self._code_for_assistant(p, channel),
-                        draw_fn=lambda p, **kw: self._draw_for_assistant(irc, msg, p, **kw),
-                        cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
-                        manage_typing=False,
-                        **self._pending_task_fns(caller=caller, irc=irc, msg=msg),
-                    )
-
-                    self._reply_and_book(
-                        irc,
-                        msg,
-                        result,
-                        caller=caller,
-                        command="code",
-                        text=text,
-                        response=result.content,
-                    )
-        finally:
-            stop_typing()
-
-    code = wrap(code, [("checkCapability", "llm.code"), "text"])
 
     def draw(
         self,
@@ -10462,7 +10312,7 @@ class LLM(callbacks.Plugin):
         else:
             irc.error(_("Usage: remind admin <list|del|clear> <nick> [<id>...]"))
 
-    # Gated like its siblings (@ask, @code, @forget). @remind reaches persisted,
+    # Gated like its siblings (@ask, @forget). @remind reaches persisted,
     # account-owned rows — reminders and, since the list/cancel merge, scheduled
     # tasks — so it should not be the one command anyone can reach ungated.
     # llm.ask rather than a bucket of its own: action reminders already bill to

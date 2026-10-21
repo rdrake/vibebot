@@ -76,7 +76,7 @@ Candidates have no user-facing surface. Operators with database access can inspe
 
 The bot writes memories after these events:
 
-- Successful `@ask` and `@code` responses, on the user who asked. Nick-addressed chat and verse turns share the `@ask` path and count as `@ask`; `@draw` and `@story` never extract.
+- Successful `@ask` responses, on the user who asked. Nick-addressed chat and verse turns share the `@ask` path and count as `@ask`; `@draw` and `@story` never extract.
 - Explicit `save_memory` tool calls, when a user asks the bot to remember something.
 
 The candidate path applies only to automatic extraction. Anything the assistant chooses to remember through its own tool skips the candidate stage, so the model can record explicit user preferences in one shot. `save_memory` writes straight to the durable table and does not check `memoryMaxPerUser`, so an explicit "remember this" can carry a user past the ceiling.

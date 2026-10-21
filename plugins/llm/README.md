@@ -40,7 +40,6 @@ Boundaries to respect:
 | Command | Capability | Notes |
 |---------|------------|-------|
 | `@ask` | `llm.ask` | Context, vision, tool loop |
-| `@code` | `llm.code` | Output posted as an HTTP link |
 | `@draw` | `llm.draw` | Requires an authenticated account |
 | `@story` | `llm.draw` | Illustrated story or explainer page; counts against the draw limits |
 | `@forget`, `@memories`, `@instruct`, `@remind`, `@usage`, `@avatar` | none | Owner-only subcommands enforced in-body |
@@ -48,7 +47,7 @@ Boundaries to respect:
 | `@canon`, `@versedit` | `llm.verse.edit` | Canon editing |
 | `@versedump`, `@versepurge`, `@versecompact` | `llm.verse.gm` | GM operations; `versedump`/`versepurge` check the capability in-body |
 
-Rate limiting covers four command families (`ask`, `code`, `draw`, `story`), each with registered, trusted, and unregistered tiers. The [operator guide](https://rdrake.github.io/vibebot-v8/operator/rate-limiting-security/) documents the matrix and defaults.
+Rate limiting covers four command families (`ask`, `draw`, `meme`, `story`), each with registered, trusted, and unregistered tiers. The [operator guide](https://rdrake.github.io/vibebot-v8/operator/rate-limiting-security/) documents the matrix and defaults.
 
 ## Security patterns
 

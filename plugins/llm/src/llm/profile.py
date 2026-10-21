@@ -2,9 +2,8 @@
 
 This module owns:
 
-- The five **chat-loop profile identifiers** (``PROFILE_CHAT``,
-  ``PROFILE_CODE``, ``PROFILE_DRAW``, ``PROFILE_VERSE``,
-  ``PROFILE_REMIND_ACTION``) that route requests
+- The four **chat-loop profile identifiers** (``PROFILE_CHAT``,
+  ``PROFILE_DRAW``, ``PROFILE_VERSE``, ``PROFILE_REMIND_ACTION``) that route requests
   through ``service.assistant_completion``.
 - The :class:`Profile` frozen dataclass that bundles every per-mode fact
   for one of those routes: which Limnoria registry key holds the model,
@@ -39,7 +38,6 @@ from dataclasses import dataclass
 # :data:`PROFILES`, in ``prompts.PROMPTS`` for the framework prompts,
 # and in the ``visible_in`` sets on ``assistant.ASSISTANT_TOOL_SPECS``.
 PROFILE_CHAT = "chat"
-PROFILE_CODE = "code"
 PROFILE_DRAW = "draw"
 PROFILE_VERSE = "verse"
 PROFILE_REMIND_ACTION = "remind_action"
@@ -89,27 +87,12 @@ PROFILES: dict[str, Profile] = {
         max_output_tokens=4096,
         force_search_on_explicit=True,
     ),
-    PROFILE_CODE: Profile(
-        id=PROFILE_CODE,
-        # The @code chat-loop planner uses assistantModel; the
-        # codeModel/codeSystemPrompt registry keys belong to the *inner*
-        # _code_for_assistant one-shot (plugin.py:2547), which is a tool
-        # callback, not a Profile dispatch.
-        model_setting="assistantModel",
-        prompt_id="code",
-        # The @code planner builds system_prompt from
-        # user_instruction + CODE_SYSTEM_PROMPT and never reads a channel
-        # overlay registry key.
-        overlay_setting=None,
-        max_output_tokens=None,
-        force_search_on_explicit=False,
-    ),
     PROFILE_DRAW: Profile(
         id=PROFILE_DRAW,
         model_setting="assistantModel",
         prompt_id="draw",
-        # Same pattern as PROFILE_CODE: planner constructs its system_prompt
-        # without reading a channel overlay key.
+        # The @draw planner constructs its system_prompt without reading a
+        # channel overlay key.
         overlay_setting=None,
         max_output_tokens=None,
         force_search_on_explicit=False,
@@ -118,7 +101,7 @@ PROFILES: dict[str, Profile] = {
         id=PROFILE_VERSE,
         # Fallback only: the live verse model comes from the verseModel
         # registry key, threaded through as model_override at the dispatch
-        # site (plugin.py) — same pattern as PROFILE_CODE's inner one-shot.
+        # site (plugin.py).
         model_setting="assistantModel",
         prompt_id="verse",
         overlay_setting="assistantSystemPrompt",

@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from .identity import UNAUTHENTICATED_KEY_PREFIX
 from .profile import (
     PROFILE_CHAT,
-    PROFILE_CODE,
     PROFILE_DRAW,
     PROFILE_REMIND_ACTION,
     PROFILE_VERSE,
@@ -374,7 +373,7 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
             "description": (
                 "Schedule a future LLM task. At fire time the bot runs an "
                 "@ask invocation as you, with full tool access (search, fetch, "
-                "draw, code, Limnoria bridge). Use this for tasks that need "
+                "draw, Limnoria bridge). Use this for tasks that need "
                 "TOOLS at fire time, e.g. 'every Monday at 9am check my open "
                 "PRs and tell me which are stale'. For plain text reminders "
                 "with no action, use set_reminder instead. Recurring is "
@@ -487,30 +486,6 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["url"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_code",
-            "description": (
-                "Generate code based on the user's request. Returns a "
-                "syntax-highlighted link. Pass any relevant context from "
-                "prior tool calls in the prompt."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": (
-                            "The code generation request, including any "
-                            "context from search results."
-                        ),
-                    },
-                },
-                "required": ["prompt"],
             },
         },
     },
@@ -645,14 +620,10 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
         "visible_in": frozenset({PROFILE_CHAT, PROFILE_VERSE, PROFILE_DRAW, PROFILE_REMIND_ACTION}),
     },
     "search_web": {
-        "visible_in": frozenset({PROFILE_CHAT, PROFILE_VERSE, PROFILE_CODE, PROFILE_REMIND_ACTION}),
+        "visible_in": frozenset({PROFILE_CHAT, PROFILE_VERSE, PROFILE_REMIND_ACTION}),
     },
     "fetch_url": {
-        "visible_in": frozenset({PROFILE_CHAT, PROFILE_VERSE, PROFILE_CODE, PROFILE_REMIND_ACTION}),
-    },
-    "generate_code": {
-        "capability": "llm.code",
-        "visible_in": frozenset({PROFILE_CHAT, PROFILE_VERSE, PROFILE_CODE, PROFILE_REMIND_ACTION}),
+        "visible_in": frozenset({PROFILE_CHAT, PROFILE_VERSE, PROFILE_REMIND_ACTION}),
     },
     # Phase 2 Task 3 / C2 — schedule_llm_task fires "as you" later, under the
     # creator's identity and rate-limit bucket with nobody present to stop it,
@@ -837,7 +808,6 @@ class AssistantToolExecutor:
         draw_fn: Callable[..., ToolCallbackResult] | None = None,
         search_fn: Callable[[str], ToolResult] | None = None,
         fetch_fn: Callable[[str], ToolResult] | None = None,
-        code_fn: Callable[[str], ToolResult] | None = None,
         schedule_llm_task_fn: Callable[..., dict[str, Any]] | None = None,
         status_fn: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
@@ -859,7 +829,6 @@ class AssistantToolExecutor:
         self._fetch_fn = fetch_fn
         self._search_lock = threading.Lock()
         self._searches = 0
-        self._code_fn = code_fn
         self._schedule_llm_task_fn = schedule_llm_task_fn
         self._status_fn = status_fn
 
@@ -1187,12 +1156,6 @@ class AssistantToolExecutor:
             return ToolResult(content=json.dumps({"error": "URL fetching is unavailable."}))
         url = arguments.get("url", "")
         return self._fetch_fn(url)
-
-    def _tool_generate_code(self, arguments: dict[str, Any]) -> ToolResult:
-        if not self._code_fn:
-            return ToolResult(content=json.dumps({"error": "Code generation is unavailable."}))
-        prompt = arguments.get("prompt", "")
-        return self._code_fn(prompt)
 
     def _tool_check_service_status(self, _arguments: dict[str, Any]) -> str:
         """Return the cached status snapshot, optionally with resolved history.

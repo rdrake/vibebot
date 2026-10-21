@@ -11,7 +11,6 @@ from llm.identity import Caller, Identity
 from llm.service import (
     AssistantRequestContext,
     AssistantResult,
-    CompletionResult,
     LLMService,
     Spend,
 )
@@ -19,8 +18,6 @@ from llm.service import (
 from .conftest import make_completion_response
 
 if TYPE_CHECKING:
-    from unittest.mock import Mock
-
     from pytest_mock import MockerFixture
 
 
@@ -104,148 +101,8 @@ class TestGroundedCompletion:
         assert search.call_args.kwargs["cache_key"] == "chan:#dev:grounded"
 
 
-class TestCompletion:
-    """completion(): result shape, errors, typing indicators, prompt override."""
-
-    @pytest.fixture(autouse=True)
-    def setup(self, make_service, mocker: MockerFixture) -> None:
-        """Set up test fixtures."""
-        self.mocker = mocker
-        self.service, self.mock_plugin = make_service(
-            assistantModel="anthropic/claude-haiku-5-5",
-            assistantSystemPrompt="You are helpful.",
-            timeout=30,
-            maxPromptLength=10000,
-            commandPrefixes=["."],
-        )
-
-    def test_completion_returns_completion_result(self) -> None:
-        """GIVEN successful completion WHEN completing THEN returns CompletionResult."""
-        self.mocker.patch(
-            "llm.service.provider.chat", return_value=make_completion_response("Test response")
-        )
-        result = self.service.completion("test", command="ask")
-
-        assert isinstance(result, CompletionResult)
-        assert result.content == "Test response"
-        assert result.grounding_used is False
-
-    def test_completion_books_reply_usage_and_cost(self) -> None:
-        """GIVEN a reply with usage and cost WHEN completing THEN both reach the result."""
-        self.mocker.patch(
-            "llm.service.provider.chat",
-            return_value=make_completion_response(
-                "ok", prompt_tokens=100, completion_tokens=50, cost=0.003
-            ),
-        )
-        result = self.service.completion("test", command="ask")
-
-        assert result.prompt_tokens == 100
-        assert result.completion_tokens == 50
-        assert result.cost == pytest.approx(0.003)
-        assert result.model == "anthropic/claude-haiku-5-5"
-
-    def test_completion_error_returns_completion_result_with_error(self) -> None:
-        """GIVEN completion error WHEN completing THEN returns CompletionResult with error."""
-        self.mocker.patch(
-            "llm.service.provider.chat",
-            side_effect=Exception("Test error"),
-        )
-        result = self.service.completion("test", command="ask")
-
-        assert isinstance(result, CompletionResult)
-        assert "Error" in result.content
-        assert result.grounding_used is False
-
-    def test_completion_sends_typing_indicators(self) -> None:
-        """GIVEN irc context WHEN completion called THEN sends typing indicators."""
-        irc = self.mocker.Mock()
-        irc.state = self.mocker.Mock()
-        irc.state.capabilities_ack = {"message-tags"}
-        irc.queueMsg = self.mocker.Mock()
-
-        msg = self.mocker.Mock()
-        msg.args = ("#test",)
-        msg.prefix = "user!user@host"
-
-        self.mocker.patch(
-            "llm.service.provider.chat", return_value=make_completion_response("Response")
-        )
-        self.service.completion("test", command="ask", irc=irc, msg=msg)
-
-        # Should have called queueMsg twice - active and done
-        assert irc.queueMsg.call_count == 2
-        first_msg = irc.queueMsg.call_args_list[0][0][0]
-        assert first_msg.server_tags == {"+typing": "active"}
-        second_msg = irc.queueMsg.call_args_list[1][0][0]
-        assert second_msg.server_tags == {"+typing": "done"}
-
-    def test_completion_sends_done_on_error(self) -> None:
-        """GIVEN error during completion WHEN irc context THEN still sends done indicator."""
-        irc = self.mocker.Mock()
-        irc.state = self.mocker.Mock()
-        irc.state.capabilities_ack = {"message-tags"}
-        irc.queueMsg = self.mocker.Mock()
-
-        msg = self.mocker.Mock()
-        msg.args = ("#test",)
-        msg.prefix = "user!user@host"
-
-        self.mocker.patch("llm.service.provider.chat", side_effect=Exception("API error"))
-        result = self.service.completion("test", command="ask", irc=irc, msg=msg)
-
-        assert "Error" in result.content
-        # Should still send typing=done in finally block
-        assert irc.queueMsg.call_count == 2
-        second_msg = irc.queueMsg.call_args_list[1][0][0]
-        assert second_msg.server_tags == {"+typing": "done"}
-
-    def test_completion_uses_system_prompt_override(self) -> None:
-        """GIVEN system_prompt kwarg WHEN completion THEN uses override instead of registry."""
-        messages_sent: list[dict] = []
-
-        def mock_completion(**kwargs: dict) -> Mock:
-            messages_sent.extend(kwargs.get("messages", []))
-            return make_completion_response("Make it so.")
-
-        self.mocker.patch("llm.service.provider.chat", side_effect=mock_completion)
-        result = self.service.completion(
-            "What are your orders?",
-            command="ask",
-            system_prompt="You are Captain Picard.",
-        )
-
-        assert result.content == "Make it so."
-        assert messages_sent[0]["role"] == "system"
-        assert "Captain Picard" in messages_sent[0]["content"]
-        assert "You are helpful" not in messages_sent[0]["content"]
-
-
 class TestUsageExtraction:
     """Usage fields on the result dataclasses."""
-
-    def test_completion_result_has_usage_fields(self) -> None:
-        """GIVEN CompletionResult WHEN created with usage THEN fields accessible."""
-        result = CompletionResult(
-            content="hello",
-            grounding_used=False,
-            prompt_tokens=100,
-            completion_tokens=50,
-            cost=0.001,
-            model="anthropic/claude-haiku-5-5",
-        )
-        assert result.prompt_tokens == 100
-        assert result.completion_tokens == 50
-        assert result.cost == 0.001
-        assert result.model == "anthropic/claude-haiku-5-5"
-
-    def test_completion_result_usage_defaults(self) -> None:
-        """GIVEN CompletionResult WHEN created without usage THEN defaults to zero."""
-        result = CompletionResult(content="hello")
-        assert result.prompt_tokens == 0
-        assert result.completion_tokens == 0
-        assert result.cost == 0.0
-        assert result.model == ""
 
     def test_image_result_has_usage_fields(self) -> None:
         """GIVEN ImageResult WHEN created with usage THEN fields accessible."""
@@ -319,38 +176,6 @@ class TestComputeBackoff:
     def test_first_retry_backoff(self) -> None:
         """GIVEN attempt 1 WHEN computing backoff THEN 60 seconds."""
         assert LLMService._compute_backoff(1) == 60
-
-
-class TestCompletionValidation:
-    """Tests for completion() early validation error paths."""
-
-    @pytest.fixture(autouse=True)
-    def setup(self, make_service, mocker: MockerFixture) -> None:
-        """Set up test fixtures."""
-        self.mocker = mocker
-        self.make_service = make_service
-        self.service, self.mock_plugin = make_service()
-
-    def test_completion_invalid_prompt(self) -> None:
-        """GIVEN empty prompt WHEN completion called THEN returns error in result content."""
-        result = self.service.completion("", command="ask")
-
-        assert result.error is not None
-        assert "Error" in result.content
-
-    def test_completion_missing_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """GIVEN no key for the model's provider WHEN completion called THEN returns error.
-
-        assistantModel is anthropic/, so ANTHROPIC_API_KEY is the variable
-        this guard reads.
-        """
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        service, _ = self.make_service(assistantModel="anthropic/claude-haiku-5-5")
-
-        result = service.completion("Hello world", command="ask")
-
-        assert result.error is not None
-        assert "ANTHROPIC_API_KEY" in result.content
 
 
 class TestXaiCacheKey:
@@ -613,13 +438,13 @@ class TestCompletionKwargs:
             channel="#dev",
             account="alice_acct",
             is_owner=True,
-            capabilities=frozenset({"llm.ask", "llm.code"}),
+            capabilities=frozenset({"llm.ask", "llm.draw"}),
         ).completion_kwargs()
         assert kw["nick"] == "alice_acct"
         assert kw["channel"] == "#dev"
         assert kw["account"] == "alice_acct"
         assert kw["is_owner"] is True
-        assert kw["capabilities"] == frozenset({"llm.ask", "llm.code"})
+        assert kw["capabilities"] == frozenset({"llm.ask", "llm.draw"})
 
     def test_private_message_passes_the_senders_nick(self) -> None:
         """Private messages (channel=None) pass the sender's nick, the reply

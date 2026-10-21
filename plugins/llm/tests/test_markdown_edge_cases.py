@@ -10,8 +10,8 @@ import pytest
 from llm.service import LLMService
 
 
-class TestMarkdownInCodeOutput:
-    """Test markdown rendering edge cases in save_code_to_http."""
+class TestMarkdownInPageOutput:
+    """Test markdown rendering edge cases in save_markdown_to_http."""
 
     @pytest.fixture
     def service(self, tmp_path, make_service) -> LLMService:
@@ -39,7 +39,7 @@ def bar():
     pass
 ```
 """
-        url = service.save_code_to_http(markdown)
+        url = service.save_markdown_to_http(markdown)
         filename = url.split("/")[-1]
         content = (tmp_path / filename).read_text()
 
@@ -63,7 +63,7 @@ console.log("JavaScript");
 fn main() {}
 ```
 """
-        url = service.save_code_to_http(markdown)
+        url = service.save_markdown_to_http(markdown)
         filename = url.split("/")[-1]
         content = (tmp_path / filename).read_text()
 
@@ -77,7 +77,7 @@ fn main() {}
 if x < 10 and y > 5:
     print("<html>")
 ```"""
-        url = service.save_code_to_http(markdown)
+        url = service.save_markdown_to_http(markdown)
         filename = url.split("/")[-1]
         content = (tmp_path / filename).read_text()
 
@@ -91,7 +91,7 @@ if x < 10 and y > 5:
 x = a & b
 url = "foo?a=1&b=2"
 ```"""
-        url = service.save_code_to_http(markdown)
+        url = service.save_markdown_to_http(markdown)
         filename = url.split("/")[-1]
         content = (tmp_path / filename).read_text()
 
@@ -104,7 +104,7 @@ url = "foo?a=1&b=2"
 greeting = "Hello 世界 🌍"
 print(greeting)
 ```"""
-        url = service.save_code_to_http(markdown)
+        url = service.save_markdown_to_http(markdown)
         filename = url.split("/")[-1]
         content = (tmp_path / filename).read_text()
 
@@ -117,7 +117,7 @@ print(greeting)
         long_line = "x = " + "a + " * 200 + "b"
         markdown = f"```python\n{long_line}\n```"
 
-        url = service.save_code_to_http(markdown)
+        url = service.save_markdown_to_http(markdown)
         filename = url.split("/")[-1]
         content = (tmp_path / filename).read_text()
 
@@ -136,7 +136,7 @@ print(greeting)
       - Level 4
         - Level 5
 """
-        url = service.save_code_to_http(markdown)
+        url = service.save_markdown_to_http(markdown)
         filename = url.split("/")[-1]
         content = (tmp_path / filename).read_text()
 
@@ -160,7 +160,7 @@ print("code")
 
 [A link](https://example.com)
 """
-        url = service.save_code_to_http(markdown)
+        url = service.save_markdown_to_http(markdown)
         filename = url.split("/")[-1]
         content = (tmp_path / filename).read_text()
 

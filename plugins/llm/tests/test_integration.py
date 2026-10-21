@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from .conftest import assistant_result
+
 if TYPE_CHECKING:
     from pathlib import Path
     from unittest.mock import MagicMock
@@ -387,38 +389,12 @@ class TestMemoryIntegration:
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
         plugin.llm_service.draw_unavailable_reason.return_value = None
 
-        # Bridge assistant_completion to completion so integration tests that
-        # mock completion continue to work through the unified facade.
-        # Wrap the CompletionResult into AssistantResult so the chat impl's
-        # structured-signal suppression check sees the new fields' defaults
-        # rather than AttributeError.
-        def _assistant_completion_bridge(prompt, *, route_profile=None, entry_route="", **kwargs):
-            from llm.service import AssistantResult as _AssistantResult
-            from llm.service import Spend
-
-            completion_result = plugin.llm_service.completion(prompt, command="ask", **kwargs)
-            return _AssistantResult(
-                content=completion_result.content,
-                spend=Spend(
-                    prompt_tokens=completion_result.prompt_tokens,
-                    completion_tokens=completion_result.completion_tokens,
-                    cost=completion_result.cost,
-                ),
-                model=completion_result.model,
-                grounding_used=completion_result.grounding_used,
-                error=completion_result.error,
-            )
-
-        plugin.llm_service.assistant_completion.side_effect = _assistant_completion_bridge
-
         return plugin, mock_irc
 
     def test_ask_passes_memories_to_completion(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
     ) -> None:
         """GIVEN saved memory WHEN ask called THEN completion receives memories kwarg."""
-        from llm.service import CompletionResult
-
         plugin, mock_irc = plugin_with_real_db
 
         # Save a memory for the user
@@ -439,7 +415,7 @@ class TestMemoryIntegration:
             side_effect=lambda prefix, cap: cap.startswith("llm."),
         )
 
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="Hello there!",
             prompt_tokens=10,
             completion_tokens=5,
@@ -451,8 +427,8 @@ class TestMemoryIntegration:
         plugin.ask(mock_irc, mock_msg, ["hello"])
 
         # Verify completion was called with memories kwarg
-        plugin.llm_service.completion.assert_called_once()
-        call_kwargs = plugin.llm_service.completion.call_args
+        plugin.llm_service.assistant_completion.assert_called_once()
+        call_kwargs = plugin.llm_service.assistant_completion.call_args
         assert call_kwargs.kwargs.get("memories") == ["Likes Python programming"]
 
     def test_ask_triggers_background_extraction(
@@ -460,7 +436,6 @@ class TestMemoryIntegration:
     ) -> None:
         """GIVEN successful ask WHEN response received THEN background extraction scheduled."""
         from llm.plugin import schedule
-        from llm.service import CompletionResult
 
         plugin, mock_irc = plugin_with_real_db
 
@@ -479,7 +454,7 @@ class TestMemoryIntegration:
             side_effect=lambda prefix, cap: cap.startswith("llm."),
         )
 
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="Hello there!",
             prompt_tokens=10,
             completion_tokens=5,
@@ -518,27 +493,6 @@ class TestMemoryIntegration:
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
         plugin.llm_service.draw_unavailable_reason.return_value = None
 
-        def _assistant_completion_bridge(prompt, *, route_profile=None, entry_route="", **kwargs):
-            from llm.service import AssistantResult as _AssistantResult
-            from llm.service import Spend
-
-            completion_result = plugin.llm_service.completion(prompt, command="ask", **kwargs)
-            return _AssistantResult(
-                content=completion_result.content,
-                spend=Spend(
-                    prompt_tokens=completion_result.prompt_tokens,
-                    completion_tokens=completion_result.completion_tokens,
-                    cost=completion_result.cost,
-                ),
-                model=completion_result.model,
-                grounding_used=completion_result.grounding_used,
-                error=completion_result.error,
-            )
-
-        plugin.llm_service.assistant_completion.side_effect = _assistant_completion_bridge
-
-        from llm.service import CompletionResult
-
         mock_irc.state.nickToAccount.return_value = "testuser"
 
         mock_msg = mocker.MagicMock()
@@ -554,7 +508,7 @@ class TestMemoryIntegration:
             side_effect=lambda prefix, cap: cap.startswith("llm."),
         )
 
-        plugin.llm_service.completion.return_value = CompletionResult(
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
             content="Hello there!",
             prompt_tokens=10,
             completion_tokens=5,

@@ -18,7 +18,6 @@ class TestPromptsRegistry:
         imported directly, not registered)."""
         assert set(prompts.PROMPTS.keys()) == {
             "chat",
-            "code",
             "draw",
             "verse",
             "remind_action",
@@ -26,7 +25,7 @@ class TestPromptsRegistry:
 
     @pytest.mark.parametrize(
         "name",
-        ["chat", "code", "draw", "verse", "remind_action"],
+        ["chat", "draw", "verse", "remind_action"],
     )
     def test_every_prompt_is_nonempty(self, name):
         """Each registered prompt is a non-empty string."""
@@ -50,7 +49,7 @@ class TestProfilePromptInvariants:
 
     @pytest.mark.parametrize(
         "name",
-        ["chat", "code", "draw", "verse", "remind_action"],
+        ["chat", "draw", "verse", "remind_action"],
     )
     def test_profile_prompts_contain_bot_nick_placeholder(self, name):
         """Profile prompts are formatted with .format(bot_nick=...)."""
@@ -77,7 +76,7 @@ class TestIrcOutputFormatSharing:
         assert isinstance(prompts.IRC_OUTPUT_FORMAT, str)
         assert "OUTPUT FORMAT" in prompts.IRC_OUTPUT_FORMAT
 
-    @pytest.mark.parametrize("name", ["chat", "code", "draw", "remind_action"])
+    @pytest.mark.parametrize("name", ["chat", "draw", "remind_action"])
     def test_qa_prompts_embed_irc_output_format(self, name):
         """Chat-style prompts embed the shared format block verbatim."""
         assert prompts.IRC_OUTPUT_FORMAT in prompts.PROMPTS[name]
@@ -147,10 +146,6 @@ class TestProfileSpecificContent:
         mention verse-mode mechanics or it'll start cross-routing tools."""
         assert "VERSE MODE" not in prompts.PROMPTS["chat"]
         assert "verse_record" not in prompts.PROMPTS["chat"]
-
-    def test_code_prompt_mentions_generate_code_tool(self):
-        """The code prompt anchors the planner on the right tool name."""
-        assert "generate_code" in prompts.PROMPTS["code"]
 
     def test_draw_prompt_mentions_generate_image_tool(self):
         """The draw prompt anchors the planner on the right tool name."""

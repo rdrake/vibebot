@@ -20,97 +20,76 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 
-class TestProviderSpecificErrors:
-    """Test handling of provider-specific error conditions."""
+class TestProviderErrorTextStaysOutOfTheReply:
+    """What a provider exception says never reaches the channel verbatim."""
 
-    @pytest.fixture
-    def service(self, make_service) -> LLMService:
-        """Create service with default config."""
-        service, _ = make_service()
-        return service
+    @staticmethod
+    def _chat(service: LLMService, mocker: MockerFixture):
+        from llm.profile import PROFILE_CHAT
 
-    def test_handles_timeout_error(self, service: LLMService, mocker: MockerFixture) -> None:
-        """GIVEN timeout error WHEN completing THEN returns user-friendly message."""
-        mocker.patch(
-            "llm.service.provider.chat",
-            side_effect=provider.RequestTimeoutError("Request timed out"),
+        return service.assistant_completion(
+            prompt="test",
+            nick="tester",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=PROFILE_CHAT,
         )
-        result = service.completion("test", command="ask")
 
-        assert "timed out" in result.content.lower()
-        assert result.error is not None
-
-    def test_handles_rate_limit_error(self, service: LLMService, mocker: MockerFixture) -> None:
-        """GIVEN rate limit error WHEN completing THEN returns user-friendly message."""
-        mocker.patch(
-            "llm.service.provider.chat",
-            side_effect=provider.RateLimitError("Rate limit exceeded"),
-        )
-        result = service.completion("test", command="ask")
-
-        assert "rate limit" in result.content.lower()
-        assert "Error" in result.content
-
-    def test_handles_authentication_error(self, service: LLMService, mocker: MockerFixture) -> None:
-        """GIVEN auth error WHEN completing THEN returns user-friendly message."""
-        mocker.patch(
-            "llm.service.provider.chat",
-            side_effect=provider.AuthenticationError("Invalid API key"),
-        )
-        result = service.completion("test", command="ask")
-
-        assert "api key" in result.content.lower() or "invalid" in result.content.lower()
-        assert "Error" in result.content
-
-    def test_handles_content_policy_error(self, service: LLMService, mocker: MockerFixture) -> None:
-        """GIVEN content policy error WHEN completing THEN returns user-friendly message."""
-        mocker.patch(
-            "llm.service.provider.chat",
-            side_effect=provider.ContentPolicyViolationError("Content violates policy"),
-        )
-        result = service.completion("test", command="ask")
-        assert any(word in result.content.lower() for word in ("safety", "policy"))
-        assert "Error" in result.content
-
-    def test_refusal_text_never_reaches_the_channel(
-        self, service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """GIVEN a provider refusal WHEN completing THEN the provider's wording stays in the log."""
+    def test_refusal_text_never_reaches_the_channel(self, make_service, mocker) -> None:
+        """GIVEN a provider refusal WHEN chatting THEN the provider's wording stays in the log."""
+        service, _ = make_service(refusalFallbackModel="")
         mocker.patch(
             "llm.service.provider.chat",
             side_effect=provider.RefusalError(
                 "Content violates usage guidelines. Team: abc, category: harassment",
             ),
         )
-        result = service.completion("test", command="ask")
+        result = self._chat(service, mocker)
         assert result.error is not None
         assert "harassment" not in result.content
         assert "usage guidelines" not in result.content
 
-    def test_handles_generic_api_error(self, service: LLMService, mocker: MockerFixture) -> None:
-        """GIVEN generic API error WHEN completing THEN returns sanitized message."""
+    @pytest.mark.parametrize(
+        "error_class",
+        [
+            provider.ProviderError,
+            provider.RateLimitError,
+            provider.AuthenticationError,
+            provider.BadRequestError,
+            provider.RefusalError,
+            RuntimeError,
+        ],
+    )
+    def test_api_key_sanitized_in_errors(
+        self,
+        make_service,
+        mocker: MockerFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        error_class: type[Exception],
+    ) -> None:
+        """GIVEN an error containing the key WHEN handling THEN key sanitized.
+
+        `_sanitize` is environment-backed, so the key lives in the model's
+        provider variable (ANTHROPIC_API_KEY), not the registry.
+        """
+        fake_key = "sk-ant-" + "x" * 25
+        monkeypatch.setenv("ANTHROPIC_API_KEY", fake_key)
+        service, _ = make_service(
+            assistantModel="anthropic/claude-haiku-5-5", refusalFallbackModel=""
+        )
+        log = mocker.patch.object(service, "log")
         mocker.patch(
             "llm.service.provider.chat",
-            side_effect=provider.ProviderError(
-                "API error with key sk-secret123456789",
-            ),
+            side_effect=error_class(f"Error with key {fake_key}"),
         )
-        result = service.completion("test", command="ask")
 
-        assert "Error" in result.content
-        # API key should be sanitized
-        assert "sk-secret123456789" not in result.content
+        result = self._chat(service, mocker)
 
-    def test_handles_unknown_exception(self, service: LLMService, mocker: MockerFixture) -> None:
-        """GIVEN unknown exception WHEN completing THEN returns generic message."""
-        mocker.patch(
-            "llm.service.provider.chat",
-            side_effect=RuntimeError("Unexpected internal error"),
-        )
-        result = service.completion("test", command="ask")
-
-        assert "Error" in result.content
-        assert "Unexpected internal error" not in result.content  # Don't leak internals
+        # Key should not appear in the result or in anything logged
+        assert fake_key not in str(result)
+        assert fake_key not in str(log.mock_calls)
 
 
 class TestImageGenerationErrors:
@@ -164,38 +143,6 @@ class TestImageGenerationErrors:
         # Last call should be typing=done
         last_msg = mock_irc.queueMsg.call_args_list[-1][0][0]
         assert last_msg.server_tags == {"+typing": "done"}
-
-
-class TestPartialResponseHandling:
-    """Test handling of partial or malformed responses."""
-
-    @pytest.fixture
-    def service(self, make_service) -> LLMService:
-        """Create service with default config."""
-        service, _ = make_service()
-        return service
-
-    def test_handles_empty_content_response(
-        self, service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """GIVEN response with empty content WHEN completing THEN handles gracefully."""
-        mocker.patch("llm.service.provider.chat", return_value=make_completion_response(""))
-        result = service.completion("test", command="ask")
-
-        # Should return empty string, not crash
-        assert result.content == ""
-
-    def test_handles_whitespace_only_content(
-        self, service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """GIVEN response with only whitespace WHEN completing THEN returns as-is."""
-        mocker.patch(
-            "llm.service.provider.chat", return_value=make_completion_response("   \n\t  ")
-        )
-        result = service.completion("test", command="ask")
-
-        # Should return the whitespace (sanitized)
-        assert result.content.strip() == ""
 
 
 class TestAnthropicSpecificBehaviors:
@@ -257,74 +204,6 @@ class TestAnthropicSpecificBehaviors:
         assert ("thinking_blocks" in turn) is expected
         if expected:
             assert turn["thinking_blocks"] == list(thinking_blocks)
-
-
-class TestAPIKeyHandling:
-    """Test API key handling across different scenarios."""
-
-    def test_missing_ask_key_returns_error(
-        self, make_service, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """GIVEN no key for the ask model's provider WHEN completing THEN returns error."""
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        service, _ = make_service(assistantModel="anthropic/claude-haiku-5-5")
-        result = service.completion("test", command="ask")
-
-        assert "Error" in result.content
-        assert "ANTHROPIC_API_KEY" in result.content
-
-    def test_empty_ask_key_returns_error(
-        self, make_service, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """GIVEN an empty key for the ask model's provider THEN returns error.
-
-        An empty value must be treated exactly like an unset one, otherwise ""
-        reaches the provider and the failure surfaces as a provider auth error.
-        """
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
-        service, _ = make_service(assistantModel="anthropic/claude-haiku-5-5")
-        result = service.completion("test", command="ask")
-
-        assert "Error" in result.content
-        assert "ANTHROPIC_API_KEY" in result.content
-
-    @pytest.mark.parametrize(
-        "error_class",
-        [
-            provider.ProviderError,
-            provider.RateLimitError,
-            provider.AuthenticationError,
-            provider.BadRequestError,
-            provider.RefusalError,
-            RuntimeError,
-        ],
-    )
-    def test_api_key_sanitized_in_errors(
-        self,
-        make_service,
-        mocker: MockerFixture,
-        monkeypatch: pytest.MonkeyPatch,
-        error_class: type[Exception],
-    ) -> None:
-        """GIVEN an error containing the key WHEN handling THEN key sanitized.
-
-        `_sanitize` is environment-backed, so the key lives in the model's
-        provider variable (ANTHROPIC_API_KEY), not the registry.
-        """
-        fake_key = "sk-ant-" + "x" * 25
-        monkeypatch.setenv("ANTHROPIC_API_KEY", fake_key)
-        service, _ = make_service(assistantModel="anthropic/claude-haiku-5-5")
-        log = mocker.patch.object(service, "log")
-
-        mocker.patch(
-            "llm.service.provider.chat",
-            side_effect=error_class(f"Error with key {fake_key}"),
-        )
-        result = service.completion("test", command="ask")
-
-        # Key should not appear in the result or in anything logged
-        assert fake_key not in str(result)
-        assert fake_key not in str(log.mock_calls)
 
 
 class TestSearchToolDate:
@@ -431,38 +310,6 @@ class TestGuardsUseTheEffectiveModel:
     itself is always right — it comes from ``_timed_completion`` — so the damage
     is entirely in the guard, which is why nothing else in the suite notices.
     """
-
-    def test_completion_override_provider_is_what_is_checked(
-        self, make_service, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """GIVEN an override on an unconfigured provider THEN the error names it."""
-        monkeypatch.delenv("XAI_API_KEY", raising=False)
-        # The registry model's provider IS configured — only the override's is not.
-        service, _ = make_service(assistantModel="anthropic/claude-haiku-5-5")
-        completion = mocker.patch("llm.service.provider.chat")
-
-        result = service.completion("hi", command="ask", model_override="xai/grok-4.3")
-
-        assert result.error is not None
-        assert "XAI_API_KEY" in result.content
-        completion.assert_not_called()
-
-    def test_completion_override_is_not_blocked_by_the_registry_model(
-        self, make_service, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """GIVEN a configured override THEN an unconfigured registry model cannot block it."""
-        monkeypatch.delenv("XAI_API_KEY", raising=False)
-        service, _ = make_service(assistantModel="xai/grok-4.3")
-        completion = mocker.patch(
-            "llm.service.provider.chat", return_value=make_completion_response()
-        )
-
-        result = service.completion(
-            "hi", command="ask", model_override="anthropic/claude-haiku-5-5"
-        )
-
-        assert result.error is None
-        assert completion.call_args.kwargs["model"] == "anthropic/claude-haiku-5-5"
 
     def test_assistant_override_provider_is_what_is_checked(
         self, make_service, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch

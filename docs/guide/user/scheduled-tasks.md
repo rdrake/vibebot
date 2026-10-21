@@ -77,11 +77,11 @@ VibeBot, every Monday at 9am check my PRs and message me directly
 
 ## What a task can do at run time
 
-A fire runs on the reminder-action profile — the one a `@remind` action fire uses, not the chat profile you get from `@ask`. It is the only route that sees all 21 of the bot's model-facing tools; chat sees at most twelve. A fire happens with nobody present to type a command, so it keeps the bookkeeping tools too. Capabilities are fixed at `llm.ask`, `llm.draw` and `llm.code`, so owner and admin powers are never inherited.
+A fire runs on the reminder-action profile — the one a `@remind` action fire uses, not the chat profile you get from `@ask`. It is the only route that sees all 20 of the bot's model-facing tools; chat sees at most twelve. A fire happens with nobody present to type a command, so it keeps the bookkeeping tools too. Capabilities are fixed at `llm.ask` and `llm.draw`, so owner and admin powers are never inherited.
 
 - **Search** the web, when the search model's provider supports grounding (xAI, Gemini, Vertex AI).
 - **Fetch** URLs.
-- **Draw and code** with the image and code tools.
+- **Draw** with the image tool.
 - **Bookkeeping:** read and edit your memories, read your usage, and list or cancel your other pending tasks.
 - **Status:** check the configured status pages — both the ones it watches (`statusPageUrls`) and any it only answers about when asked (`statusQueryablePages`) — wherever either is set.
 
