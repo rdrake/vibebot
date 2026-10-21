@@ -10,6 +10,11 @@ dependencies = [
     "feedparser>=6.0",
 ]
 
+[tool.uv]
+# A cooldown: nothing uploaded in the last week resolves. Both LiteLLM
+# compromises (1.82.7/1.82.8, 1.107.0) were pulled within hours.
+exclude-newer = "7 days"
+
 [tool.uv.workspace]
 members = ["plugins/llm", "plugins/nickinmiddle"]
 

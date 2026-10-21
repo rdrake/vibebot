@@ -16,9 +16,14 @@ updates:
       interval: "weekly"
     commit-message:
       prefix: "deps"
+    # Matches exclude-newer in pyproject.toml, so uv can lock what this proposes.
+    cooldown:
+      default-days: 7
     ignore:
       - dependency-name: "llm"
       - dependency-name: "nickinmiddle"
+      # Being removed (docs/superpowers/plans/2026-10-21-litellm-replacement.md).
+      - dependency-name: "litellm"
     groups:
       dev-tools:
         patterns:
