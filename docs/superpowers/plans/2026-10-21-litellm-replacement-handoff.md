@@ -2,6 +2,16 @@
 
 Pick up from here in a fresh session. The original plan is `2026-10-21-litellm-replacement.md`; its Tasks 3–4 (SDKs) are superseded by what is below.
 
+## Progress since this was written (2026-10-21, second session)
+
+All local, still **not pushed**:
+
+- `2e658d7`: correctness fixes 1–5 done (reasoning in `output_tokens`, transport errors wrapped, redirects refused, refusal before block, `User-Agent: vibebot`, no `n` on edits). Owner decisions applied: `temperature`, `effort`, `x-grok-conv-id`, data-URL images and `Reply.id`/`Picture.id` are gone. The error family is simplified (`NotFoundError` and the 408/413/422 cases are gone; `ProviderError` keeps only `billed`), the unconfirmed markers are pruned, and the small certain YAGNI cuts are in.
+- `0edd691`: `_grounded_completion` logs through `_log_completion_timing`, and `_ask_completion` failures log at WARNING.
+- `scripts/provider_smoke.py`: the smoke test, ready to run, and **not yet run** (it needs the owner's OK). It prints whether ticks match `completion + reasoning` or `completion` alone. If they match `completion` alone, the reasoning fold in `_xai_reply` double-counts and must be reverted.
+
+Still to do: the smoke test, the `completion()` shrink (about 90 test call sites), video removal, docs. `_filter_images` no longer passes `data:` URLs, so animate's vision reference is already dead.
+
 ## Where things stand
 
 | Commit | State | What |
