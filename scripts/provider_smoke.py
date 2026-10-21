@@ -100,8 +100,12 @@ def xai_reasoning_check(model: str) -> None:
     details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
     cached = details.get("cached_tokens") or 0
     completion = usage.get("completion_tokens") or usage.get("output_tokens") or 0
-    reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
+    # Chat reports it under completion_tokens_details, Responses under
+    # output_tokens_details.
+    out_details = usage.get("completion_tokens_details") or usage.get("output_tokens_details") or {}
+    reasoning = out_details.get("reasoning_tokens") or 0
     base = ((prompt - cached) * price.input + cached * price.cache_read) / 1e6
+    print(f"     reasoning_tokens={reasoning} (too few and the two readings agree)")
     print(
         f"     ticks=${ticks * provider.XAI_TICK_USD:.6f}  "
         f"table(completion+reasoning)=${base + (completion + reasoning) * price.output / 1e6:.6f}  "
@@ -133,7 +137,14 @@ for model in ("xai/grok-4.3", "xai/grok-4-1-fast-reasoning"):
             model,
             lambda model=model: provider.chat(
                 model,
-                [{"role": "user", "content": "Name one prime above 100. Just the number."}],
+                [
+                    {
+                        "role": "user",
+                        "content": "A train leaves at 09:47 and averages 83 km/h over 417 km, "
+                        "stopping 3 times for 11 minutes each. At what time does it arrive? "
+                        "Answer with just the time.",
+                    }
+                ],
                 timeout=90,
                 cache_key="chan:#smoke:main",
             ),
