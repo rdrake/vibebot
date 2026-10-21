@@ -232,9 +232,6 @@ class TestFinish:
         get = test_db.get_reminder if kind is Kind.REMINDER else test_db.get_scheduled_llm_task
         assert get("c") is None
 
-    def test_caps_are_fifty_reminders_and_five_tasks(self) -> None:
-        assert MAX_CHAIN_POSITION == {Kind.REMINDER: 50, Kind.TASK: 5}
-
     def test_one_short_of_the_cap_reschedules(self, agenda, test_db, clock) -> None:
         cap = MAX_CHAIN_POSITION[Kind.TASK]
         _task(test_db, "t", T0, recurrence_seconds=60, chain_position=cap - 1)

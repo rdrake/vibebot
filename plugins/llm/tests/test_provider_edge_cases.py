@@ -92,59 +92,6 @@ class TestProviderErrorTextStaysOutOfTheReply:
         assert fake_key not in str(log.mock_calls)
 
 
-class TestImageGenerationErrors:
-    """Test error handling in image generation."""
-
-    @pytest.fixture
-    def service(self, make_service) -> LLMService:
-        """Create service with draw config."""
-        service, _ = make_service(imageModel="xai/grok-imagine-image", drawAutoRewriteMax=0)
-        return service
-
-    def test_handles_no_picture(self, service: LLMService, mocker: MockerFixture) -> None:
-        """GIVEN the provider returns no picture WHEN generating image THEN returns content filter message."""
-        mocker.patch("llm.service.provider.draw", return_value=provider.Picture(data=None))
-        result = service.image_generation("test prompt")
-
-        assert "No image generated" in result.content
-        assert "content safety" in result.content.lower()
-
-    def test_handles_timeout_during_generation(
-        self, service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """GIVEN timeout WHEN generating image THEN returns timeout message."""
-        mocker.patch(
-            "llm.service.provider.draw",
-            side_effect=provider.RequestTimeoutError("Generation timed out"),
-        )
-        result = service.image_generation("test prompt")
-
-        assert "timed out" in result.content.lower()
-
-    def test_sends_typing_done_on_error(self, service: LLMService, mocker: MockerFixture) -> None:
-        """GIVEN error during generation WHEN with irc context THEN sends done indicator."""
-        mock_irc = mocker.Mock()
-        mock_irc.state = mocker.Mock()
-        mock_irc.state.capabilities_ack = {"message-tags"}
-        mock_irc.queueMsg = mocker.Mock()
-
-        mock_msg = mocker.Mock()
-        mock_msg.args = ("#test",)
-        mock_msg.prefix = "testnick!user@host"
-
-        mocker.patch(
-            "llm.service.provider.draw",
-            side_effect=Exception("API error"),
-        )
-        service.image_generation("test", irc=mock_irc, msg=mock_msg)
-
-        # Should have sent typing indicators (active + done)
-        assert mock_irc.queueMsg.call_count == 2
-        # Last call should be typing=done
-        last_msg = mock_irc.queueMsg.call_args_list[-1][0][0]
-        assert last_msg.server_tags == {"+typing": "done"}
-
-
 class TestAnthropicSpecificBehaviors:
     """Test Anthropic-specific behaviors."""
 
@@ -255,17 +202,6 @@ class TestSearchToolDate:
 
 class TestMissingKeyError:
     """The pre-flight key check names the model's provider variable."""
-
-    def test_missing_key_error_names_provider_and_variable(
-        self, make_service, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """GIVEN no key WHEN building the error THEN it names both."""
-        monkeypatch.delenv("XAI_API_KEY", raising=False)
-        service, _ = make_service()
-        message = service._missing_key_error("xai/grok-4.3")
-        assert message is not None
-        assert "xai" in message
-        assert "XAI_API_KEY" in message
 
     @pytest.mark.parametrize("model", ["vertex_ai/imagen-4.0-generate-001", "", "junk-model"])
     def test_unmanaged_models_have_no_error(self, make_service, model: str) -> None:

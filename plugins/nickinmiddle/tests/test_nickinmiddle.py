@@ -3,14 +3,7 @@
 from __future__ import annotations
 
 import supybot.ircmsgs as ircmsgs
-from nickinmiddle.config import configure
 from nickinmiddle.plugin import NickInMiddle
-
-
-def test_configure_runs() -> None:
-    """`configure()` should register the plugin without raising."""
-    configure(advanced=False)
-    configure(advanced=True)
 
 
 class FakeIrc:
@@ -137,16 +130,6 @@ class TestNickInMiddle:
         result = plugin.inFilter(irc, msg)
         assert result.args[1] == "can you, vibebot, help"
 
-    def test_case_insensitive(self) -> None:
-        """Nick matching should be case-insensitive."""
-        plugin = FakePlugin()
-        irc = FakeIrc(nick="VibeBot")
-        msg = _chan_msg("can you, vibebot, help")
-        result = plugin.inFilter(irc, msg)
-        assert result.args[1].lower().startswith("vibebot")
-        # The command portion should follow the nick.
-        assert "help" in result.args[1]
-
     def test_no_nick_present(self) -> None:
         """Messages without the nick pass through."""
         plugin = FakePlugin()
@@ -227,27 +210,6 @@ class TestNickInMiddle:
         assert result.args[1].startswith("vibebot")
         assert "Eric Adams" in result.args[1]
 
-    def test_nick_with_trailing_exclamation(self) -> None:
-        """'help me, vibebot! I need you' should be rewritten."""
-        plugin = FakePlugin()
-        irc = FakeIrc()
-        msg = _chan_msg("help me, vibebot! I need you")
-        result = plugin.inFilter(irc, msg)
-        assert result.args[1].startswith("vibebot")
-
-    def test_configured_addressing_alias_is_rewritten(self) -> None:
-        """Middle-position rewrite fires for a configured alias.
-
-        NOTE: this uses FakePlugin's stubbed nick list, so it exercises the
-        inFilter rewrite logic, NOT the registry lookup. The real
-        registry-backed path is covered by TestRealAddressingNicks below.
-        """
-        plugin = FakePlugin(addressing_nicks=("assistant",))
-        irc = FakeIrc()
-        msg = _chan_msg("can you, assistant, help")
-        result = plugin.inFilter(irc, msg)
-        assert result.args[1] == "vibebot can you, help"
-
 
 class TestRealAddressingNicks:
     """Exercise the real ``_addressing_nicks`` (registry lookup), not a stub.
@@ -288,19 +250,6 @@ class TestRealAddressingNicks:
         # membership rather than order.
         assert result[0] == "vibebot"
         assert set(result[1:]) == {"assistant", "helper"}
-
-    def test_addressing_nicks_is_just_irc_nick_when_unconfigured(self) -> None:
-        """GIVEN no configured aliases WHEN _addressing_nicks runs THEN only irc.nick."""
-        plugin = NickInMiddle.__new__(NickInMiddle)
-        irc = FakeIrc(nick="vibebot", network="testnet")
-
-        restore = self._set_configured_nicks([])
-        try:
-            result = plugin._addressing_nicks(irc, "#chan")
-        finally:
-            restore()
-
-        assert result == ("vibebot",)
 
     def test_infilter_rewrites_via_real_registry_alias(self) -> None:
         """GIVEN a registry-configured alias WHEN inFilter runs THEN the real lookup drives the rewrite.

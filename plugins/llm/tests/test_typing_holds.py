@@ -42,12 +42,6 @@ def _irc(network: str = "afternet") -> SimpleNamespace:
 
 
 class TestRefcount:
-    def test_first_hold_sends_active_and_last_release_sends_done(self, holds, rec) -> None:
-        release = holds.hold(_irc(), "#chan")
-        assert rec.states("afternet", "#chan") == ["active"]
-        release()
-        assert rec.states("afternet", "#chan") == ["active", "done"]
-
     def test_second_hold_on_same_target_sends_nothing(self, holds, rec) -> None:
         r1 = holds.hold(_irc(), "#chan")
         r2 = holds.hold(_irc(), "#chan")

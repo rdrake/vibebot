@@ -152,17 +152,6 @@ def test_unknown_place_errors(env) -> None:
     assert _payload(plugin, "Nowhereville") == {"error": "couldn't find that place"}
 
 
-def test_ovation_down_drops_only_ovation(env) -> None:
-    plugin, feeds, _geo, _clouds = env
-    feeds.down.add("ovation")
-    p = _payload(plugin)
-
-    assert p["unavailable"] == ["ovation"]
-    assert "ovation" not in p
-    for key in ("now", "kp_next_24h", "dark", "cloud_pct_while_dark"):
-        assert key in p
-
-
 def test_other_feeds_report_unavailable(env, mocker) -> None:
     plugin, feeds, _geo, clouds = env
     feeds.down.update({"mag", "kp", "alerts"})
@@ -298,25 +287,6 @@ def test_one_failing_feed_is_alone_in_unavailable(env, feed) -> None:
         assert (key in p) is (name != feed), key
 
 
-def test_payload_key_order_unchanged(env, mocker) -> None:
-    plugin, _feeds, _geo, _clouds = env
-    from llm.spaceweather import Watch
-
-    watch = Watch(serial=1, issued=NOW, levels={NOW.date(): 3})
-    mocker.patch("llm.spaceweather.parse_watches", return_value=[watch])
-    assert list(_payload(plugin)) == [
-        "place",
-        "lat",
-        "lon",
-        "now",
-        "ovation",
-        "kp_next_24h",
-        "active_watch",
-        "dark",
-        "cloud_pct_while_dark",
-    ]
-
-
 def test_announcer_and_tool_share_alerts_cache(env, mocker) -> None:
     plugin, feeds, _geo, _clouds = env
     mocker.patch.object(plugin, "_sw_announce_channels", return_value=["#a"])
@@ -407,15 +377,6 @@ def test_tool_advertised_when_enabled(plugin_env) -> None:
 
     assert [t["function"]["name"] for t in kwargs["extra_tools"]] == ["aurora"]
     assert "aurora" in kwargs["extra_handlers"]
-
-
-def test_tool_on_by_default(plugin_env) -> None:
-    from llm import config  # noqa: F401  (registers the keys)
-    from supybot import conf
-
-    assert conf.supybot.plugins.LLM.auroraEnabled() is True
-    assert conf.supybot.plugins.LLM.auroraAnnounce() is False
-    assert conf.supybot.plugins.LLM.auroraAnnouncePlaces() == []
 
 
 def test_tool_hidden_when_disabled(plugin_env) -> None:

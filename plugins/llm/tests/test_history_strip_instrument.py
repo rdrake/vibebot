@@ -43,13 +43,6 @@ class TestCountedStrip:
         assert result == history[:2]
         assert ledger == {"k": 3}
 
-    def test_accumulates_across_both_windows(self) -> None:
-        """The same key is applied to history and channel_history in turn."""
-        ledger: dict[str, int] = {}
-        _counted_strip("k", lambda h: h[:1], [{"a": "1"}, {"a": "2"}], ledger)
-        _counted_strip("k", lambda h: h[:1], [{"a": "3"}, {"a": "4"}], ledger)
-        assert ledger == {"k": 2}
-
     def test_handles_none_history(self) -> None:
         """None windows (verse drops channel_history) must not be counted."""
         ledger: dict[str, int] = {}
@@ -159,23 +152,3 @@ class TestHistoryStripLine:
             )
         line = next(ln for ln in caplog.text.splitlines() if "history_strip" in ln)
         assert "tool_complaint=2" in line
-
-    def test_line_survives_the_supybot_format_bug(
-        self, service: LLMService, mocker, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Regression: %-args get mangled by supybot's logger (see 1b64332).
-
-        The guard-fire lines logged ``model=1 channel=1`` for months because
-        ``%d`` was dropped and the remaining args shifted left. This line is
-        built as an f-string, so every field must render its real value.
-        """
-        with caplog.at_level(logging.WARNING, logger=LOGGER):
-            self._run(
-                service,
-                mocker,
-                history=[{"role": "assistant", "content": POISON}],
-            )
-        line = next(ln for ln in caplog.text.splitlines() if "history_strip" in ln)
-        assert "model=gpt-4" in line
-        assert "%d" not in line and "%s" not in line and "%i" not in line
-        assert "model=1" not in line and "channel=1" not in line

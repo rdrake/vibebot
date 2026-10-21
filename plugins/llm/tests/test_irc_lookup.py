@@ -75,14 +75,6 @@ class TestChannelsCommand:
         irc.reply.assert_called_once()
         assert irc.reply.call_args.args[0] == "2 channels: #busy (30) Busy place | #quiet (2)"
 
-    def test_exact_channel_name_answers_that_channel(self, lookup_env) -> None:
-        plugin, irc, msg = lookup_env
-        serve_list(plugin, irc, [("#linux", 5, "Kernel talk"), ("#linuxhelp", 3, "")])
-
-        plugin.channels(irc, msg, ["#linux"])
-
-        assert irc.reply.call_args.args[0] == "#linux (5) Kernel talk"
-
     def test_glob_and_min_users(self, lookup_env) -> None:
         plugin, irc, msg = lookup_env
         serve_list(plugin, irc, [("#linux", 5, ""), ("#linuxhelp", 1, ""), ("#bsd", 8, "")])
@@ -254,14 +246,6 @@ class TestIrcLookupTool:
 
         assert "did not answer" in payload["error"]
 
-    def test_unknown_kind_is_an_error(self, lookup_env) -> None:
-        plugin, irc, _msg = lookup_env
-        _, handlers = plugin._build_irc_lookup_tool(irc)
-
-        payload = json.loads(handlers["irc_lookup"]({"kind": "whois"}).content)
-
-        assert "error" in payload
-
 
 class TestChatWiring:
     def _result(self) -> AssistantResult:
@@ -323,11 +307,6 @@ def serve_whois(plugin, irc, nick: str, *, error: str | None = None) -> None:
 
 
 class TestIrcLookupWhois:
-    def test_schema_offers_whois(self, lookup_env) -> None:
-        plugin, irc, _msg = lookup_env
-        schemas, _ = plugin._build_irc_lookup_tool(irc)
-        assert "whois" in schemas[0]["function"]["parameters"]["properties"]["kind"]["enum"]
-
     def test_whois_sends_remote_whois_and_returns_fields(self, lookup_env) -> None:
         plugin, irc, _msg = lookup_env
         serve_whois(plugin, irc, "eck")

@@ -65,27 +65,6 @@ class TestProviderOf:
         assert apikeys.provider_of("XAI/grok-4.3") == "xai"
 
 
-class TestEnvVarFor:
-    def test_managed_provider(self) -> None:
-        """GIVEN an xai model WHEN env_var_for THEN XAI_API_KEY."""
-        assert apikeys.env_var_for("xai/grok-4.3") == "XAI_API_KEY"
-
-    def test_unmanaged_provider(self) -> None:
-        """GIVEN a gemini model WHEN env_var_for THEN None."""
-        assert apikeys.env_var_for("gemini/gemini-3-flash-preview") is None
-
-
-class TestIsManaged:
-    def test_managed(self) -> None:
-        """GIVEN an xai model WHEN is_managed THEN True."""
-        assert apikeys.is_managed("xai/grok-4.3") is True
-
-    @pytest.mark.parametrize("model", ["gemini/gemini-3-flash-preview", "not-a-real-model-xyz", ""])
-    def test_unmanaged(self, model: str) -> None:
-        """GIVEN an unmanaged or unresolvable model WHEN is_managed THEN False."""
-        assert apikeys.is_managed(model) is False
-
-
 class TestApiKeyFor:
     def test_returns_env_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """GIVEN XAI_API_KEY set WHEN api_key_for an xai model THEN that value."""

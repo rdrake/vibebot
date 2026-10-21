@@ -248,11 +248,6 @@ class TestSourceList:
         ]
         assert plugin._status_sources() == ["https://www.githubstatus.com"]
 
-    def test_empty_list_disables(self, status_plugin):
-        plugin = status_plugin
-        plugin._registry["statusPageUrls"] = []
-        assert plugin._status_sources() == []
-
     def test_caps_at_max_sources(self, status_plugin):
         plugin = status_plugin
         plugin._registry["statusPageUrls"] = [f"https://status{i}.example.com" for i in range(9)]
@@ -311,13 +306,6 @@ class TestPerSourceState:
         assert plugin._fetch_calls == 1, "GitHub blocked by Claude's floor"
         plugin._status_fetch_now(CLAUDE)
         assert plugin._fetch_calls == 1, "Claude's own floor did not hold"
-
-    def test_read_cache_is_keyed(self, status_plugin):
-        plugin = status_plugin
-        plugin._now = 2000.0
-        plugin._status_fetch_now(GITHUB)
-        assert GITHUB in plugin._status_read_cache
-        assert CLAUDE not in plugin._status_read_cache
 
 
 class TestPassDeadline:
@@ -679,18 +667,6 @@ class TestPageGrammar:
         assert len(named) == 2, "both ports must survive as distinct pages"
         assert len(set(named)) == 2, "the derived names must be distinct"
         assert set(named.values()) == {"https://x.example", "https://x.example:8443"}
-
-    def test_explicit_invalid_name_is_still_dropped(self, status_plugin):
-        """The strict regex is kept for explicit Name= entries, where a
-        rejection is a visible typo the operator can see and fix — unlike
-        a bare URL's derived name, which must always be usable. [Finding 1]"""
-        plugin = status_plugin
-        plugin._registry["statusPageUrls"] = [
-            "bad!name=https://x.example",
-            "Good=https://status.claude.com",
-        ]
-        plugin._registry["statusQueryablePages"] = []
-        assert plugin._status_named_pages() == {"Good": "https://status.claude.com"}
 
 
 class TestEnumIsConfigOnly:

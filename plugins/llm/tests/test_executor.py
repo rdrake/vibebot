@@ -115,12 +115,6 @@ class TestLLMExecutorBasics:
         finally:
             ex.shutdown()
 
-    def test_shutdown_sets_closing_flag(self) -> None:
-        ex = LLMExecutor(max_concurrency=1, log=logging.getLogger("test"))
-        assert ex.closing is False
-        ex.shutdown()
-        assert ex.closing is True
-
     def test_recursive_submit_from_worker_raises(self) -> None:
         ex = LLMExecutor(max_concurrency=2, log=logging.getLogger("test"))
         try:

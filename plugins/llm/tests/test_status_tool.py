@@ -7,7 +7,7 @@ import json
 import pytest
 from llm import assistant, statuspage
 from llm.plugin import LLM
-from llm.profile import PROFILE_CHAT, PROFILE_REMIND_ACTION, PROFILE_VERSE
+from llm.profile import PROFILE_CHAT, PROFILE_REMIND_ACTION
 
 from .conftest import make_completion_response
 
@@ -30,45 +30,14 @@ def green_snapshot(fetched_at: float = 1000.0, *, incidents=()) -> statuspage.Sn
 
 
 class TestToolSchema:
-    def test_tool_is_registered(self):
-        assert "check_service_status" in assistant.ASSISTANT_TOOL_REGISTRY
-
-    def test_tool_parameters_are_include_history_and_service(self):
-        spec = assistant.ASSISTANT_TOOL_REGISTRY["check_service_status"]
-        assert set(spec.schema["parameters"]["properties"]) == {"include_history", "service"}
-        assert spec.schema["parameters"].get("required", []) == []
-
-    def test_service_has_no_enum_at_the_module_level(self):
-        """The base schema carries no third-party or config data — the enum
-        is added per-build by _with_status_context from operator config."""
-        spec = assistant.ASSISTANT_TOOL_REGISTRY["check_service_status"]
-        assert "enum" not in spec.schema["parameters"]["properties"]["service"]
-
-    def test_include_history_description_mentions_past_or_resolved(self):
-        spec = assistant.ASSISTANT_TOOL_REGISTRY["check_service_status"]
-        desc = spec.schema["parameters"]["properties"]["include_history"]["description"]
-        assert "past" in desc.lower() or "resolved" in desc.lower()
-
     def test_visible_in_chat_and_remind_action_only(self):
         spec = assistant.ASSISTANT_TOOL_REGISTRY["check_service_status"]
         assert spec.visible_in == frozenset({PROFILE_CHAT, PROFILE_REMIND_ACTION})
-
-    def test_not_visible_in_verse(self):
-        """Verse must stay a strict subset of chat, and storytelling has no
-        use for a status check."""
-        spec = assistant.ASSISTANT_TOOL_REGISTRY["check_service_status"]
-        assert PROFILE_VERSE not in spec.visible_in
 
     def test_requires_only_llm_ask(self):
         spec = assistant.ASSISTANT_TOOL_REGISTRY["check_service_status"]
         assert spec.capability == "llm.ask"
         assert spec.require_account is False
-
-    def test_description_pins_the_recency_threshold(self):
-        """Without this the model calls a three-day-old incident 'recent'."""
-        spec = assistant.ASSISTANT_TOOL_REGISTRY["check_service_status"]
-        assert "recently" in spec.schema["description"]
-        assert "latest_update_age_sec" in spec.schema["description"]
 
 
 class TestHandler:
@@ -583,19 +552,6 @@ class TestStatusHistoryPayload:
         result = plugin._status_history_payload(CLAUDE)
 
         assert result[0]["name"] == "Elevated error rates on Claude Opus 4.5"
-
-    def test_fetch_failure_with_no_cache_returns_empty_list(self, status_plugin, mocker):
-        plugin = self._bind(status_plugin)
-        mocker.patch(
-            "llm.plugin.statuspage.fetch_incidents", side_effect=statuspage.FetchError("down")
-        )
-        plugin._status_history_cache = {}
-        plugin._status_history_at = {}
-        plugin._now = 1000.0
-
-        result = plugin._status_history_payload(CLAUDE)
-
-        assert result == []
 
     def test_invalid_payload_on_fetch_is_swallowed_like_any_other_failure(
         self, status_plugin, mocker

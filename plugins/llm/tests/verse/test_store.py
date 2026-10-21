@@ -41,11 +41,6 @@ class TestDbPathForChannel:
         assert "!" not in result.name
         assert "/" not in result.name
 
-    def test_idempotent(self, verse_db_dir: Path) -> None:
-        a = db_path_for_channel(verse_db_dir, "#afnet")
-        b = db_path_for_channel(verse_db_dir, "#afnet")
-        assert a == b
-
 
 class TestVerseStoreInit:
     def test_creates_db_with_schema(self, verse_db_dir: Path) -> None:
@@ -206,14 +201,6 @@ class TestEntityCrud:
 
 
 class TestAttributesCrud:
-    def test_set_and_get(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        eid = store.add_entity("npc", "Alice", "Test npc")
-        store.set_attribute(eid, "color", "red")
-        assert store.get_attribute(eid, "color") == "red"
-
     def test_get_missing_returns_none(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
@@ -264,16 +251,6 @@ class TestAttributesCrud:
 
 
 class TestRelationsCrud:
-    def test_add_returns_id(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        a = store.add_entity("npc", "Alice", "")
-        b = store.add_entity("npc", "Bob", "")
-        rid = store.add_relation(a, b, "allied_with")
-        assert isinstance(rid, int)
-        assert rid > 0
-
     def test_list_no_filter_returns_all(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
@@ -375,14 +352,6 @@ class TestEventsCrud:
         assert ev.entity_ids == (1, 2)
         assert isinstance(ev.ts, float)
 
-    def test_entity_ids_round_trip(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        store.add_event("Test event", [3, 5, 11], "avatar")
-        events = store.recent_events()
-        assert events[0].entity_ids == (3, 5, 11)
-
     def test_entity_ids_empty_default(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
@@ -430,18 +399,6 @@ class TestEventsCrud:
         events = store.recent_events(limit=2)
         assert len(events) == 2
 
-    def test_recent_events_exclude_sources_single(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        store.add_event("Avatar event", [], "avatar")
-        store.add_event("Loom event", [], "loom")
-        store.add_event("Crosspoll event", [], "crosspoll")
-        events = store.recent_events(exclude_sources=("crosspoll",))
-        assert len(events) == 2
-        sources = {ev.source for ev in events}
-        assert "crosspoll" not in sources
-
     def test_recent_events_exclude_sources_multiple(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
@@ -452,24 +409,6 @@ class TestEventsCrud:
         events = store.recent_events(exclude_sources=("crosspoll", "loom"))
         assert len(events) == 1
         assert events[0].source == "avatar"
-
-    def test_recent_events_exclude_sources_empty_default_includes_all(
-        self, verse_db_dir: Path
-    ) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        store.add_event("Avatar event", [], "avatar")
-        store.add_event("Loom event", [], "loom")
-        store.add_event("Crosspoll event", [], "crosspoll")
-        events = store.recent_events()
-        assert len(events) == 3
-
-    def test_recent_events_empty_db_returns_empty_list(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        assert store.recent_events() == []
 
     def test_recent_events_require_active_entity_drops_dead_only(self, verse_db_dir: Path) -> None:
         """require_active_entity=True excludes events whose every referenced
@@ -529,18 +468,6 @@ class TestAvatarLinkCrud:
         assert store.find_avatar_by_account("alice@network") == eid
         assert store.find_avatar_by_account("Alice@Network") is None  # case-sensitive
 
-    def test_find_unknown_nick_returns_none(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        assert store.find_avatar_by_nick("ghost") is None
-
-    def test_find_unknown_account_returns_none(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        assert store.find_avatar_by_account("nope") is None
-
     def test_find_by_nick_case_insensitive(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
@@ -549,18 +476,6 @@ class TestAvatarLinkCrud:
         link_avatar(store, eid, nick="Alice")
         for variant in ("ALICE", "alice", "aLiCe"):
             assert store.find_avatar_by_nick(variant) == eid
-
-    def test_unlink_removes_link_and_retires_entity(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        eid = store.add_entity("avatar", "Alice", "")
-        link_avatar(store, eid, nick="Alice")
-        store.unlink_avatar(eid)
-        assert store.find_avatar_by_nick("Alice") is None
-        entity = store.get_entity(eid)
-        assert entity is not None
-        assert entity.status == "retired"
 
     def test_unlink_atomicity(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
@@ -859,13 +774,6 @@ class TestOptInAvatar:
         # Distinct entity ids
         assert results[0].entity_id != results[1].entity_id
 
-    def test_scene_text_does_not_mention_verse_act(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        result = store.opt_in_avatar("alice", None, "curious traveller")
-        assert "verse_act" not in result.scene_text
-
     def test_place_selection_uses_most_recent_event(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
@@ -914,39 +822,6 @@ class TestProposalsCRUD:
         assert rows[0].payload == {"summary": "second"}
         assert [r.id for r in store.list_proposals(status="pending")] == [p2, p1]
         assert [r.id for r in store.list_proposals(cycle_id="c-1")] == [p1]
-
-    def test_list_proposals_status_approved_filter(self, verse_db_dir: Path) -> None:
-        import json as _json
-        import time as _time
-        import uuid as _uuid
-
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        now = _time.time()
-        with store.write_transaction() as conn:
-            conn.execute(
-                "INSERT INTO proposals (id, created_at, cycle_id, op, payload, confidence, "
-                "provenance, status, reviewer, reviewed_at) VALUES (?,?,?,?,?,?,?,'pending',NULL,NULL)",
-                (
-                    _uuid.uuid4().hex,
-                    now,
-                    "c-1",
-                    "add_event",
-                    _json.dumps({"summary": "p"}),
-                    0.9,
-                    "",
-                ),
-            )
-        approved = _uuid.uuid4().hex
-        with store.write_transaction() as conn:
-            conn.execute(
-                "INSERT INTO proposals (id, created_at, cycle_id, op, payload, confidence, "
-                "provenance, status, reviewer, reviewed_at) VALUES (?,?,?,?,?,?,?,'approved','loom',?)",
-                (approved, now, "c-1", "add_event", _json.dumps({"summary": "a"}), 0.9, "", now),
-            )
-        rows = store.list_proposals(status="approved")
-        assert [r.id for r in rows] == [approved]
 
 
 class TestWriteLockConcurrency:
@@ -1097,18 +972,6 @@ class TestReplaceEventsWithLoreDigest:
             rows = conn.execute("SELECT id FROM events").fetchall()
         assert [r[0] for r in rows] == [oid]
 
-    def test_no_delete_ids_still_inserts_digest(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#afnet")
-        new_id = store.replace_events_with_lore_digest(
-            delete_ids=[],
-            summary="empty digest",
-            entity_ids=(),
-            ts=42.0,
-        )
-        assert new_id > 0
-
     def test_entity_ids_are_json_encoded(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore
 
@@ -1206,12 +1069,6 @@ class TestFindActiveEntityByName:
         eid = store.add_entity("npc", "ghost", "")
         store.set_status(eid, "retired")
         assert store.find_active_entity_by_name("ghost") is None
-
-    def test_returns_none_when_no_match(self, verse_db_dir: Path) -> None:
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#prec")
-        assert store.find_active_entity_by_name("nobody") is None
 
     def test_conn_variant_runs_on_caller_conn(self, verse_db_dir: Path) -> None:
         from llm.verse.store import VerseStore

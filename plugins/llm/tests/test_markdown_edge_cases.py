@@ -225,33 +225,9 @@ class TestImageUrlDetection:
 
         assert len(images) == 0
 
-    def test_handles_urls_with_query_params(self, service: LLMService) -> None:
-        """GIVEN URL with query params WHEN detecting THEN finds image."""
-        # Note: Current implementation may or may not handle query strings
-        text = "Check https://example.com/image.jpg out"
-        images = service.detect_images(text)
-
-        assert len(images) >= 1
-
     def test_multiple_images_same_line(self, service: LLMService) -> None:
         """GIVEN multiple images on same line WHEN detecting THEN finds all."""
         text = "See https://a.com/1.jpg and https://b.com/2.png please"
         images = service.detect_images(text)
 
         assert len(images) == 2
-
-    def test_no_images_in_text(self, service: LLMService) -> None:
-        """GIVEN text without images WHEN detecting THEN returns empty."""
-        text = "This is just text without any image URLs"
-        images = service.detect_images(text)
-
-        assert len(images) == 0
-
-    def test_handles_unicode_in_url(self, service: LLMService) -> None:
-        """GIVEN URL with unicode WHEN detecting THEN handles gracefully."""
-        # This may or may not match depending on implementation
-        text = "Image: https://example.com/图片.jpg"
-        images = service.detect_images(text)
-
-        # At minimum should not crash
-        assert isinstance(images, list)

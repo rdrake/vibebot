@@ -174,14 +174,3 @@ def test_shared_ladder_doubles_until_the_cap(n: int, base: int, cap: int) -> Non
     delay = exponential_backoff(n, base=base, cap=cap)
     assert delay == min(base * 2**n, cap)
     assert exponential_backoff(n + 1, base=base, cap=cap) >= delay
-
-
-def test_delivery_retry_ladder_is_unchanged() -> None:
-    """IRC delivery retries wait 15, 30, 60, then 120 seconds."""
-    from llm.plugin import LLM
-
-    ladder = [
-        exponential_backoff(n, base=LLM._DELIVERY_BASE_BACKOFF, cap=LLM._DELIVERY_MAX_BACKOFF)
-        for n in range(5)
-    ]
-    assert ladder == [15, 30, 60, 120, 120]

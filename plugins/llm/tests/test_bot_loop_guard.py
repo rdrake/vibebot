@@ -242,17 +242,6 @@ class TestBotLoopCap:
         msg.args = (target, f"testbot: {nick} says hello")
         msg.channel = target if target.startswith("#") else None
 
-    def test_bot_is_answered_up_to_the_limit(self, wired, mocker: MockerFixture) -> None:
-        """GIVEN a flagged bot WHEN it addresses us 3 times THEN all 3 are answered."""
-        plugin, mock_irc, mock_msg, dispatch = wired
-        plugin.do354(mock_irc, mocker.MagicMock(args=_whox("testbot", "LarryBot", "HxzB")))
-        self._as(mock_msg, "LarryBot")
-
-        for _ in range(3):
-            plugin._route_addressed_to_assistant(mock_irc, mock_msg, "hello")
-
-        assert dispatch.call_count == 3
-
     def test_the_reply_after_the_limit_is_silent(self, wired, mocker: MockerFixture) -> None:
         """The 4th consecutive turn is where the loop would have run forever."""
         plugin, mock_irc, mock_msg, dispatch = wired

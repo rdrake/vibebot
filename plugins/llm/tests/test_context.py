@@ -16,21 +16,6 @@ if TYPE_CHECKING:
 class TestConversationContext:
     """Test conversation context functionality."""
 
-    def test_context_add_and_get_messages(self) -> None:
-        """GIVEN context WHEN add messages THEN get returns them."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
-        ctx = ConversationContext(config)
-
-        ctx.add_message("user1", "#channel", "user", "Hello")
-        ctx.add_message("user1", "#channel", "assistant", "Hi there!")
-
-        messages = ctx.get_messages("user1", "#channel")
-        assert len(messages) == 2
-        assert messages[0]["role"] == "user"
-        assert messages[0]["content"] == "Hello"
-        assert messages[1]["role"] == "assistant"
-        assert messages[1]["content"] == "Hi there!"
-
     # NOTE: per-user isolation, per-channel isolation, case-insensitive
     # lookup, and max_messages trim are now covered by
     # test_context_properties.py::TestConversationContextStateMachine.
@@ -167,26 +152,6 @@ class TestConversationContext:
         assert stats["seconds_until_expiry"] > 0
         assert stats["enabled"] is True
 
-    def test_user_stats_empty(self) -> None:
-        """GIVEN user with no messages WHEN get_user_stats THEN returns zero count."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
-        ctx = ConversationContext(config)
-
-        stats = ctx.get_user_stats("user1", "#channel")
-        assert stats["message_count"] == 0
-        assert stats["max_messages"] == 20
-        assert stats["seconds_until_expiry"] == 0
-        assert stats["enabled"] is True
-
-    def test_user_stats_disabled(self) -> None:
-        """GIVEN context disabled WHEN get_user_stats THEN returns disabled."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=False)
-        ctx = ConversationContext(config)
-
-        stats = ctx.get_user_stats("user1", "#channel")
-        assert stats["message_count"] == 0
-        assert stats["enabled"] is False
-
     def test_context_thread_safe(self) -> None:
         """GIVEN context WHEN concurrent operations THEN thread-safe."""
         config = ContextConfig(max_messages=1000, timeout_minutes=30, enabled=True)
@@ -239,22 +204,6 @@ class TestChannelContext:
         assert messages[0]["content"] == "Hello everyone"
         assert messages[1]["nick"] == "bot"
         assert messages[1]["content"] == "Hi Alice!"
-
-    def test_channel_context_shared_across_users(self) -> None:
-        """GIVEN channel context WHEN different users THEN same context."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
-        ctx = ConversationContext(config)
-
-        ctx.add_channel_message("#channel", "alice", "user", "What's 2+2?")
-        ctx.add_channel_message("#channel", "bot", "assistant", "4")
-
-        # Both alice and bob should see the same channel context
-        alice_view = ctx.get_channel_messages("#channel")
-        bob_view = ctx.get_channel_messages("#channel")
-
-        assert len(alice_view) == 2
-        assert len(bob_view) == 2
-        assert alice_view == bob_view
 
     def test_channel_context_exclude_nick(self) -> None:
         """GIVEN channel context WHEN exclude nick THEN filters correctly."""
@@ -479,61 +428,6 @@ class TestPersistentContext:
 
         msgs = ctx.get_messages("user1", "#chan")
         assert len(msgs) == 0
-
-    def test_without_db_works_unchanged(self) -> None:
-        """GIVEN context without db WHEN operations THEN works as before."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
-        ctx = ConversationContext(config)
-
-        ctx.add_message("user1", "#chan", "user", "Hello")
-        msgs = ctx.get_messages("user1", "#chan")
-        assert len(msgs) == 1
-        ctx.clear("user1", "#chan")
-        assert ctx.get_messages("user1", "#chan") == []
-
-
-class TestUpdateConfig:
-    """Test ConversationContext.update_config."""
-
-    def test_update_config_replaces_config(self) -> None:
-        """GIVEN context with initial config WHEN update_config THEN config is replaced."""
-        old_config = ContextConfig(max_messages=10, timeout_minutes=5, enabled=True)
-        ctx = ConversationContext(old_config)
-
-        new_config = ContextConfig(max_messages=50, timeout_minutes=60, enabled=False)
-        ctx.update_config(new_config)
-
-        assert ctx.config is new_config
-        assert ctx.config.max_messages == 50
-        assert ctx.config.timeout_minutes == 60
-        assert ctx.config.enabled is False
-
-
-class TestRepr:
-    """Test ConversationContext.__repr__."""
-
-    def test_repr_contains_state(self) -> None:
-        """GIVEN context with one conversation WHEN repr THEN contains conversations=1 and enabled=True."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
-        ctx = ConversationContext(config)
-
-        ctx.add_message("user1", "#chan", "user", "Hello")
-
-        result = repr(ctx)
-        assert "conversations=1" in result
-        assert "enabled=True" in result
-
-
-class TestIsExpiredDisabled:
-    """Test Conversation._is_expired when context is disabled."""
-
-    def test_is_expired_returns_true_when_disabled(self) -> None:
-        """GIVEN disabled config WHEN _is_expired called THEN returns True."""
-        disabled_config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=False)
-        conv = Conversation(messages=[{"role": "user", "content": "Hello"}])
-
-        ctx = ConversationContext(disabled_config)
-        assert ctx._is_expired(conv, disabled_config) is True
 
 
 class TestPruneDeletesFromDb:

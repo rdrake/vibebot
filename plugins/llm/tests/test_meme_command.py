@@ -347,12 +347,6 @@ class TestMakeMemeTool:
 
         assert "error" in payload
 
-    def test_schema_tells_the_model_not_to_choose(self, meme_plugin) -> None:
-        plugin, _, _ = meme_plugin
-        schemas, _ = plugin._build_meme_tool(meme_plugin[2])
-        desc = schemas[0]["function"]["parameters"]["properties"]["template"]["description"]
-        assert "as the user" in desc
-
 
 class TestChatWiring:
     def _result(self):

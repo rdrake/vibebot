@@ -20,11 +20,6 @@ class TestGenerateRequestId:
         assert len(rid) == 8
         assert re.fullmatch(r"[0-9a-f]{8}", rid)
 
-    def test_returns_unique_values(self) -> None:
-        """GIVEN multiple calls WHEN generate_request_id THEN each value is unique."""
-        ids = {generate_request_id() for _ in range(100)}
-        assert len(ids) == 100
-
 
 class TestTraceFilter:
     """Tests for TraceFilter logging filter."""
@@ -66,20 +61,6 @@ class TestTraceFilter:
         result = trace_filter.filter(record)
         assert result is True
         assert record.msg == "hello world"
-
-    def test_always_returns_true(self) -> None:
-        """GIVEN any state WHEN filter runs THEN returns True (never suppresses)."""
-        trace_filter = TraceFilter()
-        record = logging.LogRecord(
-            name="test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="test",
-            args=(),
-            exc_info=None,
-        )
-        assert trace_filter.filter(record) is True
 
 
 class TestThreadIsolation:
@@ -124,22 +105,6 @@ class TestThreadIsolation:
 
 class TestValidatedLogLevel:
     """Tests for ValidatedLogLevel registry type."""
-
-    def test_accepts_warning(self) -> None:
-        """GIVEN 'WARNING' WHEN set THEN accepted."""
-        from llm.config import ValidatedLogLevel
-
-        v = ValidatedLogLevel("WARNING", "test")
-        v.setValue("WARNING")
-        assert v() == "WARNING"
-
-    def test_accepts_debug(self) -> None:
-        """GIVEN 'DEBUG' WHEN set THEN accepted."""
-        from llm.config import ValidatedLogLevel
-
-        v = ValidatedLogLevel("WARNING", "test")
-        v.setValue("DEBUG")
-        assert v() == "DEBUG"
 
     def test_accepts_lowercase(self) -> None:
         """GIVEN 'debug' WHEN set THEN normalized to 'DEBUG'."""

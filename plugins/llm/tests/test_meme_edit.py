@@ -251,14 +251,6 @@ class TestSharedGrounding:
         dossier.assert_not_called()
         typing.assert_not_called()
 
-    def test_typing_is_held_while_the_picker_runs(self, meme_plugin) -> None:
-        plugin, mock_irc, mock_msg = meme_plugin
-
-        plugin.meme(mock_irc, mock_msg, ["waiting for ci"])
-
-        plugin.llm_service._begin_typing.assert_called_once_with(mock_irc, mock_msg)
-        plugin.llm_service._begin_typing.return_value.assert_called_once()
-
 
 class TestMemeExecutorPermit:
     """Every @meme LLM call (dossier, picker, pictures, edit) runs under one

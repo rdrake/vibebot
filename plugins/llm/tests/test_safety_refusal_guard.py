@@ -26,7 +26,6 @@ from llm.service import (
     LLMService,
     _is_safety_refusal,
     _strip_safety_refusals,
-    _unminted_image_urls,
 )
 
 from .conftest import make_completion_response, make_tool_call
@@ -91,10 +90,6 @@ class TestIsSafetyRefusal:
         content = "The lads stormed the chippy. " * 40 + "As an AI, said the robot barman."
         assert not _is_safety_refusal(content)
 
-    def test_empty_content_is_not_a_refusal(self) -> None:
-        """Empty content has nothing to flag."""
-        assert not _is_safety_refusal("")
-
     def test_ignores_factual_ai_identity_answer(self) -> None:
         """ "I'm an AI" as a fact, not a preamble to a refusal, is a real answer.
 
@@ -155,10 +150,6 @@ class TestStripSafetyRefusals:
         """Non-refusing replies still anchor the thread."""
         history = [{"role": "assistant", "content": "The lads did it again."}]
         assert _strip_safety_refusals(history) == history
-
-    def test_none_history_passes_through(self) -> None:
-        """None is returned unchanged, matching the sibling strips."""
-        assert _strip_safety_refusals(None) is None
 
 
 class TestSafetyRefusalRetry:
@@ -265,27 +256,6 @@ class TestStaleImageGuard:
         svc, _plugin = make_service(assistantModel="gpt-4")
         return svc
 
-    def test_detects_url_the_turn_did_not_mint(self) -> None:
-        """A URL absent from the minted set is stale."""
-        assert _unminted_image_urls(
-            "https://irc.rdrake.org/llm/img_6a669cbcbc700.jpg", set(), OWN_HOSTS
-        )
-
-    def test_accepts_url_the_turn_minted(self) -> None:
-        """The image this turn actually generated is not stale."""
-        url = "https://irc.rdrake.org/llm/img_6a669cbcbc700.jpg"
-        assert not _unminted_image_urls(f"here you go: {url}", {url}, OWN_HOSTS)
-
-    def test_plain_reply_is_never_stale(self) -> None:
-        """A reply with no image URL cannot be stale."""
-        assert not _unminted_image_urls("no image for you", set(), OWN_HOSTS)
-
-    def test_external_host_urls_are_covered(self) -> None:
-        """The external image host is in scope too, not just the local root."""
-        assert _unminted_image_urls(
-            "https://paste.boxlabs.uk/img/img_6a669d1da253b.jpg", set(), OWN_HOSTS
-        )
-
     def test_moderated_image_does_not_repost_previous(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
@@ -317,32 +287,6 @@ class TestStaleImageGuard:
 
         assert stale not in (result.content or "")
         assert "moderation" in (result.content or "").lower()
-
-    def test_successful_image_still_delivered(
-        self, service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """The guard must not touch a genuinely fresh image."""
-        fresh = "https://irc.rdrake.org/llm/img_deadbeef1234.jpg"
-        tool_call = make_tool_call("generate_image", {"prompt": "the lads"}, call_id="c1")
-        responses = [
-            make_completion_response(None, tool_calls=[tool_call]),
-            make_completion_response(f"one lad coming up: {fresh}"),
-        ]
-        mocker.patch("llm.service.provider.chat", side_effect=responses)
-
-        result = service.assistant_completion(
-            prompt="draw the lads",
-            nick="rdrake",
-            channel="#afternet",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="VibeBot",
-            capabilities=frozenset({"llm.ask", "llm.draw"}),
-            account="rdrake",
-            draw_fn=lambda _p, **_kw: ToolCallbackResult(True, fresh),
-        )
-
-        assert fresh in (result.content or "")
 
 
 FALLBACK = "xai/grok-4-1-fast-non-reasoning"

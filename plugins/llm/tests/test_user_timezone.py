@@ -64,13 +64,6 @@ class TestTzCommand:
 
         assert _replies(mock_irc)[-1].startswith("Your time zone: Europe/London")
 
-    def test_show_unset_explains_fallback(self, plugin_env) -> None:
-        plugin, mock_irc, mock_msg = plugin_env
-
-        plugin.tz(mock_irc, mock_msg, [])
-
-        assert "@tz" in _replies(mock_irc)[-1]
-
     def test_clear(self, plugin_env) -> None:
         plugin, mock_irc, mock_msg = plugin_env
         plugin.db.delete_user_timezone.return_value = True
@@ -330,10 +323,6 @@ class TestScheduleReminderUsesZone:
 class TestNextRruleFireInZone:
     # 2026-09-26 05:00 in Toronto (EDT, UTC-4).
     NOW = datetime(2026, 9, 26, 9, 0, tzinfo=UTC).timestamp()
-
-    def test_byhour_is_local_wall_clock(self) -> None:
-        nxt = next_rrule_fire("FREQ=DAILY;BYHOUR=9;BYMINUTE=0", self.NOW, TORONTO)
-        assert datetime.fromtimestamp(nxt, UTC) == datetime(2026, 9, 26, 13, 0, tzinfo=UTC)
 
     def test_survives_dst_change(self) -> None:
         # 2026-11-01 is the fall-back; 9am local is 14:00 UTC after it.

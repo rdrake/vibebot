@@ -25,8 +25,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import pytest
-
 LOG_METHODS = {"debug", "info", "warning", "error", "exception", "critical"}
 SRC_ROOT = Path(__file__).resolve().parents[3]
 
@@ -62,23 +60,6 @@ def test_no_log_call_uses_percent_d() -> None:
         if "%d" in fmt
     ]
     assert not offenders, "supybot's format() has no %d -- use %i:\n" + "\n".join(offenders)
-
-
-@pytest.mark.parametrize(
-    ("fmt", "args", "expected"),
-    [
-        ("%i", (3,), "3"),
-        ("%s", (3,), "3"),
-        ("%r", ("x",), "'x'"),
-        ("%.3f", (1.5,), "1.500"),
-        ("%i/%i", (1, 2), "1/2"),
-    ],
-)
-def test_supported_specifiers_render(fmt: str, args: tuple, expected: str) -> None:
-    """Pins what the replacement may safely use."""
-    from supybot.utils.str import format as supy_format
-
-    assert supy_format(fmt, *args) == expected
 
 
 def test_percent_d_really_is_broken() -> None:

@@ -8,7 +8,7 @@ import time
 from concurrent.futures import wait
 
 import pytest
-from llm.executor import LLMExecutor, RecursiveSubmitError
+from llm.executor import LLMExecutor
 
 
 def test_cap_honored_under_burst() -> None:
@@ -68,23 +68,6 @@ def test_safe_queue_serializes_under_load(plugin_env, mocker) -> None:
     for t in threads:
         t.join()
     assert target.queueMsg.call_count == 50
-
-
-def test_recursive_submit_from_worker_raises() -> None:
-    ex = LLMExecutor(max_concurrency=2, log=logging.getLogger("test"))
-    try:
-        captured: list[Exception] = []
-
-        def inner() -> None:
-            try:
-                ex.submit("inner", lambda: None)
-            except RecursiveSubmitError as e:
-                captured.append(e)
-
-        ex.submit("outer", inner).result(timeout=2)
-        assert captured
-    finally:
-        ex.shutdown()
 
 
 def test_reload_drops_post_completion_writes(plugin_env, mocker) -> None:

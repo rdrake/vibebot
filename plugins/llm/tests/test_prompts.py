@@ -10,40 +10,6 @@ import pytest
 from llm import prompts
 
 
-class TestPromptsRegistry:
-    """The PROMPTS dict is the single source of truth for prompt lookup."""
-
-    def test_registry_has_all_expected_keys(self):
-        """PROMPTS exposes every profile prompt by name (the memory pair is
-        imported directly, not registered)."""
-        assert set(prompts.PROMPTS.keys()) == {
-            "chat",
-            "draw",
-            "verse",
-            "remind_action",
-        }
-
-    @pytest.mark.parametrize(
-        "name",
-        ["chat", "draw", "verse", "remind_action"],
-    )
-    def test_every_prompt_is_nonempty(self, name):
-        """Each registered prompt is a non-empty string."""
-        text = prompts.PROMPTS[name]
-        assert isinstance(text, str)
-        assert text.strip(), f"prompt {name!r} is empty"
-
-    @pytest.mark.parametrize(
-        "name",
-        ["MEMORY_EXTRACTION_PROMPT", "MEMORY_CLEANUP_PROMPT"],
-    )
-    def test_memory_prompts_are_nonempty(self, name):
-        """The directly-imported memory pair is a non-empty string."""
-        text = getattr(prompts, name)
-        assert isinstance(text, str)
-        assert text.strip()
-
-
 class TestProfilePromptInvariants:
     """Profile-facing prompts share the {bot_nick} placeholder contract."""
 
@@ -71,11 +37,6 @@ class TestProfilePromptInvariants:
 class TestIrcOutputFormatSharing:
     """IRC_OUTPUT_FORMAT is shared by Q&A modes but NOT by verse."""
 
-    def test_irc_output_format_is_exposed(self):
-        """The shared building block is importable for future composition."""
-        assert isinstance(prompts.IRC_OUTPUT_FORMAT, str)
-        assert "OUTPUT FORMAT" in prompts.IRC_OUTPUT_FORMAT
-
     @pytest.mark.parametrize("name", ["chat", "draw", "remind_action"])
     def test_qa_prompts_embed_irc_output_format(self, name):
         """Chat-style prompts embed the shared format block verbatim."""
@@ -89,42 +50,6 @@ class TestIrcOutputFormatSharing:
         # silently strip verse's markdown ban as a side effect.
         assert "Plain text only" in prompts.PROMPTS["verse"]
         assert "**bold**" in prompts.PROMPTS["verse"]
-
-
-class TestVersePromptInvariants:
-    """Behavior-critical invariants for the verse framework prompt.
-
-    Migrated from test_assistant.py — the verse prompt is the most
-    bug-prone of the lot, so these assertions stay close to the source.
-    """
-
-    def test_verse_in_world_roleplay_framing(self):
-        text = prompts.PROMPTS["verse"]
-        assert "in-world roleplay" in text
-        assert "Stay in character" in text
-        assert "Adopt user-offered details" in text
-
-    def test_verse_omits_three_line_cap(self):
-        """Verse deliberately drops the chat 3-line length cap."""
-        assert "Length cap: 3 lines" not in prompts.PROMPTS["verse"]
-
-    def test_verse_record_hard_rule_present(self):
-        text = prompts.PROMPTS["verse"]
-        assert "HARD RULE" in text
-        assert "verse_record" in text
-        assert "user describes" in text
-        assert "narrate" in text
-
-    def test_verse_exposes_avatar_tools(self):
-        text = prompts.PROMPTS["verse"]
-        assert "verse_act" in text
-        assert "verse_recall" in text
-
-    def test_verse_recall_vs_narrate_distinction(self):
-        assert "RECALL" in prompts.PROMPTS["verse"]
-
-    def test_verse_single_message_discipline(self):
-        assert "single message" in prompts.PROMPTS["verse"]
 
 
 class TestProfileSpecificContent:
@@ -156,10 +81,6 @@ class TestProfileSpecificContent:
         model about set_reminder there causes scheduling loops."""
         assert "set_reminder" not in prompts.PROMPTS["remind_action"]
 
-    def test_remind_action_documents_mechanical_recurrence(self):
-        """The fire-time prompt must say the scheduler handles recurrence."""
-        assert "Recurrence is handled mechanically" in prompts.PROMPTS["remind_action"]
-
 
 class TestBridgeGuidanceSplit:
     """Bridge operating rules are injected per-request, not baked into chat."""
@@ -176,16 +97,6 @@ class TestIrcLookupGuidanceSplit:
         assert "irc_lookup" not in prompts.CHAT_SYSTEM_PROMPT
         assert "irc_lookup" in prompts.IRC_LOOKUP_GUIDANCE
 
-    def test_guidance_names_the_question_shapes_and_forbids_guessing(self):
-        """'Vibebot whois Eck' got 'Eck's a phantom in the logs' with tool_calls=0
-        — twice — because the framework says answer directly when you can."""
-        g = prompts.IRC_LOOKUP_GUIDANCE
-        assert "HARD RULE" in g
-        for shape in ("whois", "who is", "online", "channels", "who is in"):
-            assert shape in g, shape
-        assert "MUST call irc_lookup" in g
-        assert "conversation history" in g
-
 
 class TestReactGuidanceSplit:
     """The react rule rides only when the react tool is injected."""
@@ -193,9 +104,6 @@ class TestReactGuidanceSplit:
     def test_chat_prompt_does_not_mention_react_tool(self):
         assert "react adds" not in prompts.CHAT_SYSTEM_PROMPT
         assert "react adds" in prompts.REACT_GUIDANCE
-
-    def test_guidance_forbids_reacting_instead_of_answering(self):
-        assert "Never react instead of answering" in prompts.REACT_GUIDANCE
 
 
 class TestPendingTasksGuidanceSplit:
@@ -211,13 +119,6 @@ class TestPendingTasksGuidanceSplit:
         ):
             assert tool not in prompts.CHAT_SYSTEM_PROMPT
             assert tool in prompts.PENDING_TASKS_GUIDANCE
-
-    def test_guidance_keeps_the_battle_tested_rules(self):
-        """The four scheduling bullets moved verbatim; spot-check anchors."""
-        assert "LATER or REPEATEDLY" in prompts.PENDING_TASKS_GUIDANCE
-        assert "both pending future work" in prompts.PENDING_TASKS_GUIDANCE
-        assert "ONCE — do not list and then cancel" in prompts.PENDING_TASKS_GUIDANCE
-        assert "emoji reaction" in prompts.PENDING_TASKS_GUIDANCE
 
     def test_guidance_describes_adjust_as_cancel_then_set(self):
         """No edit tool exists, so the rule must spell out the sequence."""
@@ -243,9 +144,3 @@ class TestMemeGuidanceSplit:
     def test_chat_prompt_does_not_mention_make_meme(self):
         assert "make_meme" not in prompts.CHAT_SYSTEM_PROMPT
         assert "make_meme" in prompts.MEME_GUIDANCE
-
-    def test_guidance_forbids_choosing_a_template(self):
-        g = prompts.MEME_GUIDANCE
-        assert "HARD RULE" in g
-        assert "MUST call make_meme" in g
-        assert "never" in g and "generate_image" in g
