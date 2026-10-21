@@ -166,24 +166,22 @@ def _run_dispatch_threads_inline(mocker: MockerFixture) -> None:
     mocker.patch("llm.plugin.world.SupyThread", _InlineThread)
 
 
-# Daemon threads that only ``LLM.die()`` stops: the animate render refresher
-# started from ``LLM.__init__`` and the shared ``TypingHolds`` keepalive that
-# ``LLMService`` starts lazily on the first hold.
-PLUGIN_LIFECYCLE_THREADS = ("animate-typing-refresher", "typing-keepalive")
+# Daemon threads that only ``LLM.die()`` stops: the shared ``TypingHolds``
+# keepalive that ``LLMService`` starts lazily on the first hold.
+PLUGIN_LIFECYCLE_THREADS = ("typing-keepalive",)
 
 
 @contextlib.contextmanager
 def reaping_undead_plugins() -> Generator[None]:
     """``die()`` every ``LLM`` built inside the block that nobody else died.
 
-    ``LLM.__init__`` starts the ``animate-typing-refresher`` daemon thread, and
     ``LLMService`` owns a ``TypingHolds`` registry whose ``typing-keepalive``
-    thread starts on the first hold. Only ``die()`` stops either. The
+    thread starts on the first hold. Only ``die()`` stops it. The
     ``plugin_env`` fixture does that in its ``finally``, but ~150 tests build a
     plugin some other way — a bare ``LLM(mock_irc)`` in the test body, or a
     module-local fixture — and simply drop it. Each abandoned plugin parked a
     thread, plus the plugin object and its whole mock graph, for the rest of
-    the session: a full run used to end with 131 live refresher threads.
+    the session: a full run used to end with 131 live keepalive threads.
     Nothing in production leaks this way (Limnoria always calls ``die()``), so
     the fix belongs here rather than in ``plugin.py``.
 
@@ -580,27 +578,19 @@ def plugin_env(mocker: MockerFixture, tmp_path: Path):
 
     # sanitize_output is a passthrough in tests (the mock would return MagicMock).
     plugin.llm_service.sanitize_output.side_effect = lambda x: x
-    # Draw and video are available unless a test says otherwise.
+    # Draw is available unless a test says otherwise.
     plugin.llm_service.draw_unavailable_reason.return_value = None
-    plugin.llm_service.video_available.return_value = True
 
-    # An unconfigured mock database is an EMPTY database, not one holding a
-    # MagicMock's worth of queued clips. The animate admission caps compare
-    # these against an int, so the bare mock's auto-attribute would raise
-    # TypeError in every test that submits a clip without caring about caps.
-    plugin.db.count_pending_animate.return_value = 0
     # No @tz set, and no CTCP TIME probe: a real one would wait on a client
     # that is not there. Probe tests call LLM._probe_ctcp_tz directly.
     plugin.db.get_user_timezone.return_value = None
     plugin.db.get_clock_offset.return_value = None
     plugin._probe_ctcp_tz = mocker.MagicMock(return_value=None)
-    plugin.db.count_pending_animate_for.return_value = 0
     # Reminder rows live in real SQLite: the row is the only cancel truth.
     back_reminders_with_sqlite(plugin.db, tmp_path / "reminders.db")
 
-    # The typing registry is real even though the service is mocked: the
-    # render refresher's whole job is to reconcile a hold group, and a mock
-    # would assert only that a call happened. Sends still land on the mocked
+    # The typing registry is real even though the service is mocked, so
+    # refcounting is exercised rather than asserted as a call. Sends still land on the mocked
     # send_typing_indicator, so tests keep asserting on it. The long interval
     # keeps the keepalive out of the assertions; plugin.die() stops the
     # thread in this fixture's teardown.
@@ -642,7 +632,6 @@ def plugin_env(mocker: MockerFixture, tmp_path: Path):
         fetch_fn=None,
         code_fn=None,
         draw_fn=None,
-        animate_fn=None,
         cleanup_fn=None,
         set_reminder_fn=None,
         list_pending_tasks_fn=None,
@@ -755,27 +744,10 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "drawTimeout": 60,
         "drawAutoRewriteMax": 2,
         "drawContextMaxAgeSeconds": 60,
-        # Animate command. animateApiUrl is empty by default so the feature is
-        # OFF unless a test opts in — the same posture as production before an
-        # operator points it at a box.
-        "animateApiUrl": "",
-        "animateModel": "",
-        "animateSize": "1280x704",
-        "animateDuration": 4,
-        "animateSteps": 25,
-        "animateAudio": True,
-        "animateFlowShift": 12,
-        "animateAudioFlowShift": 3,
-        "animateTimeout": 60,
-        # Admission caps and the wait estimate (mirrors config.py defaults).
-        "animateMaxPendingPerUser": 2,
-        "animateMaxPending": 6,
-        "animateRenderSeconds": 135,
         # Expiry (pending task retry)
         "askExpiry": 60,
         "codeExpiry": 60,
         "drawExpiry": 60,
-        "animateExpiry": 1800,
         # Memory extraction
         "memoryEnabled": True,
         "memoryMaxPerUser": 50,
@@ -815,14 +787,6 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "drawTrustedRateLimitWindow": 60,
         "drawUnregRateLimitCount": 0,
         "drawUnregRateLimitWindow": 60,
-        # animate (mirrors config.py: stricter than draw on every tier, since a
-        # clip is ~70s of exclusive GPU time and the box serialises)
-        "animateRateLimitCount": 2,
-        "animateRateLimitWindow": 900,
-        "animateTrustedRateLimitCount": 4,
-        "animateTrustedRateLimitWindow": 300,
-        "animateUnregRateLimitCount": 1,
-        "animateUnregRateLimitWindow": 7200,
         # meme (mirrors config.py)
         "memeRateLimitCount": 6,
         "memeRateLimitWindow": 60,
@@ -847,10 +811,10 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "storyUnregRateLimitWindow": 60,
         # Search/fetch tools
         "searchModel": "",
-        # Subject research (the @draw / @animate dossier pre-stage). OFF here,
-        # unlike config.py's default of True: it puts a second LLM call in
-        # front of both planners, and every existing draw and animate test
-        # asserts on the one call the command used to make. Tests that want it
+        # Subject research (the @draw dossier pre-stage). OFF here, unlike
+        # config.py's default of True: it puts a second LLM call in front of
+        # the planner, and every existing draw test asserts on the one call
+        # the command used to make. Tests that want it
         # opt in with make_registry_side_effect({"subjectResearchEnabled": True}).
         "subjectResearchEnabled": False,
         "subjectResearchModel": "",
@@ -882,7 +846,6 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "statusQueryablePages": [],
         # Feature switches default on, matching config.py.
         "drawEnabled": True,
-        "animateEnabled": True,
     }
     if overrides:
         defaults.update(overrides)

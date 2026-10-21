@@ -139,33 +139,13 @@ class TestKeepalive:
         assert rec.states("afternet", "#chan").count("active") >= 2
 
 
-class TestGroups:
-    def test_set_group_acquires_new_and_releases_missing(self, holds, rec) -> None:
-        a, b = _irc(), _irc()
-        holds.set_group("render", {("afternet", "#a"): a, ("afternet", "#b"): b})
-        assert rec.states("afternet", "#a") == ["active"]
-        assert rec.states("afternet", "#b") == ["active"]
-        holds.set_group("render", {("afternet", "#b"): b})
-        assert rec.states("afternet", "#a") == ["active", "done"]
-        assert rec.states("afternet", "#b") == ["active"]
-        holds.set_group("render", {})
-        assert rec.states("afternet", "#b") == ["active", "done"]
-
-    def test_group_and_direct_hold_share_one_indicator(self, holds, rec) -> None:
-        release = holds.hold(_irc(), "#chan")
-        holds.set_group("render", {("afternet", "#chan"): _irc()})
-        release()
-        assert rec.states("afternet", "#chan") == ["active"], "render still holds it"
-        holds.set_group("render", {})
-        assert rec.states("afternet", "#chan") == ["active", "done"]
-
+class TestThreadStartFailure:
     def test_a_thread_that_will_not_start_does_not_strand_the_refcount(self, rec) -> None:
         """GIVEN the keepalive thread fails to start WHEN acquiring THEN the count unwinds.
 
-        ``can't start new thread`` under load used to leave the refcount at
-        one with no thread and no group recorded, so every later pass
-        re-acquired and the last release never fired — that target then
-        swallowed every ``done`` for the life of the process.
+        A refcount left at one with no thread means the last release never
+        fires, and that target swallows every ``done`` for the life of the
+        process.
 
         A long interval, so the only ``active`` here is the one the acquire
         sends: a keepalive landing mid-test would make the count meaningless.
@@ -184,34 +164,20 @@ class TestGroups:
             with pytest.MonkeyPatch.context() as mp:
                 mp.setattr(threading.Thread, "start", flaky_start)
                 with pytest.raises(RuntimeError, match="can't start new thread"):
-                    h.set_group("render", {("afternet", "#chan"): _irc()})
+                    h.hold(_irc(), "#chan")
 
             assert not h.holds("afternet", "#chan")
             assert rec.states("afternet", "#chan") == []
 
-            h.set_group("render", {("afternet", "#chan"): _irc()})
+            release = h.hold(_irc(), "#chan")
 
             assert h.holds("afternet", "#chan")
             assert rec.states("afternet", "#chan") == ["active"]
 
-            h.set_group("render", {})
+            release()
             assert rec.states("afternet", "#chan") == ["active", "done"]
         finally:
             h.stop()
-
-    def test_set_group_refreshes_the_irc_used_for_keepalive(self, holds, rec) -> None:
-        stale = SimpleNamespace(network="afternet", tag="stale")
-        fresh = SimpleNamespace(network="afternet", tag="fresh")
-        seen: list[str] = []
-        holds._send = lambda irc, target, state: (
-            seen.append(getattr(irc, "tag", "?")),
-            rec(irc, target, state),
-        )
-        holds.set_group("render", {("afternet", "#chan"): stale})
-        holds.set_group("render", {("afternet", "#chan"): fresh})
-        time.sleep(0.15)
-        holds.set_group("render", {})
-        assert "fresh" in seen[1:], "keepalives after the second pass use the fresh Irc"
 
 
 class TestStop:

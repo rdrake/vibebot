@@ -22,14 +22,13 @@ class TestProfilesRegistry:
             "chat",
             "code",
             "draw",
-            "animate",
             "verse",
             "remind_action",
         }
 
     @pytest.mark.parametrize(
         "pid",
-        ["chat", "code", "draw", "animate", "verse", "remind_action"],
+        ["chat", "code", "draw", "verse", "remind_action"],
     )
     def test_id_matches_dict_key(self, pid):
         """Profile.id matches its dict key — no copy-paste mismatches."""
@@ -41,7 +40,7 @@ class TestProfileResolution:
 
     @pytest.mark.parametrize(
         "pid",
-        ["chat", "code", "draw", "animate", "verse", "remind_action"],
+        ["chat", "code", "draw", "verse", "remind_action"],
     )
     def test_prompt_id_is_a_real_prompt(self, pid):
         """profile.prompt_id is a valid key in prompts.PROMPTS."""
@@ -49,7 +48,7 @@ class TestProfileResolution:
 
     @pytest.mark.parametrize(
         "pid",
-        ["chat", "code", "draw", "animate", "verse", "remind_action"],
+        ["chat", "code", "draw", "verse", "remind_action"],
     )
     def test_model_setting_is_a_known_registry_key(self, pid):
         """profile.model_setting matches a registerChannelValue in config.py."""
@@ -58,7 +57,7 @@ class TestProfileResolution:
 
     @pytest.mark.parametrize(
         "pid",
-        ["chat", "code", "draw", "animate", "verse", "remind_action"],
+        ["chat", "code", "draw", "verse", "remind_action"],
     )
     def test_overlay_setting_is_known_or_none(self, pid):
         """profile.overlay_setting is None or a known overlay key."""
@@ -71,7 +70,7 @@ class TestProfileToolsAlignment:
 
     @pytest.mark.parametrize(
         "pid",
-        ["chat", "code", "draw", "animate", "verse", "remind_action"],
+        ["chat", "code", "draw", "verse", "remind_action"],
     )
     def test_get_tools_returns_nonempty(self, pid):
         """Every profile id resolves to at least one model-visible tool."""
@@ -92,12 +91,11 @@ class TestBehaviorPreservation:
         "chat": "chat",
         "code": "code",
         "draw": "draw",
-        "animate": "animate",
         "verse": "verse",
         "remind_action": "remind_action",
     }
-    # PROFILE_CODE / PROFILE_DRAW / PROFILE_ANIMATE: no channel-overridable
-    # overlay — the @code, @draw and @animate planners construct system_prompt
+    # PROFILE_CODE / PROFILE_DRAW: no channel-overridable
+    # overlay — the @code and @draw planners construct system_prompt
     # from user_instruction + the framework prompt directly, never reading a
     # registry key.
     # PROFILE_VERSE / PROFILE_CHAT / PROFILE_REMIND_ACTION: all read
@@ -106,7 +104,6 @@ class TestBehaviorPreservation:
         "chat": "assistantSystemPrompt",
         "code": None,
         "draw": None,
-        "animate": None,
         "verse": "assistantSystemPrompt",
         "remind_action": "assistantSystemPrompt",
     }
@@ -114,40 +111,40 @@ class TestBehaviorPreservation:
     # assistantModel. codeModel belongs to the inner _code_for_assistant
     # one-shot, not the @code planner. verseModel is a caller-side override
     # passed via model_override= rather than read by assistant_completion.
-    _PROFILE_IDS = ("chat", "code", "draw", "animate", "verse", "remind_action")
+    _PROFILE_IDS = ("chat", "code", "draw", "verse", "remind_action")
     EXPECTED_MODEL = dict.fromkeys(_PROFILE_IDS, "assistantModel")
 
     @pytest.mark.parametrize(
         "pid",
-        ["chat", "code", "draw", "animate", "verse", "remind_action"],
+        ["chat", "code", "draw", "verse", "remind_action"],
     )
     def test_max_output_tokens(self, pid):
         assert profile.PROFILES[pid].max_output_tokens == self.EXPECTED_MAX_TOKENS.get(pid)
 
     @pytest.mark.parametrize(
         "pid",
-        ["chat", "code", "draw", "animate", "verse", "remind_action"],
+        ["chat", "code", "draw", "verse", "remind_action"],
     )
     def test_force_search(self, pid):
         assert profile.PROFILES[pid].force_search_on_explicit == (pid in self.EXPECTED_FORCE_SEARCH)
 
     @pytest.mark.parametrize(
         "pid",
-        ["chat", "code", "draw", "animate", "verse", "remind_action"],
+        ["chat", "code", "draw", "verse", "remind_action"],
     )
     def test_prompt_id(self, pid):
         assert profile.PROFILES[pid].prompt_id == self.EXPECTED_PROMPT_IDS[pid]
 
     @pytest.mark.parametrize(
         "pid",
-        ["chat", "code", "draw", "animate", "verse", "remind_action"],
+        ["chat", "code", "draw", "verse", "remind_action"],
     )
     def test_overlay_setting_value(self, pid):
         assert profile.PROFILES[pid].overlay_setting == self.EXPECTED_OVERLAY[pid]
 
     @pytest.mark.parametrize(
         "pid",
-        ["chat", "code", "draw", "animate", "verse", "remind_action"],
+        ["chat", "code", "draw", "verse", "remind_action"],
     )
     def test_model_setting_value(self, pid):
         assert profile.PROFILES[pid].model_setting == self.EXPECTED_MODEL[pid]

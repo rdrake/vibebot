@@ -598,12 +598,8 @@ class LLMDatabase:
             conn.commit()
 
         if current_version < 18:
-            # What the user typed and what was rendered are two different
-            # strings on the @animate route: a planner turn rewrites the ask
-            # into a script before the video box ever sees it. The only other
-            # copy lives in pending_tasks.request_data, which is deleted the
-            # moment the clip is delivered — so without this column the
-            # rendered wording is unrecoverable minutes after the render.
+            # What a generator was asked for, beside what the user typed.
+            # Nothing writes it; every insert stores ''.
             self._add_column_if_missing(
                 conn, "usage", "rendered_prompt", "rendered_prompt TEXT NOT NULL DEFAULT ''"
             )
@@ -611,8 +607,8 @@ class LLMDatabase:
 
         if current_version < 19:
             # msgid of the message that set the reminder, so the fire can be
-            # threaded under it with +draft/reply the way draw and animate
-            # deliveries are. Old rows get "" and fall back to the labelled
+            # threaded under it with +draft/reply the way draw deliveries
+            # are. Old rows get "" and fall back to the labelled
             # "Reminder (...)" text — a fire that cannot be threaded still has
             # to say what it is answering.
             self._add_column_if_missing(
@@ -1624,101 +1620,6 @@ class LLMDatabase:
             ).fetchall()
         return [PendingTaskRow(*row) for row in rows]
 
-    def active_animate_targets(self, now: float, max_age_seconds: float) -> list[str]:
-        """Reply targets with a video still rendering.
-
-        The typing refresher's whole state, read fresh each pass instead of
-        tracked in memory: a row is ``pending`` while the box renders and
-        ``ready`` once the clip is in hand, so this is exactly "clips still
-        rendering". Deriving it means nothing has to be released, which is
-        what makes at-least-once delivery and ``delivery_failed`` harmless
-        here.
-
-        Read-only on purpose. ``claim_due_pending_tasks`` accepts a
-        ``delivery_state`` filter and looks like the right tool, but it opens
-        BEGIN IMMEDIATE and leases the rows it returns — calling it from a
-        four-second loop would steal work from the pending-task poller.
-
-        Args:
-            now: Current epoch seconds.
-            max_age_seconds: Ignore rows submitted longer ago than this. A job
-                can stay pending for ``animateExpiry`` (1800s by default);
-                typing should give up long before that.
-
-        Returns:
-            Distinct reply targets, sorted by target name.
-        """
-        conn = self._connect()
-        rows = conn.execute(
-            "SELECT DISTINCT reply_target FROM pending_tasks "
-            "WHERE task_type = 'animate' AND delivery_state = 'pending' "
-            "AND submitted_at > ? AND reply_target <> '' "
-            "ORDER BY reply_target",
-            (now - max_age_seconds,),
-        ).fetchall()
-        return [str(row[0]) for row in rows]
-
-    _PENDING_ANIMATE_WHERE = (
-        "task_type = 'animate' AND delivery_state = 'pending' AND expires_at > ?"
-    )
-
-    def count_pending_animate(self, now: float) -> int:
-        """Clips submitted and not yet rendered — the box's queue depth.
-
-        Same predicate as ``active_animate_targets`` minus its age window:
-        ``pending`` means the box has not handed the clip back yet, and an
-        expired row is about to be reported as such, not rendered.
-
-        Read-only for the same reason ``active_animate_targets`` is:
-        ``claim_due_pending_tasks`` leases the rows it returns, so counting
-        with it would steal work from the pending-task poller.
-
-        Args:
-            now: Current epoch seconds; rows expiring before it don't count.
-
-        Returns:
-            Number of clips still waiting on the box.
-        """
-        conn = self._connect()
-        row = conn.execute(
-            f"SELECT COUNT(*) FROM pending_tasks WHERE {self._PENDING_ANIMATE_WHERE}",
-            (now,),
-        ).fetchone()
-        return int(row[0]) if row else 0
-
-    def count_pending_animate_for(self, now: float, *, account: str | None, nick: str) -> int:
-        """One user's share of ``count_pending_animate``.
-
-        Identity policy matches the rest of the plugin: by account when the
-        caller has one, by nick otherwise, both case-insensitive. Rows stashed
-        under an account are deliberately invisible to a nick-only lookup —
-        someone who signs out mid-queue gets a fresh allowance rather than
-        another user's rows counted against them.
-
-        Args:
-            now: Current epoch seconds; rows expiring before it don't count.
-            account: Resolved account name, or None if unidentified.
-            nick: IRC nick, used only when there is no account.
-
-        Returns:
-            Number of that user's clips still waiting on the box.
-        """
-        conn = self._connect()
-        if account:
-            sql = (
-                f"SELECT COUNT(*) FROM pending_tasks WHERE {self._PENDING_ANIMATE_WHERE} "
-                "AND account IS NOT NULL AND lower(account) = lower(?)"
-            )
-            params: tuple = (now, account)
-        else:
-            sql = (
-                f"SELECT COUNT(*) FROM pending_tasks WHERE {self._PENDING_ANIMATE_WHERE} "
-                "AND (account IS NULL OR account = '') AND lower(nick) = lower(?)"
-            )
-            params = (now, nick)
-        row = conn.execute(sql, params).fetchone()
-        return int(row[0]) if row else 0
-
     # ------------------------------------------------------------------
     # Usage operations
     # ------------------------------------------------------------------
@@ -1735,7 +1636,6 @@ class LLMDatabase:
         prompt: str = "",
         status: str = "success",
         error_detail: str = "",
-        rendered_prompt: str = "",
     ) -> None:
         """Log a usage event.
 
@@ -1754,16 +1654,13 @@ class LLMDatabase:
                 Audit-only: no usage query filters on it, so every row's
                 spend counts toward the totals whatever its status.
             error_detail: Additional error context when status is not success.
-            rendered_prompt: What the generator was actually asked for, when a
-                planner rewrote the user's words on the way there (@animate).
-                Empty on every path that sends the prompt through unchanged.
         """
         with self._write_txn() as conn:
             conn.execute(
                 "INSERT INTO usage "
                 "(timestamp, nick, channel, command, model, prompt_tokens, "
                 "completion_tokens, cost, prompt, status, error_detail, rendered_prompt) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')",
                 (
                     time.time(),
                     nick,
@@ -1776,7 +1673,6 @@ class LLMDatabase:
                     prompt,
                     status,
                     error_detail,
-                    rendered_prompt,
                 ),
             )
 

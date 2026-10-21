@@ -31,7 +31,7 @@ plugins:
   - llmstxt:
       markdown_description: >-
         VibeBot is a Limnoria IRC bot whose LLM plugin answers chat, draws,
-        animates, searches, schedules reminders and runs a shared-fiction
+        searches, schedules reminders and runs a shared-fiction
         "verse". These pages cover running and configuring it.
       full_output: llms-full.txt
       sections:

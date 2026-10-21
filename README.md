@@ -10,7 +10,6 @@ The full guide lives at **[rdrake.github.io/vibebot-v8](https://rdrake.github.io
 - **Assistant with tools**: `@ask` answers with conversation context, vision for image URLs, web search, and a bounded tool loop
 - **Code generation**: `@code` writes code and posts it as an HTTP link
 - **Image generation**: `@draw` renders images with xAI grok-imagine (`xai/grok-imagine-image` by default, on `XAI_API_KEY`) or Google Imagen; Vertex AI Imagen works too, but needs `VERTEXAI_PROJECT` and `VERTEXAI_LOCATION`
-- **Video generation**: `@animate` renders short clips on a self-hosted video box, reports your place in the queue, and posts the link when the clip lands; `@renders` shows or clears the queue
 - **Illustrated pages**: `@story` builds an illustrated story or explainer and posts the link
 - **Two memory layers**: volatile conversation context that expires on its own, plus durable per-user facts — picked up automatically once they recur, or saved at once when you say "remember this"
 - **Reminders and scheduled tasks**: `@remind` parses natural language and handles recurrence; letting the model create them from `@ask` is opt-in per channel via `pendingTasksEnabled`

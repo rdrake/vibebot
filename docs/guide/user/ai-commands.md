@@ -156,69 +156,6 @@ The same thing works in conversation: "vibebot make a drake meme: left on unread
 
 ---
 
-## `animate`
-
-Generate a short video from a text description. Also available as `@video`.
-
-**Usage:** `@animate <prompt>`
-
-```
-@animate A slow aerial shot over a pine forest at sunrise, mist in the valleys
-@animate A neon sign flickering on a rainy street at night
-```
-
-`@animate` needs an authenticated account. The bot asks you to log in first if you aren't.
-
-Rendering takes a minute or two — about 135 seconds for the default seven-second clip — and the box renders one clip at a time, so requests queue behind each other. The bot tells you where yours sits in the line and roughly how long the wait is, then posts the link as a reply to your original request when the clip is ready, so your client threads it back to what you asked for and there's no need to wait around. The estimate assumes every clip ahead of yours takes the full render time. Clips have sound by default.
-
-**Making someone speak.** The video model writes the soundtrack from the prompt alone, so words only get spoken if you ask for them. Put them in quotes:
-
-```
-@animate a grizzled farmer on a porch shouts "get off my lawn!"
-```
-
-Those words go through to the video model verbatim. Keep a spoken line to about a dozen words — a longer one runs past the end of the clip and is cut off mid-word. A character you give no words to stays silent on purpose: speech the model has to invent comes out as babble rather than English.
-
-While the clip renders the bot shows as typing continuously, not just for the first few seconds, so a working render still looks different from a failed one without another line appearing in the channel. Typing stops after six minutes even if the render is still going; the clip still arrives once it's ready. The delivered link also carries your nick and the prompt you gave it — `alice: your video is ready! "a corgi riding a unicorn" → https://…mp4` — so it's clear which request it answers even in clients that don't show reply threads.
-
-Because each clip occupies the video hardware exclusively while it renders, `@animate` carries the tightest rate limit of any command, and the queue itself is capped: each person may have two clips waiting at once and the whole queue holds six, so a request past either limit is turned away rather than queued. Both limits are operator-configurable. Use [`@renders`](#renders) to see the queue or take your clip back out of it. If the bot is restarted mid-render it picks the job back up afterwards; a clip is only lost if the video server itself restarts.
-
-`@animate` writes the video model's prompt from your request, the same way `@draw` does for pictures, and it writes a lot of it: this model follows detail, so a two-word ask renders generic while a shot description renders what you asked for. Your line becomes a paragraph covering the subject, what it does beat by beat, the camera, the setting and the light — the shot you asked for, spelled out, not a different one. The video model has never heard of your cast, so a name on its own would render as words on screen: the bot keeps the name you wrote and adds a description of what that subject looks like beside it. Where that description comes from depends on who you named: a character the channel invented is described from canon in a verse-enabled channel, and a real person, place or event is looked up before the clip is planned, so naming either one gets you the actual subject rather than a stand-in. Canon wins where the two overlap. Everything else you named — the people, the objects, the costumes — goes through as you wrote it, and the shot you asked for, the action, the camera move and the mood, is left alone.
-
-**Animating a picture.** Put an image URL anywhere in the line and that picture becomes the clip's first frame:
-
-```
-@animate https://example.com/cat.png the cat turns its head and yawns
-```
-
-There's no flag to remember — a link ending in `.png`, `.jpg`, `.webp`, `.gif` or `.bmp` is taken as the reference, and the rest of the line is the prompt. It works in conversation too, so `vibebot animate <url> make it dance` does the same thing.
-
-With a picture attached the bot still writes the video model's prompt, and it can see your picture while it does: it describes what's actually in frame and turns your words into the motion. So describe what should *happen* rather than what's in the shot — the picture already settled that. A URL on its own still works; you get gentle ambient movement. Clips built this way always carry sound, and quoted words are spoken here too.
-
-The image has to be a public link the bot can fetch, under 10 MB. The bot downloads it, decodes it and re-encodes it before anything is sent to the video box, so files that are not really images are refused rather than forwarded; very large pictures are scaled down to 1920 px on the long edge. If the link can't be used the bot says so instead of quietly rendering without it.
-
-You can also just ask for a video in conversation — the bot has a tool for it and will queue one the same way.
-
----
-
-## `renders`
-
-Shows the video render queue and lets you take a clip back out of it.
-
-**Usage:** `@renders [cancel <id> | clear]`
-
-```
-@renders
-@renders cancel 421
-@renders clear
-```
-
-`@renders` on its own lists every clip waiting to render, oldest first, with its id, who asked for it, how long ago and its place in the line, all on one line; a queue too long for one line ends with `+N more`. When nothing is waiting it says so. `@renders cancel <id>` drops one of your own clips; admins can drop anyone's. `@renders clear` empties the queue and is admin-only. Cancelling asks the video server to stop the job as well; if the server declines, the clip still finishes on the box but is never posted.
-
-`@renders` needs the same capability as `@animate`, so anyone who can queue a clip can see the queue.
-
----
-
 ## `story`
 
 Generate an illustrated page from a short brief and post a link when it's ready. The bot picks one of two modes from your brief:
@@ -314,7 +251,7 @@ Secret and private channels come back empty, exactly as they would for `/names`.
 
 ## Rate limits
 
-Each command family carries its own rate limit. Your tier is unregistered or registered depending on whether you are authenticated, or trusted if your operator has granted you the `trusted` capability. Media commands have the tightest limits: `@draw` and `@story` for images, and `@animate` tighter still, since a clip holds the video hardware for over a minute. If you reach a limit, the bot tells you; wait and retry. Admins and owners are exempt.
+Each command family carries its own rate limit. Your tier is unregistered or registered depending on whether you are authenticated, or trusted if your operator has granted you the `trusted` capability. Media commands have the tightest limits: `@draw` and `@story` for images. If you reach a limit, the bot tells you; wait and retry. Admins and owners are exempt.
 
 ---
 

@@ -1,6 +1,6 @@
-"""The subject-research pre-stage in front of the @draw and @animate planners.
+"""The subject-research pre-stage in front of the @draw planner.
 
-An image or video generator knows nothing by name. The planners are already
+An image generator knows nothing by name. The planner is already
 told to keep the user's word and put a description beside it, but for a real
 person or a real event nothing supplies the description — the verse canon block
 covers what the channel invented, not what the world already contains. This

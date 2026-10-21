@@ -49,9 +49,8 @@ from .assistant import PENDING_TASK_TOOLS
 from .context import ContextConfig, ConversationContext, Role
 from .executor import LLMExecutor, RecursiveSubmitError
 from .identity import UNAUTHENTICATED_KEY_PREFIX, Caller, Identity
-from .persistence import LLMDatabase, PendingTaskRow, ReminderRow, ScheduledLlmTaskRow
+from .persistence import LLMDatabase, ReminderRow, ScheduledLlmTaskRow
 from .profile import (
-    PROFILE_ANIMATE,
     PROFILE_CHAT,
     PROFILE_CODE,
     PROFILE_DRAW,
@@ -65,12 +64,9 @@ from .service import (
     AssistantResult,
     ImageResult,
     LLMService,
-    ReferenceImage,
-    VideoResult,
     account_from_server_tags,
     exponential_backoff,
     irc_has_caps,
-    split_reference_url,
     truncate_to_byte_budget,
     truncate_to_word_boundary,
     validate_external_url,
@@ -129,11 +125,6 @@ _MEMORY_COMMANDS = frozenset({"ask", "code"})
 # row: `WHERE command = 'draw:image'` is the image bill.
 _IMAGE_USAGE_COMMAND = "draw:image"
 
-# What a reference image gets animated with when the line carried nothing but
-# the URL. "@animate <url>" is a request people make, and the server requires a
-# prompt, so this is the do-something-gentle default rather than an error.
-_ANIMATE_DEFAULT_MOTION = "the scene comes to life with subtle natural motion"
-
 # C0 control characters except TAB (\x09), LF (\x0a), CR (\x0d).
 # Includes ESC (\x1b) which starts ANSI sequences like \x1b[6n whose
 # brackets crash Limnoria's nested-command tokenizer.
@@ -159,7 +150,6 @@ _STATUS_PAGE_NAME_RE = re.compile(r"\A[A-Za-z0-9._-]{1,32}\Z")
 _REQUEST_CONTEXT_CAPABILITIES = frozenset(
     {
         "llm.ask",
-        "llm.animate",
         "llm.code",
         "llm.draw",
         "llm.verse",
@@ -361,12 +351,6 @@ class CommandInfo:
     description: str
     examples: tuple[str, ...]
     category: str  # "generation", "memory", "utility"
-    # Alternate names bound to the same method (``video = animate``). Limnoria
-    # sees these as commands in their own right, so they are recorded here to
-    # keep the "every command is in the registry" check honest — but they get
-    # no help entry of their own, because a second copy of the same text is
-    # noise rather than documentation.
-    aliases: tuple[str, ...] = ()
 
 
 COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
@@ -420,31 +404,6 @@ COMMAND_REGISTRY: tuple[CommandInfo, ...] = (
             "@meme distracted boyfriend | me | a new side project | my actual job",
             "@meme list cat",
         ),
-        category="generation",
-    ),
-    CommandInfo(
-        name="animate",
-        args="<prompt>",
-        description=(
-            "Generate a short video from a text description. Rendering takes a "
-            "minute or two; the link is posted here when it's ready, so there's "
-            "no need to wait around for it. Also available as @video."
-        ),
-        examples=(
-            "@animate A slow aerial shot over a pine forest at sunrise",
-            "@animate A neon sign flickering on a rainy street at night",
-        ),
-        category="generation",
-        aliases=("video",),
-    ),
-    CommandInfo(
-        name="renders",
-        args="[cancel <id> | clear]",
-        description=(
-            "Show the video render queue. 'cancel <id>' drops one of your queued "
-            "clips; 'clear' empties the queue (admin only)."
-        ),
-        examples=("@renders", "@renders cancel 421", "@renders clear"),
         category="generation",
     ),
     CommandInfo(
@@ -1043,30 +1002,6 @@ class LLM(callbacks.Plugin):
         # Serializes worker-thread irc.queueMsg calls (see _safe_queue).
         self._irc_send_lock = threading.Lock()
 
-        # Consecutive database read failures. Touched only by the refresher
-        # thread, so it rides outside the lock.
-        self._render_typing_read_failures = 0
-
-        # The refresher blocks on _render_typing_wake instead of querying the
-        # database every four seconds forever; a submission sets it. Set once
-        # here so a restart mid-render picks the job back up from the
-        # database on the first pass.
-        self._render_typing_wake = threading.Event()
-        self._render_typing_wake.set()
-        self._render_typing_stop = threading.Event()
-
-        # Held from the admission count to the pending_tasks INSERT. The row
-        # that makes a clip count only exists after the POST to the box, so
-        # without it two requests inside that window both pass the caps. See
-        # docs/formal/AnimateAdmission.tla.
-        self._animate_admit_lock = threading.Lock()
-        self._render_typing_thread = threading.Thread(
-            target=self._render_typing_loop,
-            name="animate-typing-refresher",
-            daemon=True,
-        )
-        self._render_typing_thread.start()
-
         # Recency-attributed verse reaction signal (see verse/reactions.py).
         # Last verse line the bot said per (network, channel); read by doTagmsg.
         self._last_bot_line: dict[tuple[str, str], dict] = {}
@@ -1205,26 +1140,9 @@ class LLM(callbacks.Plugin):
             self._llm_executor.shutdown()
             self._llm_executor.drain(timeout=2.0)
 
-        # Stop the render-typing refresher. It cannot send +typing=done on the
-        # way out — _safe_queue drops sends once shutdown has begun — and it
-        # does not need to: clients expire the state after about six seconds.
-        if hasattr(self, "_render_typing_stop"):
-            self._render_typing_stop.set()
-            self._render_typing_wake.set()
-            self._render_typing_thread.join(timeout=2.0)
-            if self._render_typing_thread.is_alive():
-                # Mid-pass and blocked (usually on _irc_send_lock behind a
-                # slow driver). It survives the @reload and then meets the
-                # closed database below; _typing_refresh_pass gives up after
-                # _RENDER_TYPING_MAX_READ_FAILURES, but a zombie thread from a
-                # dead plugin instance should not be invisible.
-                self.log.warning(
-                    "render typing: refresher thread still alive after die(); "
-                    "it will park once its database reads fail"
-                )
-
-        # Stop the shared +typing keepalive thread. Same reasoning as the
-        # refresher: no done goes out, clients expire the state.
+        # Stop the shared +typing keepalive thread. It cannot send
+        # +typing=done on the way out — _safe_queue drops sends once shutdown
+        # has begun — and it does not need to: clients expire the state.
         if hasattr(self, "llm_service"):
             self.llm_service.typing.stop()
 
@@ -2707,28 +2625,6 @@ class LLM(callbacks.Plugin):
     _DELIVERY_MAX_BACKOFF = 120
     _DELIVERY_MAX_ATTEMPTS = 10
 
-    # Render-typing refresher. This paces the database passes that decide
-    # which targets the "render" hold group covers; the wire keepalive itself
-    # is TypingHolds' job. Four seconds keeps a newly submitted clip's
-    # indicator prompt without polling pending_tasks harder than that. The max
-    # age is a deliberate ceiling on how long the bot will appear to type — a
-    # job can stay pending for animateExpiry (1800s), and nobody should watch
-    # that.
-    _RENDER_TYPING_INTERVAL: float = 4.0
-    _RENDER_TYPING_MAX_AGE: float = 360.0
-    # Clips @renders spells out before it falls back to "+N more". The queue
-    # cap is six, so this only truncates when an operator has raised it.
-    _RENDERS_LIST_MAX: int = 6
-    # Bytes of listing text before the "+N more" tail. A PRIVMSG carries a
-    # ":nick!user@host PRIVMSG #channel :" prefix and the whole line has to
-    # fit 512, so the payload gets well under that rather than being split.
-    _RENDERS_LINE_BUDGET: int = 380
-    # Consecutive pending-task read failures the refresher tolerates before it
-    # drops its holds and parks. Three ticks (~12s) rides out a transient
-    # lock; a permanently closed database (a zombie refresher outliving its
-    # plugin) then stops rather than logging a traceback every four seconds.
-    _RENDER_TYPING_MAX_READ_FAILURES: int = 3
-
     def _deliver_pending_result(self, r) -> None:
         """Deliver a single pending task result to the correct target.
 
@@ -2777,14 +2673,6 @@ class LLM(callbacks.Plugin):
                     text = f"{nick}: {content}"
             elif r.task_type == "draw":
                 text = f'{nick}: your image is ready! "{prompt_preview}" \u2192 {content}'
-            elif r.task_type == "animate":
-                # Nick and prompt, matching draw and code. The +draft/reply
-                # tag below still threads this under the request — that is
-                # additive, not a substitute: a client that does not render
-                # replies would otherwise get a naked URL two minutes later
-                # attached to nothing. Reverses 84dbb67 deliberately; see
-                # docs/plans/2026-08-21-animate-ux.md.
-                text = self._format_animate_delivery(nick, prompt_preview, content, target)
             else:
                 # ask or fallback (incl. recovered verse, which is unbounded —
                 # verse timeouts recover under the "ask" task_type). Long content
@@ -3738,13 +3626,11 @@ class LLM(callbacks.Plugin):
         on AfterNET) and pastebin anything longer than one wire line.
 
         ``reply_msgid`` threads the fire under the message that set the
-        reminder via ``+draft/reply``, matching draw and animate delivery.
-        When that tag actually goes on the wire the ``Reminder (label):``
-        wrapper is dropped — the client already shows the request, so
-        restating it is noise. When the server never negotiated
-        ``message-tags`` the wrapper stays, because an unattached line has
-        to say what it is answering (same reasoning as the animate delivery
-        line, see docs/plans/2026-08-21-animate-ux.md).
+        reminder via ``+draft/reply``, matching draw delivery. When that tag
+        actually goes on the wire the ``Reminder (label):`` wrapper is
+        dropped — the client already shows the request, so restating it is
+        noise. When the server never negotiated ``message-tags`` the wrapper
+        stays, because an unattached line has to say what it is answering.
         """
         reply_to = reply_msgid if reply_msgid and irc_has_caps(irc, "message-tags") else None
         if not reply_to:
@@ -4569,56 +4455,6 @@ class LLM(callbacks.Plugin):
                 exc_info=True,
             )
             return conf.supybot.reply.mores.length() or 400
-
-    def _format_animate_delivery(self, nick: str, prompt: str, url: str, target: str) -> str:
-        """One wire-line clip delivery, with the URL budgeted first.
-
-        The link is the only part that must survive. ``prompt_preview`` is
-        capped at 100 *characters*, which can be several hundred bytes, and
-        the pending-delivery path does no length fitting — so a long prompt in
-        front of the URL would let Limnoria's wire-limit truncation eat the
-        link. Everything else gives way to it.
-
-        Formatting codes are stripped from the echoed prompt: ``sanitize_output``
-        deliberately keeps them, and a delivery line is not the place to let a
-        requester colour the bot's output.
-
-        Note for callers: the byte budget computed here assumes the returned
-        line reaches the wire unmodified. The pending-delivery path still runs
-        ``_collapse_for_irc`` on the result afterward — harmless today because
-        ``prompt`` is a 100-char slice of a single IRC line and can't carry a
-        real newline (``sanitize_output`` maps literal ``\\n`` to a space
-        upstream), but a future change to either end that lets a newline
-        through would silently inflate the line past this budget.
-        """
-        # Capped at 400 because supybot.reply.mores.length is not the wire
-        # limit: a bot.conf setting it to, say, 470 plus the 60-100 byte
-        # PRIVMSG prefix puts this line over 512 and the server truncates the
-        # URL — the one thing this formatter exists to protect. This path
-        # writes a raw _safe_privmsg, so nothing downstream re-fits it. The
-        # cap is local on purpose; _reply_mores_length's other callers hand
-        # their result to _finish_irc_line and want the configured value.
-        allowed = min(self._reply_mores_length(target), 400)
-
-        head = f"{nick}: your video is ready!"
-        tail = f" → {url}"
-        bare = f"{head}{tail}"
-
-        clean = ircutils.stripFormatting(prompt or "").strip()
-        if not clean:
-            return bare
-
-        # ' ""' is the quoting the prompt would add on top of the bare line.
-        budget = allowed - len(bare.encode("utf-8")) - 3
-        if budget <= 0:
-            return bare
-
-        clipped = truncate_to_word_boundary(clean, budget)
-        while clipped and len(clipped.encode("utf-8")) > budget:
-            clipped = clipped[:-1].rstrip()
-        if not clipped:
-            return bare
-        return f'{head} "{clipped}"{tail}'
 
     def _build_irc_lookup_tool(self, irc: callbacks.Irc, channel: str = ""):
         """Build the per-request ``irc_lookup`` tool schema + handler.
@@ -5902,8 +5738,8 @@ class LLM(callbacks.Plugin):
             # about what was set or when, and a follow-up that revises the
             # time ("wait no make it 30s") then has nothing in this user's
             # history to attach to and binds to whatever else in the channel
-            # mentioned a duration (observed 2026-09-03: it answered about a
-            # video render).
+            # mentioned a duration (observed 2026-09-03: it answered about
+            # another user's request).
             label = _REMINDER_MUTATION_CONTEXT_NOTES[result.last_successful_tool]
             detail = result.last_tool_message.strip()
             return (f"[{label}: {detail}]" if detail else f"[{label}]"), True
@@ -5983,7 +5819,6 @@ class LLM(callbacks.Plugin):
         text: str,
         response: str,
         suppress_reminder_mutations: bool = False,
-        rendered_prompt: str = "",
     ) -> None:
         """Send an assistant turn's reply, then book it.
 
@@ -6008,7 +5843,6 @@ class LLM(callbacks.Plugin):
                     response,
                     result,
                     irc,
-                    rendered_prompt=rendered_prompt,
                     delivered=False,
                 )
             except Exception:
@@ -6021,7 +5855,6 @@ class LLM(callbacks.Plugin):
             response,
             result,
             irc,
-            rendered_prompt=rendered_prompt,
             delivered=delivered,
         )
 
@@ -6762,258 +6595,6 @@ class LLM(callbacks.Plugin):
             reworded=result.rewritten_prompt is not None,
         )
 
-    def _render_typing_loop(self, max_cycles: int | None = None) -> None:
-        """Refresh typing while clips render; block when none are.
-
-        Two nested waits rather than a flat poll: the outer one parks the
-        thread on ``_render_typing_wake`` so an idle bot does no database work
-        at all, and the inner one paces the passes while something is
-        actually rendering. A pass that reports no rendering job drops back
-        to the outer wait.
-
-        The park decision comes from what the pass read out of the database,
-        never from the "render" group in ``llm_service.typing`` (the targets
-        that actually resolved to a connection). On the auto-deploy restart path the first pass runs
-        about a second in, before the bot has joined anything, so nothing
-        resolves and nothing is typed — but a clip really is rendering, and
-        parking there would leave it silent for its whole two minutes. Same
-        shape for a netsplit or a kick mid-render. The 360s ``max_age``
-        predicate caps how long an unresolvable row can keep the loop awake.
-
-        ``max_cycles`` bounds the outer loop for tests; production passes
-        None and runs until ``die()``.
-        """
-        cycles = 0
-        while not self._render_typing_stop.is_set():
-            if not self._render_typing_wake.wait(timeout=1.0):
-                continue
-            if self._render_typing_stop.is_set():
-                return
-            while not self._render_typing_stop.is_set():
-                # Cleared before the pass, not after: a submission's set()
-                # landing during the pass (the SELECT, or the done sends for
-                # stale targets) must survive so the next pass picks the row
-                # up. Clearing after the pass would erase that signal for a
-                # job the pass never saw, stalling its typing indicator until
-                # some unrelated later submission wakes the loop.
-                self._render_typing_wake.clear()
-                try:
-                    still_rendering = self._typing_refresh_pass()
-                except Exception:
-                    # _typing_refresh_pass swallows its own errors, so this is
-                    # belt-and-braces. Let go of the holds on the way out:
-                    # a stale set suppresses every ordinary reply's
-                    # +typing=done on those targets.
-                    self.log.exception("render typing: refresh pass failed")
-                    self.llm_service.typing.set_group("render", {})
-                    still_rendering = False
-                if not still_rendering:
-                    break
-                self._render_typing_stop.wait(timeout=self._RENDER_TYPING_INTERVAL)
-            cycles += 1
-            if max_cycles is not None and cycles >= max_cycles:
-                return
-
-    def _typing_refresh_pass(self) -> bool:
-        """Send one round of +typing for every clip still rendering.
-
-        The whole state comes from the database each pass (see
-        ``active_animate_targets``), so a restart, a reload, a redelivered
-        row, or a job that fails ten delivery attempts all resolve themselves
-        on the next tick rather than needing a code path each.
-
-        Resolves the connection per pass instead of capturing one: a zombie
-        Irc makes queueMsg return False rather than raise, so a captured
-        object would silently stop typing while looking fine. Mirrors the
-        delivery path's resolution (channel membership, else first
-        connection).
-
-        Never raises. This runs on a daemon thread whose death would be
-        invisible.
-
-        Returns whether the database says anything is still rendering — the
-        loop's park decision. A read that keeps failing (a zombie refresher
-        surviving ``die()``'s join, then meeting a closed database) gets
-        ``_RENDER_TYPING_MAX_READ_FAILURES`` retries and then reports False,
-        because the alternative is a traceback every four seconds forever
-        with the holds stranded on.
-        """
-        try:
-            targets = self.db.active_animate_targets(time.time(), self._RENDER_TYPING_MAX_AGE)
-        except Exception:
-            self._render_typing_read_failures += 1
-            failures = self._render_typing_read_failures
-            self.log.exception(f"render typing: pending-task read failed ({failures} in a row)")
-            if failures < self._RENDER_TYPING_MAX_READ_FAILURES:
-                # A blip: keep the holds and the loop, retry next tick.
-                return True
-            # Give up. The holds have to go with the loop — the 360s ceiling
-            # on how long the bot may appear to type lives only in the SQL we
-            # can no longer run, and a stranded hold silently eats the
-            # +typing=done of every ordinary reply on that target.
-            self.llm_service.typing.set_group("render", {})
-            return False
-        self._render_typing_read_failures = 0
-
-        wanted: dict[tuple[str, str], Any] = {}
-        for target in targets:
-            try:
-                is_channel = ircutils.isChannel(target)
-                for irc_conn in world.ircs:
-                    if is_channel and target not in irc_conn.state.channels:
-                        continue
-                    wanted[(irc_conn.network, target)] = irc_conn
-                    break
-            except Exception:
-                self.log.exception("render typing: active resolution failed")
-        try:
-            self.llm_service.typing.set_group("render", wanted)
-        except Exception:
-            self.log.exception("render typing: reconcile failed")
-
-        # What the database reported, not what resolved: a target the bot
-        # cannot reach yet is still a clip that is rendering.
-        return bool(targets)
-
-    def _animate_for_assistant(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        prompt: str,
-        *,
-        caller: Caller,
-        reference: ReferenceImage | None = None,
-    ) -> ToolCallbackResult:
-        """Queue a video for the generate_video tool.
-
-        Unlike ``_draw_for_assistant`` this returns before the media exists.
-        The submission is stashed against the requester's nick and channel so
-        the pending-task poller delivers the clip to the same place the
-        conversation happened, minutes after this turn has ended.
-
-        ``reference`` comes pre-fetched from the @animate command. On the chat
-        route there is nobody to pass it, so an image URL is looked for in the
-        user's own line here: "vibebot animate <url> ..." never reaches the
-        command, and a picture that only works with the @ prefix is a picture
-        that looks ignored.
-
-        No usage row is written here. The reason the image callback logs its
-        own is that image spend belongs to the image model; the video box
-        reports no tokens and no cost, so there is nothing to misattribute —
-        the @animate wrapper books the request and this path rides the turn's
-        row like every other leaf tool.
-        """
-        from .assistant import ToolCallbackResult as _ToolCallbackResult
-
-        result = self._submit_video(irc, msg, prompt, caller=caller, reference=reference)
-        return _ToolCallbackResult(not bool(result.error), result.content)
-
-    def _submit_video(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        prompt: str,
-        *,
-        caller: Caller,
-        reference: ReferenceImage | None = None,
-    ) -> VideoResult:
-        """Submit one clip and wake the render-typing refresher on success.
-
-        The single place a video job is booked, so the tool callback and the
-        reference command cannot drift apart on which of the reply target, the
-        msgid, the URL stripping or the wake flag they remember to do.
-
-        The clip goes to the caller's reply target, greeting their IRC nick:
-        an account is not what the channel calls someone and not what their
-        client highlights on, and in a PM ``msg.args[0]`` is the bot's own
-        nick. The account still travels as ``account``.
-        """
-        reply_target = caller.reply_target
-        display_nick = caller.identity.raw_nick
-        account = caller.identity.account
-        # Strip URLs from the prompt whether or not one becomes the reference:
-        # the video model renders stray text on screen, so a URL the planner
-        # copied through would end up in the picture.
-        _, prompt = split_reference_url(prompt)
-        if reference is None:
-            user_line = msg.args[1] if len(msg.args) > 1 else ""
-            url, _rest = split_reference_url(user_line)
-            if url:
-                reference = self.llm_service.fetch_reference_image(url)
-        if not prompt.strip():
-            prompt = _ANIMATE_DEFAULT_MOTION
-        with self._animate_admit_lock:
-            rejection = self._animate_admission(irc, msg, account=account, nick=display_nick)
-            if rejection:
-                self.log.info(
-                    "animate admission refused: nick=%s reason=%s", display_nick, rejection[:80]
-                )
-                return VideoResult(content=rejection, error=rejection)
-            result = self.llm_service.video_generation(
-                prompt,
-                nick=display_nick,
-                reply_target=reply_target,
-                is_channel=not caller.is_private,
-                channel=reply_target,
-                account=account,
-                reply_msgid=(getattr(msg, "server_tags", None) or {}).get("msgid") or "",
-                reference=reference,
-            )
-        if not result.error:
-            # A clip is on the box now, so the refresher has something to do.
-            # Only on success: a rejected submission means nothing is
-            # rendering and typing would be a lie.
-            self._render_typing_wake.set()
-        return result
-
-    def _animate_admission(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        *,
-        account: str | None,
-        nick: str,
-    ) -> str | None:
-        """Refuse a clip before it is submitted when the queue is too deep.
-
-        Returns a factual line for the model to relay, or None to admit.
-        The text is a tool result, not a reply: the model phrases it under
-        the channel's prompt and @instruct rules like every other answer.
-
-        Two caps. The per-user one stops one person stacking requests
-        seconds apart (owner and admin are exempt, like rate limits). The
-        global one bounds the longest wait anyone is promised, because the
-        box renders one clip at a time — and it applies to everyone.
-
-        Args:
-            irc: IRC connection, for the capability lookup behind the tier.
-            msg: Message being served, for the same lookup.
-            account: Resolved account name, or None if unidentified.
-            nick: IRC nick to count under and to name in the refusal.
-
-        Returns:
-            A refusal to hand back as the tool result, or None to proceed.
-        """
-        now = time.time()
-        per_user = int(self.registryValue("animateMaxPendingPerUser") or 0)
-        if per_user and self._resolve_tier(irc, msg) not in ("owner", "admin"):
-            mine = self.db.count_pending_animate_for(now, account=account, nick=nick)
-            if mine >= per_user:
-                return (
-                    f"Not queued: {nick} already has {mine} video(s) waiting to render "
-                    f"(limit {per_user} per person). Tell them to wait for one to finish "
-                    "before asking for another."
-                )
-        cap = int(self.registryValue("animateMaxPending") or 0)
-        if cap:
-            total = self.db.count_pending_animate(now)
-            if total >= cap:
-                return (
-                    f"Not queued: the render queue is full ({total} videos waiting, "
-                    f"limit {cap}). Tell them to try again in a few minutes."
-                )
-        return None
-
     def _log_image_usage(self, msg: IrcMsg, prompt: str, result: ImageResult) -> None:
         """Write one usage row per provider call, under the image model.
 
@@ -7744,13 +7325,12 @@ class LLM(callbacks.Plugin):
         response: str,
         result: AssistantResult,
         irc: callbacks.Irc,
-        rendered_prompt: str = "",
         *,
         delivered: bool = True,
     ) -> None:
         """Log API usage for a command, and store the turn if it was delivered.
 
-        Shared between all commands (ask, code, draw, animate).
+        Shared between all commands (ask, code, draw).
 
         The usage row is written whether or not anything reached IRC: the
         provider billed the turn either way, and a turn that spent and then
@@ -7770,10 +7350,6 @@ class LLM(callbacks.Plugin):
                 ``"[Generated image: <url>]"``)
             result: Result with usage metadata
             irc: IRC connection instance
-            rendered_prompt: What the generator was actually asked for, when a
-                planner rewrote ``text`` on the way there. @animate is the only
-                caller that passes it; every other command sends the user's
-                words through unchanged.
             delivered: Whether the reply reached IRC (the second value
                 ``_dispatch_assistant_reply`` returns).
         """
@@ -7806,7 +7382,6 @@ class LLM(callbacks.Plugin):
             prompt=text,
             status=status,
             error_detail=error_detail,
-            rendered_prompt=rendered_prompt,
         )
 
         # Schedule background memory extraction for eligible commands. Only for
@@ -8310,7 +7885,6 @@ class LLM(callbacks.Plugin):
                     fetch_fn=lambda u: self.llm_service.url_completion(u, channel=channel),
                     code_fn=lambda p: self._code_for_assistant(p, channel),
                     draw_fn=lambda p, **kw: self._draw_for_assistant(irc, msg, p, **kw),
-                    animate_fn=lambda p: self._animate_for_assistant(irc, msg, p, caller=caller),
                     cleanup_fn=lambda n: self._run_memory_cleanup(n, channel),
                     extra_tools=extra_tools,
                     extra_handlers=combined_handlers,
@@ -8476,8 +8050,8 @@ class LLM(callbacks.Plugin):
         # Typing fires immediately after preflight so users see "is composing"
         # before the subject-research call / history fetch / executor permit /
         # image generation latency stack up. The overlay assembly sits inside
-        # the try for that reason: unlike @animate, @draw has no render to hide
-        # a research round trip behind, so the indicator goes up first.
+        # the try for that reason: @draw has nothing to hide a research round
+        # trip behind, so the indicator goes up first.
         stop_typing = self.llm_service._begin_typing(irc, msg)
         try:
             # Verse grounding: if the prompt references canon, layer the
@@ -9329,9 +8903,9 @@ class LLM(callbacks.Plugin):
 
         # Typing goes up only for the picker path: a named template with
         # captions is a local render and nothing else. The grounding runs
-        # there too — the same canon block and subject dossier @draw and
-        # @animate feed their planners, so "@meme spirit costume of <real
-        # person>" carries what they look like into the edit.
+        # there too — the same canon block and subject dossier @draw feeds
+        # its planner, so "@meme spirit costume of <real person>" carries what
+        # they look like into the edit.
         picks = not self._meme_names(template_query, has_lines=any(x.strip() for x in lines))
         stop_typing = self.llm_service._begin_typing(irc, msg) if picks else None
         # One permit for the whole picker path: dossier, meme_pick, the slot
@@ -9384,320 +8958,6 @@ class LLM(callbacks.Plugin):
             "text",
         ],
     )
-
-    def animate(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        args: list,
-        text: str,
-    ) -> None:
-        """<prompt>
-
-        Generate a short video from a text description. The clip takes a
-        minute or two to render; the link is posted here when it is ready,
-        so there is no need to wait around for it.
-
-        Examples:
-          @animate A slow aerial shot over a pine forest at sunrise
-          @animate A neon sign flickering on a rainy street at night
-        """
-        # Skip ZNC playback messages
-        if self._is_old_message(msg):
-            return
-        if not self.llm_service.video_available(msg.channel):
-            irc.reply(
-                _("Video is turned off in this channel.")
-                if self.llm_service.animate_available()
-                else _("Error: video generation is not configured.")
-            )
-            return
-
-        pf = self._run_preflight(
-            irc,
-            msg,
-            text,
-            "animate",
-            require_account=True,
-        )
-        if pf.blocked:
-            return
-        caller = pf.caller
-        nick, channel = caller.identity.key, caller.reply_target
-
-        # Typing fires immediately after preflight, same as @draw: the planner
-        # turn in front of the submission is a completion like any other, and
-        # the submission itself no longer ends the command — the model's reply
-        # does. It covers the reference fetch too, which is a network round trip
-        # to somebody else's host and can take seconds on its own.
-        stop_typing = self.llm_service._begin_typing(irc, msg)
-        try:
-            # An image URL in the line is the clip's first frame. It does NOT
-            # skip the planner: H3 renders a two-word ask badly whether or not
-            # a picture is attached, so the rewrite is worth more here, not
-            # less. What the picture changes is the planner's job — the subject
-            # is settled, so the words become the motion — and that is what the
-            # reference overlay says. The planner is handed the picture too,
-            # since a script written blind can only guess at what it scripts.
-            resolved = self._animate_reference_for(irc, text)
-            if resolved is None:
-                return  # unusable image; the user has already been told why
-            text, reference = resolved
-
-            # Verse grounding: if the prompt references canon, layer the
-            # facts-only lore block onto the animate overlay so "@animate the
-            # stinky lads" renders the canon cast. It has to be layered
-            # somewhere a planner can read it, because the video box takes the
-            # prompt literally: names go to a model that has never heard of
-            # them. Empty when nothing is referenced and no picture is attached
-            # → the default animate prompt, unchanged.
-            from .prompts import ANIMATE_REFERENCE_OVERLAY
-
-            overlay_parts: list[str] = []
-            if reference is not None:
-                overlay_parts.append(ANIMATE_REFERENCE_OVERLAY)
-            verse_ctx = self._verse_context_for(pf, text)
-            if verse_ctx:
-                overlay_parts.append(
-                    self._verse_grounded_overlay(PROFILE_ANIMATE, channel, verse_ctx)
-                )
-            # Subject research: canon above covers what the channel invented,
-            # this covers what the world already contains. It goes second so
-            # canon is stated first, matching the block's own claim that canon
-            # wins where the two describe the same subject. The extra call
-            # costs a few seconds, which is nothing against a 135s render.
-            with self._allow_concurrent(), self._llm_executor.permit():
-                dossier_block = self._subject_dossier_for(nick, channel, text)
-            if dossier_block:
-                overlay_parts.append(dossier_block)
-            animate_system_prompt = "\n\n".join(overlay_parts) or None
-            reference_images = (
-                [url]
-                if reference is not None
-                and (url := self.llm_service.reference_vision_url(reference))
-                else None
-            )
-
-            request_context = self._build_request_context(
-                irc,
-                msg,
-                pf,
-                entry_route=PROFILE_ANIMATE,
-                profile=PROFILE_ANIMATE,
-            )
-
-            # What the planner actually sent the video box. The usage row below
-            # would otherwise record only the ask, and the ask is not what was
-            # rendered — the planner turn in front of the submission rewrites
-            # it into a script. The other copy (pending_tasks.request_data) is
-            # deleted the moment the clip is delivered.
-            rendered_prompts: list[str] = []
-
-            def _animate_tool(planned: str) -> ToolCallbackResult:
-                if planned.strip():
-                    rendered_prompts.append(planned.strip())
-                return self._animate_for_assistant(
-                    irc,
-                    msg,
-                    planned,
-                    caller=caller,
-                    reference=reference,
-                )
-
-            with self._trace_request("animate", nick, channel):
-                history, channel_history = self._gather_history(
-                    caller,
-                    max_age_seconds=self.registryValue("drawContextMaxAgeSeconds", channel),
-                )
-
-                with self._allow_concurrent(), self._llm_executor.permit():
-                    result = self.llm_service.assistant_completion(
-                        text,
-                        **request_context.completion_kwargs(),
-                        db=self.db,
-                        context=self.context,
-                        bot_nick=irc.nick,
-                        history=history,
-                        channel_history=channel_history,
-                        irc=irc,
-                        msg=msg,
-                        memories=[],
-                        images=reference_images,
-                        system_prompt=animate_system_prompt,
-                        animate_fn=_animate_tool,
-                        manage_typing=False,
-                        **self._pending_task_fns(caller=caller, irc=irc, msg=msg),
-                    )
-
-                    # One row per turn, booked at submission. The planner's
-                    # text is the only thing @animate spends: the video box is
-                    # self-hosted and reports no token accounting, so the poller
-                    # that delivers the clip minutes later has no usage of its
-                    # own to add.
-                    self._reply_and_book(
-                        irc,
-                        msg,
-                        result,
-                        caller=caller,
-                        command="animate",
-                        text=text,
-                        response=result.content,
-                        rendered_prompt=" | ".join(rendered_prompts),
-                    )
-        finally:
-            stop_typing()
-
-    animate = wrap(animate, [("checkCapability", "llm.animate"), "text"])
-
-    def _pending_animate_rows(self) -> list[PendingTaskRow]:
-        """Clips the box still owes us, oldest first.
-
-        Same predicate as ``db.count_pending_animate`` — pending, unexpired —
-        so what @renders shows and cancels is exactly what the admission caps
-        counted. Filtered in Python off ``load_pending_tasks`` rather than
-        claimed: ``claim_due_pending_tasks`` leases its rows and would steal
-        work from the delivery poller.
-
-        ``claimed_until`` is deliberately not filtered on. A leased row is
-        still a clip that has not arrived, so it is still worth listing and
-        still worth cancelling. The only bad interleaving is a delivery
-        landing in the same poller pass as the cancel, which is a sub-second
-        window and leaves no bad data behind — the clip posts, the row is
-        already gone, and nothing is delivered twice.
-        """
-        now = time.time()
-        return [
-            r
-            for r in self.db.load_pending_tasks("animate")
-            if r.delivery_state == "pending" and r.expires_at > now
-        ]
-
-    def _cancel_animate_row(self, row: PendingTaskRow) -> bool:
-        """Drop one queued clip: tell the box, then delete the delivery row.
-
-        The row goes whether or not the box agreed. A row left behind would
-        post a clip its owner already took back, which is the failure the
-        user actually notices; a job left running only costs GPU time.
-
-        Args:
-            row: The pending animate row to drop.
-
-        Returns:
-            True when the box accepted the cancel.
-        """
-        job_id = ""
-        try:
-            job_id = str(json.loads(row.request_data or "{}").get("job_id") or "")
-        except (ValueError, AttributeError, TypeError):
-            self.log.warning("renders: malformed request_data on row %s", row.id)
-
-        # A row with no job id has nothing to cancel on the box, so there is
-        # no refusal to report — only a row to delete.
-        accepted = (not job_id) or self.llm_service.cancel_video(job_id)
-        self._book_pending_usage(row.id, status="error", error_detail="cancelled")
-        self.db.delete_pending_task(row.id)
-        self._render_typing_wake.set()
-        return accepted
-
-    @staticmethod
-    def _ordinal(n: int) -> str:
-        """``1`` -> ``"1st"``. Used for a clip's place in the render queue."""
-        suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-        return f"{n}{suffix}"
-
-    def renders(
-        self,
-        irc: callbacks.Irc,
-        msg: IrcMsg,
-        args: list,
-        text: str | None,
-    ) -> None:
-        """[cancel <id> | clear]
-
-        Show the video render queue. 'cancel <id>' drops one of your queued
-        clips (admins can drop anyone's); 'clear' empties the queue (admin
-        only).
-
-        Examples:
-          @renders
-          @renders cancel 421
-          @renders clear
-        """
-        # Skip ZNC playback messages
-        if self._is_old_message(msg):
-            return
-
-        words = (text or "").split()
-        rows = self._pending_animate_rows()
-
-        if not words:
-            # The listing is the one reply in this feature printed verbatim
-            # rather than phrased by the model: it is a table of ids the user
-            # has to type back, and a paraphrase that renamed one would be
-            # worse than useless.
-            if not rows:
-                irc.reply(_("Nothing is rendering."))
-                return
-            now = time.time()
-            parts: list[str] = []
-            for i, r in enumerate(rows[: self._RENDERS_LIST_MAX], start=1):
-                age = self.llm_service._format_duration(int(now - r.submitted_at))
-                preview = r.prompt_preview[:30] + ("…" if len(r.prompt_preview) > 30 else "")
-                entry = f'#{r.id} {r.nick}, {age} ago, {self._ordinal(i)}: "{preview}"'
-                candidate = " | ".join([*parts, entry])
-                # Byte budget, not entry count: a 30-character AfterNET nick
-                # makes an entry half again as long as a short one, and the
-                # tail Limnoria parks behind @more is exactly the "+N more"
-                # count and the last ids someone wanted to read. The first
-                # entry goes in whatever it costs -- an empty listing would
-                # be worse than a long one.
-                #
-                # Rows left beyond this one mean a "+N more" tail is coming,
-                # so hold 12 bytes back for it -- ' | +999 more' is the worst
-                # case -- and the finished line stays inside the budget
-                # instead of overrunning it by the width of the tail.
-                budget = self._RENDERS_LINE_BUDGET - (12 if len(rows) > i else 0)
-                if parts and len(candidate.encode("utf-8")) > budget:
-                    break
-                parts.append(entry)
-            if len(rows) > len(parts):
-                parts.append(f"+{len(rows) - len(parts)} more")
-            irc.reply(" | ".join(parts))
-            return
-
-        is_admin = ircdb.checkCapability(msg.prefix, "admin")
-
-        if words[0].lower() == "clear" and len(words) == 1:
-            if not is_admin:
-                irc.reply(_("You need the 'admin' capability to clear the queue."))
-                return
-            for r in rows:
-                self._cancel_animate_row(r)
-            irc.reply(_("Cleared %d clip(s).") % len(rows))
-            return
-
-        # isdecimal, not isdigit: "²".isdigit() is True and int("²") raises,
-        # which would take the exception out of the command.
-        if words[0].lower() == "cancel" and len(words) == 2 and words[1].lstrip("#").isdecimal():
-            task_id = int(words[1].lstrip("#"))
-            row = next((r for r in rows if r.id == task_id), None)
-            if row is None:
-                irc.reply(_("No pending clip #%d.") % task_id)
-                return
-            identity = self._resolve_caller(irc, msg).identity
-            owns = identity.owns(Identity(raw_nick=row.nick, account=row.account))
-            if not is_admin and not owns:
-                irc.reply(_("#%d isn't yours.") % task_id)
-                return
-            if self._cancel_animate_row(row):
-                irc.reply(_("Cancelled #%d.") % task_id)
-            else:
-                irc.reply(_("Cancelled #%d (the box kept rendering it).") % task_id)
-            return
-
-        irc.error(_("Usage: @renders [cancel <id> | clear]"))
-
-    renders = wrap(renders, [("checkCapability", "llm.animate"), optional("text")])
 
     # ------------------------------------------------------------------
     # @channels / @names — live LIST / NAMES lookups
@@ -9789,35 +9049,6 @@ class LLM(callbacks.Plugin):
         self._safe_reply(irc, ircquery.format_names(target, result.nicks))
 
     names = wrap(names, [optional("something")])
-
-    def _animate_reference_for(
-        self, irc: callbacks.Irc, text: str
-    ) -> tuple[str, ReferenceImage | None] | None:
-        """Resolve an image URL in an @animate line into a fetched reference.
-
-        Returns ``(prompt_without_url, reference_or_None)``, or ``None`` when a
-        URL was there but could not be used — the user has been told why by
-        then. Failing the command is deliberate: rendering the words alone
-        would quietly drop the picture they chose, and a clip that answers half
-        the request is worse than a line saying what went wrong.
-        """
-        url, prompt = split_reference_url(text)
-        if not url:
-            return text, None
-        reference = self.llm_service.fetch_reference_image(url)
-        if reference is None:
-            self._safe_error(
-                irc,
-                _(
-                    "Could not use that image — it has to be a public "
-                    "PNG, JPEG, WebP or GIF link under 10 MB."
-                ),
-            )
-            return None
-        return prompt, reference
-
-    # Alias: @video works the same as @animate
-    video = animate
 
     def story(
         self,

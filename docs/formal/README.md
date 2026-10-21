@@ -9,8 +9,6 @@ and [elan](https://github.com/leanprover/elan) for Lean.
 |---|---|---|
 | `TypingHolds.tla` | `typing_holds.py` before the fix | `NoStuckActive` violated: the keepalive sends a snapshotted `active` after the last release's `done`, so the client shows typing after the reply |
 | `TypingHoldsSendLock.tla` | `typing_holds.py` as fixed | passes with 3 holders, including `WireMatches` (no send in flight ⇒ client state = refcount) and the liveness property `HeldHeals` |
-| `AnimateAdmission.tla` via `MCAdmissionFALSE` | `_animate_admission` → `video_generation` before the fix | `PerUserCapHolds` violated: both requests count before either row is inserted |
-| `MCAdmissionTRUE` | with `_animate_admit_lock` | passes |
 | `PendingTasks.tla` via `PTSingle` | pending-task poller, one instance | passes with 2 tasks (71,291 states) |
 | `PTZombie` | plus the poll `die()` leaves running across an `@reload` | `NoStaleWrite` violated: the old poll's late write overwrites the new instance's result |
 | `PTZombieFixed` | writes carry `lease=` (`AND claimed_until = ?`) | passes. A duplicate billed call is still possible: it is in flight before the lease expires |
