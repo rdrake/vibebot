@@ -3819,7 +3819,7 @@ class LLMService:
             user_content: The user message to send (query text or URL prompt).
             kind: ``"search"`` or ``"url"``, for log labels and the cache lane.
             channel: IRC channel name used to look up per-channel config.
-            log_label: Prefix for start/ok log lines (``"search_completion"``
+            log_label: Prefix for the failure log line (``"search_completion"``
                 or ``"url_completion"``).
             error_message: Human-readable error string placed in the returned
                 ``ToolResult`` when an exception is caught.
@@ -3836,8 +3836,19 @@ class LLMService:
         try:
             target = self._channel_target(channel)
             model = model or self.plugin.registryValue("searchModel", target)
-            self.log.info("%s start model=%s content_len=%i", log_label, model, len(user_content))
             t0 = time.monotonic()
+
+            def timing(**outcome: Any) -> None:
+                self._log_completion_timing(
+                    op=op,
+                    model=model,
+                    elapsed_ms=(time.monotonic() - t0) * 1000.0,
+                    n_messages=1,
+                    msg_chars=len(user_content),
+                    n_tools=1,
+                    **outcome,
+                )
+
             try:
                 reply = provider.search(
                     model,
@@ -3846,28 +3857,10 @@ class LLMService:
                     cache_key=self._xai_cache_key(model, channel, op),
                 )
             except Exception as exc:
-                self.log.warning(
-                    f"completion_timing op={op} model={model} msgs=1 "
-                    f"msg_chars={len(user_content)} tools=1 "
-                    f"elapsed_ms={(time.monotonic() - t0) * 1000.0:.0f} "
-                    f"result=error error_type={type(exc).__name__}"
-                )
+                timing(error=exc)
                 raise
+            timing(reply=reply)
             usage = reply.usage
-            self.log.warning(
-                f"completion_timing op={op} model={model} msgs=1 "
-                f"msg_chars={len(user_content)} tools=1 "
-                f"elapsed_ms={(time.monotonic() - t0) * 1000.0:.0f} "
-                f"prompt_tokens={usage.input_tokens} cached_tokens={usage.cached_tokens} "
-                f"completion_tokens={usage.output_tokens} tool_calls=0"
-            )
-            self.log.info(
-                "%s ok model=%s grounding_used=%s content_len=%i",
-                log_label,
-                model,
-                reply.grounded,
-                len(reply.text),
-            )
             return ToolResult(
                 content=reply.text,
                 grounding_used=reply.grounded,
@@ -4513,7 +4506,7 @@ Examples (echo → action_prompt: ""):
                 timeout=self.plugin.registryValue("timeout"),
             ).text
         except Exception as e:
-            self.log.info("Ask completion failed: %s", self._sanitize(str(e)))
+            self.log.warning("Ask completion failed: %s", self._sanitize(str(e)))
             return None
 
     def summarize_for_irc(
