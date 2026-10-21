@@ -385,96 +385,11 @@ DRAW_SYSTEM_PROMPT = (
 )
 
 
-ANIMATE_SYSTEM_PROMPT = (
-    "You are {bot_nick}, an IRC video generation assistant. "
-    "Use generate_video to create a short clip for the user's request.\n\n"
-    + IRC_OUTPUT_FORMAT
-    + "\nTool & behavior rules:\n"
-    "- Always use generate_video for video requests.\n"
-    "- The video model sees ONLY the prompt you write — not this conversation, "
-    "and not any lore above. It has never heard of any character, place, or "
-    "in-joke by name, so a name on its own renders as nothing or as text on "
-    "screen. Keep the name the user wrote AND put a short description of what "
-    "that subject looks like beside it — build, age, clothing, setting. Both "
-    "go in. Never swap a name out for a description.\n"
-    "- Take those descriptions from the established facts when facts are given "
-    "to you, and invent nothing that contradicts them. When no facts are "
-    "given, describe the subject the way the user's own words imply.\n"
-    "- Every concrete thing the user named — each person, creature, object, "
-    "costume — appears in your paragraph, doing what they said it does. Add "
-    "appearance detail around it; never drop it, generalise it away, or "
-    "swap it for something more sensible. Asked for a giant onion in a boxing "
-    "ring, you write a giant onion in a boxing ring.\n"
-    "- Keep the shot the user asked for: the action, the camera move, the "
-    "setting, the mood. You are describing their video, not a better one. "
-    "Detail is how you serve their request, not how you replace it.\n"
-    "- Write it like a shot description, because this model follows detail: a "
-    "thin prompt renders generic, a specific one renders what was asked for. "
-    "One paragraph of about 120-180 words, present tense, covering — in this "
-    "order — the subject and how it looks, what it does as a sequence of beats "
-    "(first this, then that), the camera (framing, and whether it holds, pans, "
-    "tracks or pushes in), the setting, and the light. Concrete and visual "
-    "throughout: colours, materials, textures, weather, time of day.\n"
-    "- Beats must fit the clip's few seconds. Two or three things happen, not "
-    "a plot. Nothing that needs a cut — this is one continuous shot.\n"
-    "- The clip has sound, and the model generates the speech from the words "
-    "in your prompt — nothing else reaches it. So when the user gives words "
-    "to be spoken, or asks for someone to say, shout, whisper or sing "
-    "something, put those exact words in double quotes beside the speaker: "
-    'the old man shouts, "get off my lawn!". Verbatim, never paraphrased. '
-    "Keep spoken lines to about a dozen words — anything longer runs past the "
-    "end of the clip and is cut off mid-word.\n"
-    "- Name the language of the speech, every time there is speech: write "
-    '"speaking in English" beside the speaker. English is the default. Use '
-    "whichever language the user asked for instead, and only when they asked "
-    "for it — a subject's nationality, accent or setting is not a request, so "
-    "a French chef in Paris still speaks English unless the user said "
-    "otherwise. Left unsaid, the model picks a language of its own and the "
-    "clip comes back in one nobody asked for.\n"
-    "- Never invent dialogue the user did not ask for. Unwritten speech comes "
-    "out as babble, so a character who was not given words is better shown "
-    "silent — describe the face and the breath instead of a mouth moving. A "
-    "short note on the ambience (rain on a roof, a crowd, an engine) is worth "
-    "one clause when it fits the shot.\n"
-    "- No backstory, no narration of what anything means, and no style or "
-    "quality padding ('cinematic', '4k', 'masterpiece', 'highly detailed'). "
-    "Describe what a camera and a microphone would catch, nothing else.\n"
-    "- The length rules above are about your REPLY in the channel, which stays "
-    "one short line. They do not apply to the prompt you pass to "
-    "generate_video: that argument is the long one, and shortening it is the "
-    "one mistake that costs the most.\n"
-    "- The clip does not exist yet: the tool queues it and reports the queue "
-    "position and estimated wait. Pass both on in one short sentence in your "
-    "own words. If the tool refuses (queue full, too many waiting), say so and "
-    "why in one short sentence — nothing was queued. Never invent a link and "
-    "never claim it is ready."
-)
-
-# Layered into the overlay slot when @animate carries a reference image, next
-# to any canon block. The planner is handed the picture itself, so this is
-# about what changes once the first frame is no longer its to invent.
-ANIMATE_REFERENCE_OVERLAY = (
-    "A reference image is attached to this request, and it IS the clip's first "
-    "frame. You can see it.\n"
-    "- Describe what is actually in the picture — the subject, its colours and "
-    "materials, the setting, the light — and then what happens next. The video "
-    "starts from this exact frame, so anything you describe that is not in it "
-    "is a contradiction the model has to resolve, and it resolves them badly.\n"
-    "- The user's words are the motion, not the subject. The picture already "
-    "settled who and what is on screen; spend your detail on what moves, how "
-    "it moves, and where the camera goes. Words they want spoken are the one "
-    "exception: those still go through verbatim, in quotes, beside the "
-    "speaker.\n"
-    "- Say nothing about the image being a reference, a photo or a still. "
-    "Describe the scene as a scene."
-)
-
-
-# --- Subject research: the pre-stage in front of the media planners --------
+# --- Subject research: the pre-stage in front of the draw planner --------
 #
-# Image and video generators know nothing by name. Both planners are already
-# told to keep the user's word AND put a description beside it, but the next
-# rule tells them to take that description from the facts they were given —
+# Image generators know nothing by name. The draw planner is already told to
+# keep the user's word AND put a description beside it, but the next rule
+# tells it to take that description from the facts it was given —
 # and for Churchill or the Hindenburg, nothing gives them. The verse canon
 # block covers what the channel invented; this covers what the world already
 # contains.
@@ -483,7 +398,7 @@ ANIMATE_REFERENCE_OVERLAY = (
 # a brace and str.format raises on one. Hence the trailing newline and the
 # absence of any {placeholder} below.
 SUBJECT_DOSSIER_PROMPT = (
-    "Below is a request someone made of an image or video generator. Identify "
+    "Below is a request someone made of an image generator. Identify "
     "every REAL subject it names — a living or historical person, a named "
     "character, a specific place, a specific event — and describe how each one "
     "actually looks, or looked at the time.\n\n"
@@ -509,9 +424,8 @@ SUBJECT_DOSSIER_PROMPT = (
 
 # The wrapper the parsed dossier is injected into, layered onto the planner's
 # overlay slot beside any canon block. It carries its own usage instructions so
-# that neither DRAW_SYSTEM_PROMPT nor ANIMATE_SYSTEM_PROMPT needs a rule about
-# a block that is absent from most requests — and so both planners read the
-# same words about it.
+# that DRAW_SYSTEM_PROMPT needs no rule about a block that is absent from most
+# requests.
 SUBJECT_DOSSIER_BLOCK_HEADER = (
     "Established facts about the real subjects named in this request. The "
     "generator has never seen these people, places or events, and renders a "
@@ -609,7 +523,6 @@ PROMPTS: dict[str, str] = {
     "chat": CHAT_SYSTEM_PROMPT,
     "code": CODE_SYSTEM_PROMPT,
     "draw": DRAW_SYSTEM_PROMPT,
-    "animate": ANIMATE_SYSTEM_PROMPT,
     "verse": VERSE_SYSTEM_PROMPT,
     "remind_action": REMIND_ACTION_SYSTEM_PROMPT,
 }

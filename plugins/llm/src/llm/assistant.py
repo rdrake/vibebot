@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from .identity import UNAUTHENTICATED_KEY_PREFIX
 from .profile import (
-    PROFILE_ANIMATE,
     PROFILE_CHAT,
     PROFILE_CODE,
     PROFILE_DRAW,
@@ -453,33 +452,6 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "generate_video",
-            "description": (
-                "Generate a short video clip from a text description. Rendering "
-                "takes a minute or two, so this does NOT return a URL — it queues "
-                "the job and the finished clip is posted to the channel "
-                "automatically when it is ready. Tell the user it is being "
-                "rendered; do not claim it is ready and never invent a link to it. "
-                "Returns the queue position and estimated wait, or a refusal when "
-                "the queue is full; relay whichever you get."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": (
-                            "Text description of the video, including any camera movement and mood."
-                        ),
-                    },
-                },
-                "required": ["prompt"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "search_web",
             "description": (
                 "Search the web for current information. Use when the user asks "
@@ -672,18 +644,6 @@ _TOOL_SPEC_OVERRIDES: dict[str, dict[str, Any]] = {
         "require_account": True,
         "visible_in": frozenset({PROFILE_CHAT, PROFILE_VERSE, PROFILE_DRAW, PROFILE_REMIND_ACTION}),
     },
-    # Chat and the @animate planner, deliberately nowhere else. The profiles
-    # left out are the ones where the bot generates unprompted: verse narrates
-    # ambiently, and remind_action fires "as you" with nobody present. A video
-    # is ~70s of exclusive GPU time on a shared box, which is the one cost here
-    # that cannot be undone by ignoring the output, so it stays on the routes
-    # where a human just asked for it. require_account matches @animate — the
-    # clip is delivered later, so there must be an identity to deliver it to.
-    "generate_video": {
-        "capability": "llm.animate",
-        "require_account": True,
-        "visible_in": frozenset({PROFILE_CHAT, PROFILE_ANIMATE}),
-    },
     "search_web": {
         "visible_in": frozenset({PROFILE_CHAT, PROFILE_VERSE, PROFILE_CODE, PROFILE_REMIND_ACTION}),
     },
@@ -875,7 +835,6 @@ class AssistantToolExecutor:
         cancel_pending_task_fn: Callable[[str], dict[str, Any]] | None = None,
         cancel_all_pending_tasks_fn: Callable[[], dict[str, Any]] | None = None,
         draw_fn: Callable[..., ToolCallbackResult] | None = None,
-        animate_fn: Callable[[str], ToolCallbackResult] | None = None,
         search_fn: Callable[[str], ToolResult] | None = None,
         fetch_fn: Callable[[str], ToolResult] | None = None,
         code_fn: Callable[[str], ToolResult] | None = None,
@@ -896,7 +855,6 @@ class AssistantToolExecutor:
         self._cancel_pending_task_fn = cancel_pending_task_fn
         self._cancel_all_pending_tasks_fn = cancel_all_pending_tasks_fn
         self._draw_fn = draw_fn
-        self._animate_fn = animate_fn
         self._search_fn = search_fn
         self._fetch_fn = fetch_fn
         self._search_lock = threading.Lock()
@@ -1194,21 +1152,6 @@ class AssistantToolExecutor:
         # the same rule grounding_used follows.
         if result.reworded:
             self.image_reworded = True
-        return self._ok(result.message)
-
-    def _tool_generate_video(self, args: dict[str, Any]) -> str:
-        if self._animate_fn is None:
-            return self._err("Video generation is not available.")
-        prompt = args.get("prompt", "")
-        if not prompt.strip():
-            return self._err("A prompt is required.")
-        # Returns an acknowledgement, never a URL — the clip does not exist yet.
-        # The tool description tells the model as much; this is the half that
-        # makes it true, so a model that ignores the description still cannot
-        # get a link out of the tool to fabricate a delivery from.
-        result = self._animate_fn(prompt)
-        if not result.ok:
-            return self._err(result.message)
         return self._ok(result.message)
 
     def _tool_search_web(self, arguments: dict[str, Any]) -> ToolResult:

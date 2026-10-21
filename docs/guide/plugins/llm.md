@@ -38,8 +38,7 @@ route sees.
 ## Capabilities
 
 Limnoria capabilities gate the AI and verse commands: `llm.ask` (`@ask`,
-`@forget`), `llm.code`, `llm.draw` (also covers `@story`), `llm.animate`
-(`@animate`, `@video`, `@renders`), `llm.verse`
+`@forget`), `llm.code`, `llm.draw` (also covers `@story`), `llm.verse`
 (`@rp`, `@verseopt`, `@verse`, `@look`, `@who`), `llm.verse.edit`
 (`@canon`, `@versedit`), and `llm.verse.gm` (`@versedump`,
 `@versepurge`, `@versecompact`).

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from llm.identity import Caller, Identity
-from llm.service import AssistantResult, CompletionResult, Spend, StorybookResult, VideoResult
+from llm.service import AssistantResult, CompletionResult, Spend, StorybookResult
 
 from .conftest import make_caller, make_registry_side_effect
 
@@ -106,25 +106,6 @@ class TestDeliveryGoesToTheNick:
 
         targets = {call.args[1].args[0] for call in plugin._safe_queue.call_args_list}
         assert targets == {NICK}
-
-    def test_pm_clip_is_stashed_for_the_nick(self, plugin_env, mocker: MockerFixture) -> None:
-        plugin, irc, msg = plugin_env
-        caller = make_caller(irc, msg, NICK, account=ACCOUNT)
-        mocker.patch.object(plugin, "_resolve_tier", return_value="registered")
-        mocker.patch.object(plugin.db, "count_pending_animate", return_value=0)
-        submit = mocker.patch.object(
-            plugin.llm_service, "video_generation", return_value=VideoResult(content="ok")
-        )
-
-        plugin._submit_video(irc, msg, "a corgi", caller=caller)
-
-        kwargs = submit.call_args.kwargs
-        assert (kwargs["reply_target"], kwargs["nick"], kwargs["account"]) == (
-            NICK,
-            NICK,
-            ACCOUNT,
-        )
-        assert kwargs["is_channel"] is False
 
     def test_pm_story_reaches_the_nick_and_books_the_account(
         self, plugin_env, mocker: MockerFixture

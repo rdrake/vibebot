@@ -137,7 +137,6 @@ class TestAskCommand:
             prompt="hello",
             status="success",
             error_detail="",
-            rendered_prompt="",
         )
 
     def test_ask_skips_znc_playback(self, plugin_env, mocker: MockerFixture):
@@ -504,7 +503,6 @@ class TestCodeCommand:
             prompt="assign",
             status="success",
             error_detail="",
-            rendered_prompt="",
         )
 
     def test_code_skips_znc_playback(self, plugin_env, mocker: MockerFixture):
@@ -968,7 +966,7 @@ class TestDrawCommand:
         MagicMock every other test uses swallows that (it accepts None
         happily), so this one enforces the real contract.
         """
-        from llm.profile import PROFILE_ANIMATE, PROFILE_DRAW
+        from llm.profile import PROFILE_DRAW
 
         plugin, _mock_irc, _mock_msg = plugin_env
         permissive = plugin.registryValue.side_effect
@@ -980,7 +978,7 @@ class TestDrawCommand:
 
         plugin.registryValue = mocker.MagicMock(side_effect=strict)
 
-        for profile_id in (PROFILE_DRAW, PROFILE_ANIMATE):
+        for profile_id in (PROFILE_DRAW,):
             overlay = plugin._verse_grounded_overlay(profile_id, "#test", "CANON: the lads")
             assert overlay == "CANON: the lads"
 
@@ -1080,7 +1078,6 @@ class TestDrawCommand:
             prompt="a cat",
             status="success",
             error_detail="",
-            rendered_prompt="",
         )
 
     def test_draw_logs_usage_even_with_zero_cost(self, plugin_env, mocker: MockerFixture):
@@ -1108,7 +1105,6 @@ class TestDrawCommand:
             prompt="test",
             status="success",
             error_detail="",
-            rendered_prompt="",
         )
 
     def test_draw_logs_usage_on_content_blocked(self, plugin_env, mocker: MockerFixture):
@@ -1137,7 +1133,6 @@ class TestDrawCommand:
             prompt="test",
             status="content_blocked",
             error_detail="Error: content blocked",
-            rendered_prompt="",
         )
 
     def test_draw_logs_usage_on_generic_error(self, plugin_env, mocker: MockerFixture):
@@ -1166,7 +1161,6 @@ class TestDrawCommand:
             prompt="test",
             status="error",
             error_detail="Error: timeout exceeded",
-            rendered_prompt="",
         )
 
     def test_draw_skips_znc_playback(self, plugin_env, mocker: MockerFixture):
@@ -2895,7 +2889,6 @@ class TestAccountBasedIdentity:
             prompt="hello",
             status="success",
             error_detail="",
-            rendered_prompt="",
         )
 
     def test_code_logs_usage_under_account(self, account_env, mocker: MockerFixture):
@@ -2921,7 +2914,6 @@ class TestAccountBasedIdentity:
             prompt="assign",
             status="success",
             error_detail="",
-            rendered_prompt="",
         )
 
     def test_draw_logs_usage_under_account(self, account_env, mocker: MockerFixture):
@@ -2948,7 +2940,6 @@ class TestAccountBasedIdentity:
             prompt="a cat",
             status="success",
             error_detail="",
-            rendered_prompt="",
         )
 
     # -- Context storage under account --
@@ -3039,7 +3030,6 @@ class TestAccountBasedIdentity:
             prompt="hello",
             status="success",
             error_detail="",
-            rendered_prompt="",
         )
 
     def test_ask_falls_back_to_nick_on_keyerror(self, plugin_env, mocker: MockerFixture):
@@ -3068,7 +3058,6 @@ class TestAccountBasedIdentity:
             prompt="hello",
             status="success",
             error_detail="",
-            rendered_prompt="",
         )
 
     def test_context_stored_under_nick_when_no_account(self, plugin_env, mocker: MockerFixture):

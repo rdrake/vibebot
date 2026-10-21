@@ -24,8 +24,6 @@ run() {  # run <module> <pass|violation>
 
 run TypingHolds         violation
 run TypingHoldsSendLock pass
-run MCAdmissionFALSE    violation
-run MCAdmissionTRUE     pass
 run PTSingle            pass
 run PTZombie            violation
 run PTZombieFixed       pass

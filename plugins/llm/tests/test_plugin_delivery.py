@@ -1077,85 +1077,6 @@ class TestDeliverPendingResultCodeBranch:
         assert "code is ready" not in msg_text
 
 
-class TestDeliverPendingResultAnimateBranch:
-    """Test _deliver_pending_result animate branch end to end.
-
-    _format_animate_delivery is unit-tested directly in test_animate.py, but
-    nothing there proves _deliver_pending_result calls it with its arguments
-    in the right order. The formatter's signature is
-    ``(nick, prompt, url, target)``; the call site passes
-    ``(nick, prompt_preview, content, target)``. A swap of the two middle
-    arguments would still satisfy every direct formatter test (they all pass
-    their own explicit prompt/url) while producing a delivered line whose
-    *prompt* is budgeted and whose *URL* is echoed as quoted text — the exact
-    URL-loss failure mode the formatter exists to prevent. This test drives
-    the real delivery path and pins nick, quoted prompt, and URL in their
-    correct positions in the sent text.
-    """
-
-    @pytest.fixture
-    def plugin(self, mocker: MockerFixture):
-        """Create a minimal plugin for delivery testing."""
-        from llm.plugin import LLM
-
-        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
-        plugin = LLM.__new__(LLM)
-        plugin.llm_service = mocker.MagicMock()
-        plugin.llm_service.sanitize_output.side_effect = lambda x: x
-        plugin.db = mocker.MagicMock()
-        plugin.log = mocker.MagicMock()
-        plugin._llm_executor = mocker.MagicMock()
-        plugin._llm_executor.closing = False
-        plugin._irc_send_lock = threading.Lock()
-        return plugin
-
-    def _make_result(self, **overrides):
-        """Create a PendingTaskResult with defaults."""
-        from llm.service import PendingTaskResult
-
-        defaults = {
-            "status": "completed",
-            "task_type": "animate",
-            "nick": "alice",
-            "reply_target": "#test",
-            "is_channel": True,
-            "prompt_preview": "a corgi riding a unicorn",
-            "model": "grok-imagine",
-            "content": "https://paste.boxlabs.uk/img/vid_6a8830b21af1d.mp4",
-            "reason": "",
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "cost": 0.0,
-        }
-        defaults.update(overrides)
-        return PendingTaskResult(**defaults)
-
-    def test_animate_delivery_carries_nick_prompt_and_url(
-        self, plugin, mocker: MockerFixture
-    ) -> None:
-        """GIVEN a completed animate result WHEN delivered THEN the sent text
-        has the nick, the quoted prompt, and the URL in the shape
-        _format_animate_delivery produces — not a bare URL, and not the
-        prompt/URL positions swapped."""
-        import supybot.world as world_mod
-
-        mock_irc = mocker.MagicMock()
-        mock_irc.state.channels = {"#test": mocker.MagicMock()}
-        mock_irc.state.nickToAccount.return_value = "alice"
-        mocker.patch.object(world_mod, "ircs", [mock_irc])
-
-        r = self._make_result()
-        plugin._deliver_pending_result(r)
-
-        mock_irc.queueMsg.assert_called_once()
-        msg_text = str(mock_irc.queueMsg.call_args[0][0])
-        url = "https://paste.boxlabs.uk/img/vid_6a8830b21af1d.mp4"
-        assert f'alice: your video is ready! "a corgi riding a unicorn" → {url}' in msg_text
-        # The URL must be the trailing link, never quoted as if it were the
-        # prompt.
-        assert f'"{url}"' not in msg_text
-
-
 class TestDeliverPendingResultUnknownStatus:
     """Test _deliver_pending_result with an unknown status."""
 
@@ -1506,13 +1427,3 @@ class TestPendingUsageBookedOnce:
         plugin._deliver_pending_result(self._result(task_id))
 
         assert self._rows(plugin) == [("!alice", "success", 0.01)]
-
-    def test_cancelled_task_books_its_spend(self, env) -> None:
-        """GIVEN a billed task is cancelled before delivery THEN its spend books."""
-        plugin, _task_id = env
-        plugin.llm_service.cancel_video.return_value = True
-        (row,) = plugin.db.load_pending_tasks("ask")
-
-        plugin._cancel_animate_row(row)
-
-        assert self._rows(plugin) == [("!alice", "error", 0.01)]

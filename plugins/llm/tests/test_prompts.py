@@ -20,14 +20,13 @@ class TestPromptsRegistry:
             "chat",
             "code",
             "draw",
-            "animate",
             "verse",
             "remind_action",
         }
 
     @pytest.mark.parametrize(
         "name",
-        ["chat", "code", "draw", "animate", "verse", "remind_action"],
+        ["chat", "code", "draw", "verse", "remind_action"],
     )
     def test_every_prompt_is_nonempty(self, name):
         """Each registered prompt is a non-empty string."""
@@ -51,7 +50,7 @@ class TestProfilePromptInvariants:
 
     @pytest.mark.parametrize(
         "name",
-        ["chat", "code", "draw", "animate", "verse", "remind_action"],
+        ["chat", "code", "draw", "verse", "remind_action"],
     )
     def test_profile_prompts_contain_bot_nick_placeholder(self, name):
         """Profile prompts are formatted with .format(bot_nick=...)."""
@@ -156,15 +155,6 @@ class TestProfileSpecificContent:
     def test_draw_prompt_mentions_generate_image_tool(self):
         """The draw prompt anchors the planner on the right tool name."""
         assert "generate_image" in prompts.PROMPTS["draw"]
-
-    def test_animate_prompt_names_the_speech_language(self):
-        """Left unnamed, the video model picks its own language for the audio,
-        so the planner is told to state it beside the speaker — English unless
-        the user asked for another one."""
-        animate = prompts.PROMPTS["animate"]
-        assert "speaking in English" in animate
-        assert "English is the default" in animate
-        assert "whichever language the user asked for" in animate
 
     def test_remind_action_does_not_mention_set_reminder(self):
         """Remind-action runs INSIDE a fired reminder — telling the

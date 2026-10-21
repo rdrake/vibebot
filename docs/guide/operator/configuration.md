@@ -68,63 +68,6 @@ Vertex AI is not the default, but it remains a supported `imageModel` (and gener
 
 Vertex AI takes no bearer key from this plugin — no `VERTEX_AI_API_KEY` exists; it authenticates through ADC and IAM only.
 
-### Drawing against a self-hosted endpoint
-
-`imageApiBase` points `@draw` at any OpenAI-shaped `/v1/images/generations` endpoint — including the same box `@animate` uses, which serves images as well as video. Set it and three things change: the request carries an `api_base`, it authenticates with `ANIMATE_API_KEY` instead of the provider key `imageModel`'s name would imply, and `imageSteps`/`imageSize` ride along in the request body. Leave it empty and nothing changes; the hosted provider path is untouched.
-
-```
-@config channel #chan supybot.plugins.LLM.imageApiBase http://host:port/v1
-@config channel #chan supybot.plugins.LLM.imageModel openai//path/to/model
-@config channel #chan supybot.plugins.LLM.imageSteps 8
-@config channel #chan supybot.plugins.LLM.imageSize 1024x576
-```
-
-The `openai/` prefix tells LiteLLM which wire format to speak; everything after it is the model name your server expects, which is why a filesystem path with slashes in it is fine.
-
-Two things to weigh before switching a busy channel over:
-
-- **Steps are the whole latency budget.** Measured against the reference box at 1024x576 on an idle server: 8 steps ≈ 32 seconds, 25 steps ≈ 94 seconds. Compare a hosted provider answering in a few seconds. Raise `drawTimeout` (default 120) to cover whatever you pick, or draws will fall into the stash-and-deliver-later path.
-- **A busy box is much slower than an idle one.** That server runs jobs concurrently rather than queueing, so a draw submitted while clips are rendering can take well over twice as long, and every other job on the box slows down too.
-
-Spend is recorded as `$0.00`, which is accurate for your own hardware — and unlike an unpriced hosted model, it does not log the "no price in `IMAGE_COST_PER_IMAGE`" warning, so that warning still means what it says.
-
-### Falling back when a provider refuses
-
-The same endpoint can sit behind a hosted provider instead of replacing it. Set `imageFallbackApiBase` and a refusal on content grounds is redrawn against your own box rather than reaching the user as an error:
-
-```
-@config channel #chan supybot.plugins.LLM.imageFallbackApiBase http://host:port/v1
-@config channel #chan supybot.plugins.LLM.imageFallbackModel openai//path/to/model
-@config channel #chan supybot.plugins.LLM.imageFallbackSteps 8
-@config channel #chan supybot.plugins.LLM.imageFallbackSize 1024x576
-```
-
-The fallback is sent the **original prompt**, never a safety rewrite. A rewrite exists to talk a filter around, and an endpoint with no filter has nothing to be talked around — so the picture that arrives is the one that was asked for, and it carries no 🔁 marker because nothing was reworded.
-
-This interacts with `drawAutoRewriteMax` (default `1`), and the two orderings buy different things:
-
-| `drawAutoRewriteMax` | What a refused prompt does |
-|---|---|
-| `1` (default) | Rewrites once and redraws on the provider. If that is refused too, the fallback draws the original. Fast when it works, but the user gets a softened version of their request, and the rewrite costs a second billed call |
-| `0` | Skips rewriting and goes straight to the fallback. Slower per refusal (a self-hosted draw is tens of seconds), free, and faithful to what was asked |
-
-Refusals are still recorded either way. A recovered draw carries its `blocked_attempts` through to the usage table, so the refusal rate stays measurable, and the fallback logs `image_fallback_served` at WARNING so you can count how often it earns its keep.
-
-If the fallback also fails — refused again, misconfigured, or the box is down — the user gets the original refusal message. Which of two backends disappointed them is not something they asked about.
-
-### Video generation
-
-`@animate` talks to a self-hosted vLLM video server rather than a LiteLLM provider, so it needs both halves of its own credential and stays off until it has them:
-
-| Setting | Where | Notes |
-|---------|-------|-------|
-| `ANIMATE_API_KEY` | Environment | Bearer token for the video server. Covered by log redaction like every other `*_API_KEY` |
-| `animateApiUrl` | Registry | Base URL, e.g. `http://videohost:14205` — no trailing `/v1`. Empty (the default) disables `@animate` and hides the `generate_video` tool |
-
-With either half missing the command returns a configuration error and the tool never reaches the model, so it cannot promise a clip the bot has no way to render.
-
-`@animate` never sends the words the user typed. A planner turn rewrites the ask into a script the video server can render, so the usage row records both: `prompt` holds the request and `rendered_prompt` holds what was submitted. Every other command leaves `rendered_prompt` empty. Rows written before this landed have it empty too — the rendered wording was only ever held in `pending_tasks`, which is cleared as each clip is delivered.
-
 Copy `.env.example` to `~/.config/vibebot/env` and set the variables there; the systemd unit passes that file to the container with `--env-file` (see [Installation](installation.md)). A model whose provider has no key configured fails with an error naming the missing variable, for example `no API key configured for provider 'xai' (set XAI_API_KEY)`.
 
 ## Model selection
@@ -137,16 +80,9 @@ Models follow [LiteLLM's provider/model format](https://docs.litellm.ai/docs/pro
 | `refusalFallbackModel` | channel | `xai/grok-4-1-fast-non-reasoning` | Re-runs a chat turn once when its model refuses: a policy refusal that survives its one retry, or a provider refusal error. The fallback gets the original request without the refusal. Empty turns it off. Skipped when the turn already runs on this model, when its provider has no key, or when a tool that changes something (a reminder, an image, a memory) already worked this turn, since the re-run would repeat it. Its cost books at `xai/grok-4.3` rates, the model behind the alias |
 | `codeModel` | channel | `anthropic/claude-haiku-5-5` | The code-generation one-shot behind `@code` and the `generate_code` tool. The `@code` planner loop itself runs on `assistantModel` |
 | `imageModel` | channel | `xai/grok-imagine-image` | Model for `@draw` |
-| `imageApiBase` | channel | empty | Draw against an OpenAI-shaped endpoint of your own instead of the provider `imageModel` names — see [Drawing against a self-hosted endpoint](#drawing-against-a-self-hosted-endpoint) |
-| `imageSteps` | channel | `0` | Denoising steps for a self-hosted endpoint. `0` lets the server choose. Ignored unless `imageApiBase` is set |
-| `imageSize` | channel | empty | Output geometry as `WxH` for a self-hosted endpoint. Ignored unless `imageApiBase` is set |
-| `imageFallbackApiBase` | channel | empty | Endpoint to redraw against when the primary provider refuses a prompt — see [Falling back when a provider refuses](#falling-back-when-a-provider-refuses) |
-| `imageFallbackModel` | channel | empty | Model for `imageFallbackApiBase`. A plain string, not a validated model name |
-| `imageFallbackSteps` | channel | `0` | Denoising steps for the fallback endpoint |
-| `imageFallbackSize` | channel | empty | Output geometry as `WxH` for the fallback endpoint |
 | `searchModel` | channel | `xai/grok-4.3` | Model for web search and URL fetch. Falls back to `assistantModel`. Only xAI and Gemini models search; any other provider answers from its own knowledge. GitHub links skip it: they are read through GitHub's API. A request can run at most three searches |
 | `memoryModel` | channel | empty | Model for the memory extraction that runs after every reply. Falls back to `assistantModel`. A flash-lite class model is enough |
-| `subjectResearchEnabled` | channel | `True` | Research the real people, places and events a `@draw` or `@animate` request names before the planner writes the prompt — see [Subject research](#subject-research) |
+| `subjectResearchEnabled` | channel | `True` | Research the real people, places and events a `@draw` request names before the planner writes the prompt — see [Subject research](#subject-research) |
 | `subjectResearchModel` | channel | empty | Model for the subject-research pre-stage. Falls back to `searchModel`, then `assistantModel` |
 | `verseModel` | channel | empty | Model for verse-mode replies. Falls back to `assistantModel`. Set this when the assistant model is a terse reasoning model that writes poor prose |
 | `verseCompactionModel` | global | `anthropic/claude-haiku-5-5` | Cheap model for the daily verse compaction job. Unlike the channel model keys this one is a plain string, so a misspelled model name is accepted at `@config` time and only fails when the nightly job runs |
@@ -160,10 +96,10 @@ Channel overrides let different channels run different models:
 
 ### Subject research
 
-Image and video generators know nothing by name. `@animate` renders a bare
-"Churchill" as nothing at all, or as the word printed across the frame, and
-`@draw` is little better — which is why both commands run a planner turn that
-rewrites the request before the generator ever sees it. The planner is told to
+Image generators know nothing by name. A bare "Churchill" comes out as
+nothing at all, or as the word printed across the frame — which is why `@draw`
+runs a planner turn that rewrites the request before the generator ever sees
+it. The planner is told to
 keep the name the user typed and put a description of the subject beside it,
 but for a real person or a real event it has nothing to build that description
 from: the verse canon block covers characters the channel invented, not people
@@ -172,11 +108,10 @@ the world already contains.
 `subjectResearchEnabled` (on by default) closes that gap with one grounded
 completion in front of the planner. It identifies the real subjects the request
 names, looks up how each actually looks, and layers the answer onto the
-planner's prompt. A request that names nobody real — "a slow aerial shot over a
-pine forest" — comes back with nothing and adds nothing to the prompt.
+planner's prompt. A request that names nobody real — "a pine forest at
+sunrise" — comes back with nothing and adds nothing to the prompt.
 
-The cost is one extra call and a few seconds. `@animate` hides that behind a
-render measured at 135 seconds; `@draw` does not, so `@draw` gets visibly
+The cost is one extra call and a few seconds, so `@draw` gets visibly
 slower with this on. The typing indicator covers the wait. The usage table
 records research costs under the command name `dossier`, separately from the
 planner's own row, because the two run on different models.
@@ -271,7 +206,7 @@ See [Memory promotion](memory-promotion.md) for how the two-stage pipeline works
 
 ## Rate limiting
 
-Rate limits follow the pattern `{command}{tier}RateLimitCount` and `{command}{tier}RateLimitWindow` for the commands `ask`, `code`, `draw`, `story`, and `animate`. All rate-limit settings are global. See [Rate limiting and security](rate-limiting-security.md) for tiers, defaults, and the observe-only switch `enforceRateLimits`.
+Rate limits follow the pattern `{command}{tier}RateLimitCount` and `{command}{tier}RateLimitWindow` for the commands `ask`, `code`, `draw`, `meme`, and `story`. All rate-limit settings are global. See [Rate limiting and security](rate-limiting-security.md) for tiers, defaults, and the observe-only switch `enforceRateLimits`.
 
 ## Bot-to-bot loops
 
@@ -389,28 +324,6 @@ When an API call times out, the bot retries in the background for a bounded wind
 | `drawEnabled` | channel | `True` | `False` refuses `@draw` and hides the `generate_image` tool from chat. The tool is also hidden when `imageModel`'s provider has no key |
 | `drawAutoRewriteMax` | channel | `1` | Automatic prompt rewordings when a safety filter blocks a request. `0` disables. Each rewording costs a second billed image call on top of the refused one, and every recovery observed in prod landed on the first attempt, so raising this mostly buys repeat refusals of a prompt that was never going to pass |
 | `drawContextMaxAgeSeconds` | channel | `60` | Pass conversation context to draw requests only when the last activity is this recent. `0` always starts fresh |
-
-## Animate behaviour
-
-`@animate` renders on a self-hosted video box (see [Video generation](#video-generation) for the credential). Generation is asynchronous: the command submits a job and returns, and the pending-task poller publishes the clip when it lands, so a bot restart mid-render does not lose the video. The box renders one clip at a time, so the queue is capped (`animateMaxPendingPerUser`, `animateMaxPending`) and `@renders` lets users and admins inspect or clear it.
-
-| Setting | Scope | Default | Description |
-|---------|-------|---------|-------------|
-| `animateEnabled` | channel | `True` | `False` refuses `@animate` and hides the `generate_video` tool from chat. Both are off everywhere until the video box is configured |
-| `animateSteps` | channel | `25` | Denoising steps, and the dominant cost knob — latency is roughly linear in it. Measured on the reference box at 1280x704: a four-second clip took 68s at 25 steps and 171s at 50; at 25 steps a seven-second clip took 135s |
-| `animateSize` | channel | `1280x704` | Output resolution. Must be a geometry the loaded model supports |
-| `animateDuration` | channel | `7` | Clip length in seconds. The whole clip is exclusive GPU time, so raising it slows every queued request behind it. Also watch the file size: a 7s clip measured 8.87 MB, leaving about 1 MB under the uploader's 10 MB ceiling, and a clip over it falls back to local storage instead of `imageUploadUrl` |
-| `animateAudio` | channel | `True` | Generate a soundtrack with the video. `False` requests silent video |
-| `animateModel` | channel | empty | Model to request. Empty sends no model field, letting a single-model box pick its own — usually right |
-| `animateFlowShift` | global | `12` | Flow-matching shift for the video sampler |
-| `animateAudioFlowShift` | global | `3` | Flow-matching shift for the audio track. Ignored when `animateAudio` is off |
-| `animateTimeout` | global | `60` | Timeout for individual HTTP calls to the video server. **Not** the generation budget — that is `animateExpiry` |
-| `animateExpiry` | global | `1800` | Seconds to keep polling a submitted job before reporting it expired. Generous on purpose: a queued job can wait a long time before it starts |
-| `animateMaxPendingPerUser` | global | `2` | How many clips one person may have waiting to render at once. A request past this is refused before anything is submitted. Owner and admin are exempt. `0` disables the per-user cap |
-| `animateMaxPending` | global | `6` | How many clips may be waiting to render across the whole bot. The box renders one at a time, so this bounds the longest wait anyone is promised. Applies to everyone. `0` disables |
-| `animateRenderSeconds` | global | `135` | Seconds one clip takes to render at the configured size, duration and steps. Only used to estimate the wait quoted when a clip is queued; measure it on the box after changing `animateDuration` or `animateSteps` |
-
-Clips are published to `imageUploadUrl` when one is configured — the reference host accepts MP4 on the same `images[]` field and files it as `vid_*.mp4` — and fall back to local storage otherwise, including when a clip exceeds the 10 MB upload ceiling.
 
 ## Other settings
 

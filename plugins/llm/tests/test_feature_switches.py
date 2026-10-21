@@ -1,8 +1,7 @@
-"""drawEnabled / animateEnabled: a feature that is off or unconfigured is not advertised.
+"""drawEnabled: a feature that is off or unconfigured is not advertised.
 
 A model offered a tool that cannot work calls it and then narrates the failure,
-so the chat surface drops generate_image and generate_video whenever the
-matching command would be refused.
+so the chat surface drops generate_image whenever @draw would be refused.
 """
 
 from __future__ import annotations
@@ -31,12 +30,6 @@ def _chat_tool_names(make_service, mocker, **overrides) -> set[str]:
     return {t["function"]["name"] for t in tools}
 
 
-@pytest.fixture
-def video_box(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
-    monkeypatch.setenv("ANIMATE_API_KEY", "animate-key-for-tests-0000")
-    return {"animateApiUrl": "http://video-box:14205"}
-
-
 class TestDrawSwitch:
     def test_on_and_keyed_advertises_generate_image(self, make_service, mocker) -> None:
         assert "generate_image" in _chat_tool_names(make_service, mocker)
@@ -61,32 +54,10 @@ class TestDrawSwitch:
         assert service.draw_unavailable_reason("#test") is None
 
 
-class TestAnimateSwitch:
-    def test_configured_advertises_generate_video(self, make_service, mocker, video_box) -> None:
-        assert "generate_video" in _chat_tool_names(make_service, mocker, **video_box)
-
-    def test_off_hides_generate_video(self, make_service, mocker, video_box) -> None:
-        names = _chat_tool_names(make_service, mocker, animateEnabled=False, **video_box)
-        assert "generate_video" not in names
-
-    def test_off_refuses_the_submission(self, make_service, video_box) -> None:
-        service, _ = make_service(animateEnabled=False, **video_box)
-        result = service.video_generation("a clip", channel="#test")
-        assert result.error == "Video is turned off in this channel."
-
-
 class TestCommandsRefuse:
     def test_draw_command_replies_with_the_reason(self, plugin_env) -> None:
         plugin, irc, msg = plugin_env
         plugin.llm_service.draw_unavailable_reason.return_value = "Drawing is off."
         plugin.draw(irc, msg, ["a", "sunset"])
         irc.reply.assert_called_once_with("Drawing is off.")
-        plugin.llm_service.assistant_completion.assert_not_called()
-
-    def test_animate_command_replies_when_off(self, plugin_env) -> None:
-        plugin, irc, msg = plugin_env
-        plugin.llm_service.video_available.return_value = False
-        plugin.llm_service.animate_available.return_value = True
-        plugin.animate(irc, msg, ["a", "clip"])
-        irc.reply.assert_called_once_with("Video is turned off in this channel.")
         plugin.llm_service.assistant_completion.assert_not_called()

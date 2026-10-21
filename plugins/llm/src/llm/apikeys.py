@@ -63,23 +63,6 @@ def api_key_for(model: str) -> str | None:
     return os.environ.get(name, "").strip() or None
 
 
-# Self-hosted endpoints are reached by api_base, not by a provider prefix, so
-# PROVIDER_ENV_VARS has nothing to say about them. They still
-# belong here rather than in service.py: this module is where a credential is
-# turned from a name into a value, and the _API_KEY suffix below is what puts
-# the value inside log redaction.
-ANIMATE_ENV_VAR = "ANIMATE_API_KEY"
-
-
-def animate_api_key() -> str:
-    """Bearer token for the self-hosted video server, or "" if unset.
-
-    Read live rather than cached, for the same reason :func:`api_key_for` is:
-    a cached copy can outlive a rotation and diverge from what redaction knows.
-    """
-    return os.environ.get(ANIMATE_ENV_VAR, "").strip()
-
-
 # Credentials do not all end in _API_KEY. A provider whose secret is named
 # differently would otherwise sit outside redaction entirely.
 SECRET_SUFFIXES: tuple[str, ...] = ("_API_KEY", "_TOKEN", "_SECRET", "_CREDENTIALS")

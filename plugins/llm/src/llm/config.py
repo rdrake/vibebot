@@ -197,12 +197,11 @@ conf.registerChannelValue(
     "subjectResearchEnabled",
     registry.Boolean(
         True,
-        _("""Research the real subjects a @draw or @animate request names
-        before the planner writes the prompt. One grounded completion looks up
-        how the named people, places and events actually look and the facts are
-        layered onto the planner's prompt, because the generators know nothing
-        by name. Costs one extra call and a few seconds per request: @animate
-        hides that behind the render, @draw does not."""),
+        _("""Research the real subjects a @draw request names before the
+        planner writes the prompt. One grounded completion looks up how the
+        named people, places and events actually look and the facts are
+        layered onto the planner's prompt, because the image generator knows
+        nothing by name. Costs one extra call and a few seconds per request."""),
     ),
 )
 
@@ -284,174 +283,6 @@ conf.registerChannelValue(
         draw calls grounded in very recent discussion without overwhelming
         the image model with stale history. Set to 0 to disable (always
         start fresh)."""),
-    ),
-)
-
-# ============================================================================
-# Video Generation (animate)
-# ============================================================================
-# Not a LiteLLM provider: a self-hosted vLLM box exposing an OpenAI-shaped
-# /v1/videos job API. Submit returns a job id immediately and the job survives
-# client disconnect, so animate never blocks a turn — it stashes the id in
-# pending_tasks and the existing 30s poller delivers the link when it lands.
-# The bearer token lives in ANIMATE_API_KEY, not here: the registry is
-# bot.conf, which the bot rewrites on shutdown, and _API_KEY suffixes are
-# already covered by log redaction (apikeys.SECRET_SUFFIXES).
-
-conf.registerChannelValue(
-    LLM,
-    "animateEnabled",
-    registry.Boolean(
-        True,
-        _("""When False, @animate is refused and chat does not advertise the
-        generate_video tool in this channel. Both are also off everywhere
-        until animateApiUrl and ANIMATE_API_KEY are set."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "animateApiUrl",
-    registry.String(
-        "",
-        _("""Base URL of the vLLM video server, e.g. http://host:14205 — no
-        trailing /v1. Empty disables the animate command and hides the
-        generate_video tool. The bearer token is read from the ANIMATE_API_KEY
-        environment variable, never from this registry."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "animateModel",
-    registry.String(
-        "",
-        _("""Model to request from the video server. Empty (default) sends no
-        model field, letting the server pick the one it has loaded — which is
-        the right default for a single-model box."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "animateSize",
-    registry.String(
-        "1280x704",
-        _("""Output resolution as WxH. Must be a geometry the loaded model
-        supports; the server rejects anything else."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "animateDuration",
-    registry.PositiveInteger(
-        7,
-        _("""Clip length in seconds. Generation time scales with this, and the
-        whole clip is exclusive GPU time, so raising it slows every queued
-        request behind it. Watch the file size too: clips over the uploader's
-        10 MB ceiling silently fall back to local storage instead of the
-        configured image host."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "animateSteps",
-    registry.PositiveInteger(
-        # 25, not the 50 the endpoint's own example uses. Steps are the main
-        # lever on latency and it is close to linear: 50 steps measured ~138s
-        # for a 4s clip, which is a long time to make a channel wait. 25 buys
-        # most of the quality back at roughly half the wall clock.
-        25,
-        _("""Denoising steps. The dominant cost knob — latency is roughly linear
-        in this. Raise for quality, lower for turnaround."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "animateAudio",
-    registry.Boolean(
-        True,
-        _("""Generate a soundtrack alongside the video (the t2va task). The
-        loaded FL2VA model is built for it. False requests silent video."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "animateFlowShift",
-    registry.NonNegativeInteger(
-        12,
-        _("""Flow-matching shift for the video sampler. Tuning knob — leave at
-        the default unless the model card says otherwise."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "animateAudioFlowShift",
-    registry.NonNegativeInteger(
-        3,
-        _("""Flow-matching shift for the audio track. Ignored when animateAudio
-        is False."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "animateTimeout",
-    registry.PositiveInteger(
-        60,
-        _("""Timeout in seconds for individual HTTP calls to the video server
-        (submit, poll, download). NOT the generation budget — generation is
-        asynchronous and bounded by animateExpiry instead."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "animateExpiry",
-    registry.PositiveInteger(
-        1800,
-        _("""How long to keep polling a submitted video job before giving up and
-        telling the user it expired. Generous by design: a queued job behind
-        several others can wait a long time before it starts."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "animateMaxPendingPerUser",
-    registry.NonNegativeInteger(
-        2,
-        _("""How many clips one person may have waiting to render at once.
-        A request past this is refused before anything is submitted. Owner
-        and admin are exempt. 0 disables the per-user cap."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "animateMaxPending",
-    registry.NonNegativeInteger(
-        6,
-        _("""How many clips may be waiting to render across the whole bot.
-        The video box renders one at a time, so this bounds the longest
-        wait anyone is promised. Applies to everyone. 0 disables."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "animateRenderSeconds",
-    registry.PositiveInteger(
-        135,
-        _("""Seconds one clip takes to render at the configured size, duration
-        and steps. Only used to estimate the wait quoted when a clip is
-        queued; measure it on the box after changing animateDuration or
-        animateSteps."""),
     ),
 )
 
@@ -1052,17 +883,6 @@ _register_rate_limit_block(
     "story",
     counts=(2, 5, 1),
     windows=(300, 60, 3600),
-)
-
-# --- animate (most expensive: ~70s of exclusive GPU time per clip) ---
-# Stricter than draw on every tier. The video box serialises work internally, so
-# each accepted request delays every later one; the caps are what stops a busy
-# channel from booking an hour of queue in a minute. Same reason as draw for
-# keeping Unreg at 1 rather than 0 — 0 means "no limit", not "no access".
-_register_rate_limit_block(
-    "animate",
-    counts=(2, 4, 1),
-    windows=(900, 300, 7200),
 )
 
 # ============================================================================

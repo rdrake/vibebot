@@ -32,12 +32,11 @@ from pygments.formatters import HtmlFormatter
 from supybot.i18n import PluginInternationalization
 from supybot.utils.file import AtomicFile
 
-from . import agenda, apikeys, github, meme_render, provider
+from . import agenda, apikeys, github, provider
 from .context import Role
 from .identity import Caller
 from .persistence import ScheduledLlmTaskRow, lease_until
 from .profile import (
-    PROFILE_ANIMATE,
     PROFILE_CHAT,
     PROFILE_VERSE,
     PROFILES,
@@ -123,25 +122,6 @@ EXPLICIT_STORYBOOK_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Explicit "I want a moving picture" cues, and the reason they are needed is
-# the same one behind EXPLICIT_STORYBOOK_RE: grok does not reliably call
-# generate_video from prompt guidance. "vibebot animate X" is not a command —
-# inFilter suppresses Limnoria's dispatcher for anything without the prefix
-# char, so it arrives here as ordinary chat — and on 2026-08-21 the model
-# answered two of them by writing an acknowledgement and a plausible-looking
-# link instead of calling the tool. Nothing was ever queued.
-#
-# Deliberately tight, because a false positive costs ~70s of exclusive GPU
-# time: either the message OPENS with the ask ("animate a corgi", "video of
-# the lads"), or it pairs a generation verb with a video noun. Talking about a
-# video ("did you see that video of the cat") must not match.
-EXPLICIT_VIDEO_RE = re.compile(
-    r"^\s*(?:animate|video)\b"
-    r"|\b(?:make|create|generate|render|do)\s+(?:me\s+|us\s+)?"
-    r"(?:a|an|the)?\s*(?:short\s+|quick\s+|wee\s+)?(?:video|clip|animation)\b",
-    re.IGNORECASE,
-)
-
 # Any chat mention of a reminder. Unlike the regexes above this forces "some
 # tool", not a named one, so a false positive costs one list call. On
 # 2026-09-25 gemini answered "cancel my reminder" and then "list my reminders"
@@ -158,13 +138,6 @@ _LINE_BREAK_RE = re.compile("[\r\n\v\f\x1c-\x1e\u2028\u2029]+")
 PENDING_INITIAL_BACKOFF_SECONDS = 30
 PENDING_MAX_BACKOFF_SECONDS = 300
 
-# How often to ask the video box whether a render has landed. Deliberately
-# much tighter than PENDING_INITIAL_BACKOFF_SECONDS: this is not a retry after
-# a failure, it is a progress check on a job we know is running, and the delay
-# lands entirely on a user watching the channel for their clip. The cost is one
-# GET returning a few hundred bytes of JSON, six times a minute per in-flight
-# job, which is nothing next to the render it is waiting on.
-ANIMATE_POLL_INTERVAL_SECONDS = 10
 PENDING_CLAIM_LIMIT = 8
 PENDING_LEASE_SECONDS = 120
 
@@ -499,68 +472,9 @@ _IMAGE_URL_RE = re.compile(r"https?://\S+?/(?:img_)[0-9a-zA-Z_]+\.(?:png|jpe?g|w
 # did not mint cannot be anything but stale or invented, whatever its shape.
 _ANY_IMAGE_URL_RE = re.compile(r"https?://\S+?\.(?:png|jpe?g|webp|gif)\b", re.IGNORECASE)
 
-# Reference-image URLs as a user would paste them, query string and all. Kept
-# module-level, not on the service, so the plugin can split a line without a
-# service instance — and so a mocked service in a test cannot silently stand in
-# for the real parse.
-_REFERENCE_URL_RE = re.compile(
-    r"https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp|bmp)(?:[?#][^\s]*)?",
-    re.IGNORECASE,
-)
-
-
-def split_reference_url(text: str) -> tuple[str | None, str]:
-    """Split a prompt into (reference image URL, prompt without any URL).
-
-    Nobody should have to learn a flag: an image URL sitting in an @animate
-    line is the reference, wherever in the line it sits. Only image URLs
-    qualify — a link that is not an image is a subject the user typed, and
-    deleting it is the exact failure this path exists to stop.
-
-    Every image URL is stripped, not just the one used. A leftover URL goes to
-    a model that renders text on screen, so it would appear in the clip.
-    """
-    urls = _REFERENCE_URL_RE.findall(text)
-    if not urls:
-        return None, text
-    return urls[0], " ".join(_REFERENCE_URL_RE.sub(" ", text).split())
-
-
 # One forced retry. If the model writes a URL, is told to call the tool, and
 # still will not, a second nudge will not change that -- deliver the honest
 # failure instead of burning image spend on a loop.
-# Video-link fabrication. The image guard next door deliberately ignores URLs
-# on hosts that are not ours — in chat, somebody else's picture is none of our
-# business. On the @animate route that reasoning does not hold: the only tool
-# there is generate_video, which NEVER returns a URL (the clip does not exist
-# for another two minutes; the poller delivers it later). So a link in an
-# @animate reply is invented, whoever it names. #afternet, 2026-08-21:
-#
-#   <rdrake> vibebot animate baby prince harry riding a corgi round the throne
-#   <vibebot> https://files.oaiusercontent.com/file-VlKq…harry-corgi.gif
-#
-# Four seconds after the request, for a render that takes 135, on a host the
-# bot has never published to.
-_ANY_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
-# Said when a queued clip's reply had to be thrown away. Deliberately not the
-# submission ack's wording: this one is written after the fact, about a job
-# already accepted.
-_VIDEO_FABRICATION_FALLBACK = "Your video is rendering — I'll post the link here when it's ready."
-# Said when the reply invented a link AND no clip was queued behind it, so
-# there is nothing coming.
-_VIDEO_FABRICATION_NOTHING_QUEUED = "I couldn't queue that video."
-
-
-def _strip_urls(content: str) -> str:
-    """Remove every URL from ``content``, tidying the whitespace it leaves.
-
-    Blunt on purpose, and only ever called where a URL cannot be legitimate.
-    A retry is the wrong tool here: the model has no link to give, so asking
-    it again just buys a second invention at the cost of the user's latency.
-    """
-    return " ".join(_ANY_URL_RE.sub("", content).split())
-
-
 _MAX_IMAGE_FABRICATION_RETRIES = 1
 _IMAGE_FABRICATION_RETRY_NUDGE = (
     "Stop — you wrote an image link without generating an image, so that link "
@@ -726,20 +640,11 @@ def _strip_image_failures(
 
 
 # Internal bookkeeping markers that some routes used to store in place of the
-# reply the user actually saw: "[Video job: video_gen_0b5b…]", and the
-# "[Generated image: <url>]" form before it. Nothing writes them any more, but
-# they are sitting in every conversation and channel window that predates that
-# change, where a non-reasoning model reads them as the house style for
-# answering a media request. #afternet, 2026-08-21:
-#
-#   <fc42> vibebot animate year 7 stinky lad having norovirus in a theatre
-#   <vibebot> [Video job: video_gen_0b5b4e3a1e6e48b3a9e5f1c0d2b4a6e7]
-#   <fc42> vibebot animate year 7 stinky lad having norovirus in a theatre
-#   <vibebot> [Video job: video_gen_0b5b4e3a1e6e48b3a9e5f1c0d2b4a6e7]
-#
-# The same id twice is the tell: two submissions cannot share one, so no video
-# was queued either time. The model was copying a marker out of its history and
-# nobody's clip was rendering.
+# reply the user actually saw: "[Generated image: <url>]", "[Video job: …]".
+# Nothing writes them any more, but they are sitting in every conversation and
+# channel window that predates that change, where a non-reasoning model reads
+# them as the house style for answering a media request and copies one out of
+# its history instead of answering.
 _JOB_MARKER_RE = re.compile(
     r"\[\s*(?:video\s+job|generated\s+image|image|video)\s*:[^\]]*\]",
     re.IGNORECASE,
@@ -749,9 +654,9 @@ _JOB_MARKER_RE = re.compile(
 def _is_job_marker_reply(content: str) -> bool:
     """Return True iff a reply is nothing but internal job markers.
 
-    Deliberately narrow. A reply that mentions a job id while saying something
-    to the user ("your clip is rendering — job video_gen_0b5b…") is chatty, not
-    broken, and the guard has no business rewriting it. What has to be caught
+    Deliberately narrow. A reply that mentions a marker while saying something
+    to the user is chatty, not broken, and the guard has no business rewriting
+    it. What has to be caught
     is the reply that is ONLY the marker, because that is the copied-from-
     history case and it tells the user nothing.
     """
@@ -903,9 +808,9 @@ _MAX_TOOL_COMPLAINT_RETRIES = 1
 _MAX_JOB_MARKER_RETRIES = 1
 _JOB_MARKER_RETRY_NUDGE = (
     "Stop — you answered with an internal job marker copied from an earlier "
-    "turn, and the id in it is not yours. Nothing was queued. If the user "
-    "asked for a video, call generate_video now; then say in one plain "
-    "sentence that it is rendering. Never print a bracketed marker or a job id."
+    "turn, and it is not yours. If the user asked for an image, call "
+    "generate_image now and use only the URL it returns; otherwise answer "
+    "what was asked. Never print a bracketed marker."
 )
 
 
@@ -1403,8 +1308,8 @@ def _msg_stash_context(msg: IrcMsg | None) -> tuple[str, str, bool, str | None]:
     is_channel = bool(reply_target) and ircutils.isChannel(reply_target)
     if reply_target and not is_channel:
         # In a PM, args[0] is the BOT's own nick — it is the PRIVMSG recipient,
-        # not the person who asked. Stashing that delivers the finished clip to
-        # the bot itself, which is silence from the requester's side, so the
+        # not the person who asked. Stashing that delivers the finished result
+        # to the bot itself, which is silence from the requester's side, so the
         # sender's nick is the only correct PM target.
         reply_target = nick or reply_target
     return nick, reply_target, is_channel, account_from_server_tags(msg)
@@ -1652,39 +1557,6 @@ class MemePicture(NamedTuple):
     cost: float = 0.0
     model: str = ""
     error: str | None = None
-
-
-class ReferenceImage(NamedTuple):
-    """A user-supplied still, fetched and re-encoded, ready to condition a clip.
-
-    ``data`` is always the bot's own encode of the decoded pixels, never the
-    bytes fetched from the URL — see ``fetch_reference_image``.
-    """
-
-    data: bytes
-    extension: str = "jpg"
-
-
-class VideoResult(NamedTuple):
-    """Result of submitting a video generation job.
-
-    Submission only. The clip itself arrives later through the pending_tasks
-    poller, so ``content`` is an acknowledgement to show the user now, not a
-    URL — the URL does not exist yet and will not for another minute or two.
-    """
-
-    content: str
-    job_id: str = ""
-    queued: bool = False
-    model: str = ""
-    error: str | None = None
-    # Always zero, and present only so VideoResult satisfies the shared
-    # _store_context_and_log_usage contract. The video box is self-hosted and
-    # reports no token accounting, so a usage row for animate records that the
-    # request happened, not what it cost.
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    cost: float = 0.0
 
 
 # The dossier is filtered by SHAPE, not by vocabulary: only the lines the
@@ -2121,7 +1993,7 @@ class LLMService:
         self.log = log.getPluginLogger("LLM.service")
         self.log.addFilter(TraceFilter())
         # One +typing indicator per (network, target), refcounted across every
-        # holder — planner turns, chat replies, the render refresher. Its
+        # holder — planner turns and chat replies. Its
         # keepalive thread starts on the first hold. See typing_holds.py.
         self.typing = TypingHolds(self.send_typing_indicator, self.log)
         self._cleanup_lock = threading.Lock()
@@ -2601,7 +2473,7 @@ class LLMService:
     def _format_duration(seconds: int) -> str:
         """Coarse human duration: ``"6m 45s"``, ``"2h 5m"``, ``"0s"``.
 
-        Shared by the uptime line and the animate wait estimate so the bot
+        Shared by the uptime line and the pending-task listing so the bot
         says durations one way. Trailing zero units are dropped, and zero
         itself still renders ``"0s"`` rather than an empty string.
         """
@@ -2697,9 +2569,8 @@ class LLMService:
         callable runs. Safe without irc/msg — returns a no-op.
 
         Holds are refcounted per target in ``self.typing``: two commands on
-        one channel share a single indicator and a single keepalive thread,
-        and the render refresher's hold on a channel outlives a planner turn
-        that ends mid-render. See ``typing_holds.TypingHolds``.
+        one channel share a single indicator and a single keepalive thread.
+        See ``typing_holds.TypingHolds``.
         """
         # The caller's reply target: in a PM, msg.args[0] is the bot's own
         # nick, and an indicator sent there never reaches the sender.
@@ -3234,32 +3105,20 @@ class LLMService:
         return isinstance(error, (provider.AuthenticationError, provider.BadRequestError))
 
     @staticmethod
-    def _compute_backoff(attempt_count: int, task_type: str = "") -> float:
+    def _compute_backoff(attempt_count: int) -> float:
         """Compute next retry delay.
 
-        Exponential for the retry paths, where a repeated failure means
-        something is wrong and backing off is the point. Flat, and much
-        tighter, for animate, where it is not a retry at all: the job is known
-        to be running on the video box and "not ready yet" is the expected
-        answer on every pass until it lands, so doubling the wait only adds
-        dead air AFTER the render has already finished. Measured in prod on
-        2026-08-21 — a clip whose render finished at 00:26:15 sat on the
-        ladder and was not delivered until 00:28:05.
-
-        This value is the poll cadence, not just a floor on it: after each
-        pass the plugin arms a one-shot wakeup at the earliest
-        ``next_attempt_at`` (LLM._schedule_queue_wakeup), so whatever is
-        returned here is how long the user waits past the render finishing.
+        Exponential: a repeated failure means something is wrong and backing
+        off is the point. This value is the poll cadence, not just a floor on
+        it: after each pass the plugin arms a one-shot wakeup at the earliest
+        ``next_attempt_at`` (LLM._schedule_queue_wakeup).
 
         Args:
             attempt_count: Number of attempts already made.
-            task_type: Command type, to separate polling from retrying.
 
         Returns:
             Delay in seconds before next retry.
         """
-        if task_type == "animate":
-            return ANIMATE_POLL_INTERVAL_SECONDS
         return exponential_backoff(
             attempt_count, base=PENDING_INITIAL_BACKOFF_SECONDS, cap=PENDING_MAX_BACKOFF_SECONDS
         )
@@ -3515,8 +3374,6 @@ class LLMService:
                     result = self._retry_completion(task, request_data)
                 elif task.task_type == "draw":
                     result = self._retry_image(task, request_data)
-                elif task.task_type == "animate":
-                    result = self._retry_video(task, request_data)
                 else:
                     db.update_task_for_delivery(
                         task.id,
@@ -3568,7 +3425,7 @@ class LLMService:
                     # top-of-pass ``now`` is stale and would shorten (or invert)
                     # the backoff window. Anchor next_attempt_at to the current
                     # time so the retry is actually deferred by the full delay.
-                    delay = self._compute_backoff(task.attempt_count, task.task_type)
+                    delay = self._compute_backoff(task.attempt_count)
                     db.release_pending_task(
                         task.id,
                         time.time() + delay,
@@ -3910,7 +3767,7 @@ class LLMService:
         )
 
     def subject_dossier(self, request_text: str, *, channel: str) -> SubjectDossier:
-        """Research the real subjects a @draw or @animate request names.
+        """Research the real subjects a @draw request names.
 
         One grounded completion in front of the planner, on the same path
         ``search_web`` runs on. Returns a fact list the planner can paste
@@ -5024,7 +4881,6 @@ Examples (echo → action_prompt: ""):
         cancel_pending_task_fn: Callable[[str], dict[str, Any]] | None = None,
         cancel_all_pending_tasks_fn: Callable[[], dict[str, Any]] | None = None,
         draw_fn: Callable[[str], ToolCallbackResult] | None = None,
-        animate_fn: Callable[[str], ToolCallbackResult] | None = None,
         search_fn: Callable[..., Any] | None = None,
         fetch_fn: Callable[..., Any] | None = None,
         code_fn: Callable[..., Any] | None = None,
@@ -5361,7 +5217,6 @@ Examples (echo → action_prompt: ""):
                 cancel_pending_task_fn=cancel_pending_task_fn,
                 cancel_all_pending_tasks_fn=cancel_all_pending_tasks_fn,
                 draw_fn=draw_fn,
-                animate_fn=animate_fn,
                 search_fn=search_fn,
                 fetch_fn=fetch_fn,
                 code_fn=code_fn,
@@ -5380,12 +5235,6 @@ Examples (echo → action_prompt: ""):
             # ever answer "not configured".
             if not status_pages:
                 exclude_tools = exclude_tools | {"check_service_status"}
-            # Same rule for generate_video, with a sharper edge than wasted
-            # tokens: the tool promises the user a clip that arrives later, so
-            # a model that calls it on an unconfigured box says "rendering it
-            # now" about a video that will never come.
-            if not self.video_available(channel):
-                exclude_tools = exclude_tools | {"generate_video"}
             if self.draw_unavailable_reason(channel):
                 exclude_tools = exclude_tools | {"generate_image"}
             profile_tools = get_tools_for_profile(profile.id, exclude=exclude_tools)
@@ -5403,25 +5252,6 @@ Examples (echo → action_prompt: ""):
             force_initial_storybook = (
                 _has_tool(profile_tools, "verse_storybook")
                 and EXPLICIT_STORYBOOK_RE.search(prompt) is not None
-            )
-
-            # @animate is not a request the model gets to interpret: the user
-            # ran the command, so step 0 has no business deciding whether to
-            # make a video. Without this the planner can answer in text —
-            # including by copying a "[Video job: …]" marker out of history,
-            # which is how #afternet got two acknowledgements for a clip
-            # nobody queued (2026-08-21). Tool presence is the gate: the box
-            # being unconfigured drops generate_video above, and forcing a
-            # tool that is not in the list is a provider error.
-            # Two ways a video request becomes non-negotiable: the @animate
-            # command route, where the user already said what they wanted, and
-            # an explicit ask in chat, which is where they actually say it —
-            # "vibebot animate X" never reaches the command (see inFilter).
-            # Tool presence is the gate in both cases: an unconfigured box
-            # drops generate_video above, and forcing a tool that is not in
-            # the list is a provider error.
-            force_initial_video = _has_tool(profile_tools, "generate_video") and (
-                profile.id == PROFILE_ANIMATE or EXPLICIT_VIDEO_RE.search(prompt) is not None
             )
 
             # Chat only: the remind_action fire frame names the reminder on
@@ -5450,10 +5280,6 @@ Examples (echo → action_prompt: ""):
             minted_image_urls: set[str] = set()
             image_tool_error: str | None = None
             image_tool_called = False
-            # Whether generate_video ran this turn. The difference between "the
-            # clip is coming, the reply was just wrong" and "nothing was
-            # queued", which are two different things to tell the user.
-            video_tool_called = False
             own_image_hosts = self.own_image_hosts()
             # Retries spent forcing generate_image after the model wrote an
             # image URL without calling it (see _MAX_IMAGE_FABRICATION_RETRIES).
@@ -5485,11 +5311,6 @@ Examples (echo → action_prompt: ""):
                     completion_kwargs["tool_choice"] = {
                         "type": "function",
                         "function": {"name": "generate_image"},
-                    }
-                elif _step == 0 and force_initial_video:
-                    completion_kwargs["tool_choice"] = {
-                        "type": "function",
-                        "function": {"name": "generate_video"},
                     }
                 elif _step == 0 and force_initial_storybook:
                     completion_kwargs["tool_choice"] = {
@@ -5603,29 +5424,6 @@ Examples (echo → action_prompt: ""):
                             channel,
                         )
                         content = image_tool_error or _IMAGE_FABRICATION_FALLBACK
-                        last_assistant_text = content
-
-                    # No link may leave the @animate route. generate_video is
-                    # the only tool there and it never returns a URL, so a link
-                    # in this reply was invented — see _ANY_URL_RE. Stripped
-                    # rather than retried: the model has no link to give, and a
-                    # re-roll buys a second invention. What is left depends on
-                    # whether a clip is actually coming.
-                    if route_profile == PROFILE_ANIMATE and _ANY_URL_RE.search(content):
-                        self.log.warning(
-                            "assistant_completion: @animate reply invented a link "
-                            "(video_tool_called=%s); stripping it model=%s channel=%s",
-                            video_tool_called,
-                            model,
-                            channel,
-                        )
-                        content = _strip_urls(content)
-                        if not content:
-                            content = (
-                                _VIDEO_FABRICATION_FALLBACK
-                                if video_tool_called
-                                else _VIDEO_FABRICATION_NOTHING_QUEUED
-                            )
                         last_assistant_text = content
 
                     # The turn delivered an image and also narrated a draw that
@@ -5826,8 +5624,6 @@ Examples (echo → action_prompt: ""):
                             storybook_ok = True
                         if tc.name in SILENT_TOOLS:
                             silent_ok = True
-                        if tc.name == "generate_video":
-                            video_tool_called = True
                         if tc.name in _IMAGE_MINTING_TOOLS:
                             # Record what this turn actually minted, so the
                             # stale-image guard below can tell a fresh image
@@ -6264,50 +6060,11 @@ Examples (echo → action_prompt: ""):
         finally:
             stop_typing()
 
-    # ------------------------------------------------------------------
-    # Video generation (animate)
-    # ------------------------------------------------------------------
-    # The video server is a self-hosted vLLM box, not a LiteLLM provider, so
-    # none of the completion plumbing applies: no litellm call, no token
-    # accounting, no provider key lookup. What it does have is a job API whose
-    # jobs outlive the client, which is the only reason a ~70s generation can
-    # sit behind an IRC command at all. Submit stashes the id and returns; the
-    # pending_tasks poller that already runs every 30s does the waiting.
-
-    def _animate_base_url(self) -> str:
-        """Origin of the video server, or "" when animate is not configured.
-
-        Rejects an unsafe or malformed URL the same way the image uploader
-        does, so a typo in the registry disables the feature instead of
-        pointing the bot at something it should not be POSTing prompts to.
-        """
-        base = (self.plugin.registryValue("animateApiUrl") or "").strip().rstrip("/")
-        if not base or not validate_external_url(base):
-            return ""
-        return base
-
-    def animate_available(self) -> bool:
-        """True when both halves of the video credential are present.
-
-        The URL lives in the registry and the token in the environment, so
-        either can be missing independently. Callers use this to hide the
-        command and the tool rather than let a user spend a round trip
-        discovering the box is not wired up.
-        """
-        return bool(self._animate_base_url() and apikeys.animate_api_key())
-
-    def video_available(self, channel: str | None) -> bool:
-        """True when video is configured and ``animateEnabled`` is on here."""
-        return bool(self.plugin.registryValue("animateEnabled", channel)) and (
-            self.animate_available()
-        )
-
     def draw_unavailable_reason(self, channel: str | None) -> str | None:
         """Why @draw and generate_image are off in ``channel``, or None.
 
-        Checked before the tool is advertised, for the same reason as
-        generate_video: a model offered a tool that cannot work will call it
-        and then narrate the failure.
+        Checked before the tool is advertised: a model offered a tool that
+        cannot work will call it and then narrate the failure.
         """
         if not self.plugin.registryValue("drawEnabled", channel):
             return _("Drawing is turned off in this channel.")
@@ -6315,530 +6072,6 @@ Examples (echo → action_prompt: ""):
         if not model:
             return _("Error: no image model configured.")
         return self._missing_key_error(model)
-
-    def _animate_headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {apikeys.animate_api_key()}",
-            "User-Agent": "VibeBot/8",
-        }
-
-    # A reference image is a file chosen by whoever typed the line, fetched by
-    # the bot from a host of their choosing. Both caps are on the bot's side of
-    # that trust boundary: the byte cap bounds the download, the edge cap
-    # bounds the decode, and everything forwarded is Pillow's re-encode rather
-    # than the bytes that came off the wire.
-    _REFERENCE_MAX_BYTES = 10 * 1024 * 1024
-    _REFERENCE_MAX_EDGE = 1920
-
-    # The planner's copy is for seeing what is in frame, not for reading the
-    # pixels. Small: a full-size still would be the dominant cost of a turn
-    # whose whole output is ~150 words.
-    _REFERENCE_VISION_EDGE = 768
-
-    def reference_vision_url(self, reference: ReferenceImage) -> str | None:
-        """Inline data URL of a reference, small enough to hand a planner.
-
-        Inline rather than the user's original link: those bytes have already
-        been fetched, size-checked and re-encoded here, and passing the URL
-        instead would re-open a fetch — by the provider this time — that this
-        path deliberately closed.
-        """
-        try:
-            import base64
-            from io import BytesIO
-
-            from PIL import Image
-
-            with Image.open(BytesIO(reference.data)) as img:
-                frame = img.convert("RGB")
-            if max(frame.size) > self._REFERENCE_VISION_EDGE:
-                frame.thumbnail(
-                    (self._REFERENCE_VISION_EDGE, self._REFERENCE_VISION_EDGE), Image.LANCZOS
-                )
-            buf = BytesIO()
-            frame.save(buf, format="JPEG", quality=80)
-        except Exception as e:  # noqa: BLE001 — no vision copy just means a blind planner
-            self.log.warning("Reference vision copy failed: %s", str(e)[:200])
-            return None
-        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-
-    def fetch_reference_image(self, url: str) -> ReferenceImage | None:
-        """Fetch a user-supplied image and re-encode it for the video box.
-
-        Returns None for anything that is not plainly a public, decodable
-        image — the caller reports that rather than rendering without it.
-
-        The guards, in order: ``validate_image_url`` (scheme, extension, no
-        traversal, no literal private IPs, every resolved A/AAAA globally
-        routable), no redirects (a 3xx Location could name a host the original
-        URL was rejected for), a bounded read, a magic-byte sniff, then a
-        Pillow decode and fresh JPEG encode. That last step is what makes a
-        polyglot file or an EXIF-borne payload moot: what leaves here is pixels
-        re-encoded by us, not the file the server sent.
-        """
-        import urllib.request
-
-        try:
-            if not self.validate_image_url(url):
-                self.log.warning("Refusing unsafe reference image URL: %s", url[:200])
-                return None
-        except Exception:  # noqa: BLE001 — a raising guard must fail closed
-            self.log.warning("Reference URL validation raised for: %s", url[:200])
-            return None
-
-        opener = _no_redirect_opener()
-        timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
-
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "VibeBot/8"})
-            with opener.open(req, timeout=timeout) as resp:  # noqa: S310
-                data = resp.read(self._REFERENCE_MAX_BYTES + 1)
-        except Exception as e:  # noqa: BLE001 — any fetch failure is just "no reference"
-            self.log.warning("Reference image fetch failed: %s", str(e)[:200])
-            return None
-
-        if len(data) > self._REFERENCE_MAX_BYTES:
-            self.log.warning("Reference image too large: %s", url[:200])
-            return None
-        if self._detect_image_format(data) is None:
-            self.log.warning("Reference image is not an image: %s", url[:200])
-            return None
-
-        try:
-            from io import BytesIO
-
-            from PIL import Image
-
-            with meme_render.open_image(data) as img:
-                img.load()
-                frame = img.convert("RGB")
-            if max(frame.size) > self._REFERENCE_MAX_EDGE:
-                frame.thumbnail((self._REFERENCE_MAX_EDGE, self._REFERENCE_MAX_EDGE), Image.LANCZOS)
-            buf = BytesIO()
-            frame.save(buf, format="JPEG", quality=92)
-        except Exception as e:  # noqa: BLE001 — undecodable is indistinguishable from hostile
-            self.log.warning("Reference image would not decode: %s", str(e)[:200])
-            return None
-
-        return ReferenceImage(data=buf.getvalue(), extension="jpg")
-
-    def _animate_form(
-        self, prompt: str, channel: str | None, *, has_reference: bool = False
-    ) -> dict[str, str]:
-        """Build the multipart form for a submission.
-
-        Every field is a string because the endpoint takes multipart/form-data,
-        not JSON — including the ints, which FastAPI coerces on the way in.
-
-        ``has_reference`` moves the task, not the audio setting. Measured
-        against the box on 2026-08-21, the served FL2VA checkpoint partition
-        accepts exactly ['fl2va', 't2va'], and a submission with a file
-        attached under t2va fails with "t2va does not accept an image
-        condition". So a reference forces fl2va whichever way animateAudio is
-        set: silent audio is not on the menu for image-conditioned clips.
-        """
-        size = (self.plugin.registryValue("animateSize", channel) or "1280x704").strip()
-        duration = int(self.plugin.registryValue("animateDuration", channel))
-        audio = bool(self.plugin.registryValue("animateAudio", channel))
-
-        # task/duration ride in extra_params rather than the top-level fields:
-        # `seconds` is the OpenAI-shaped knob, but this server reads the clip
-        # length and the t2v/t2va selection out of extra_params, and sending
-        # both invites the two disagreeing.
-        extra: dict[str, object] = {
-            "task": "fl2va" if has_reference else ("t2va" if audio else "t2v"),
-            "duration": duration,
-        }
-        if audio or has_reference:
-            extra["audio_flow_shift"] = int(self.plugin.registryValue("animateAudioFlowShift"))
-
-        form = {
-            "prompt": prompt,
-            "size": size,
-            "num_inference_steps": str(int(self.plugin.registryValue("animateSteps", channel))),
-            "flow_shift": str(int(self.plugin.registryValue("animateFlowShift"))),
-            "extra_params": json.dumps(extra),
-        }
-        model = (self.plugin.registryValue("animateModel", channel) or "").strip()
-        if model:
-            form["model"] = model
-        return form
-
-    @staticmethod
-    def _multipart_body(
-        fields: dict[str, str],
-        files: dict[str, tuple[str, bytes, str]] | None = None,
-    ) -> tuple[bytes, str]:
-        """Encode form fields, and optionally file parts, as multipart/form-data.
-
-        ``files`` maps a field name to ``(filename, data, content_type)``. The
-        file parts go last so a server reading the stream has every plain field
-        before it starts buffering megabytes.
-        """
-        boundary = f"----VibeBot{uuid.uuid4().hex}"
-        parts = []
-        for name, value in fields.items():
-            parts.append(f"--{boundary}\r\n".encode())
-            parts.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
-            parts.append(str(value).encode())
-            parts.append(b"\r\n")
-        for name, (filename, data, content_type) in (files or {}).items():
-            parts.append(f"--{boundary}\r\n".encode())
-            parts.append(
-                f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'.encode()
-            )
-            parts.append(f"Content-Type: {content_type}\r\n\r\n".encode())
-            parts.append(data)
-            parts.append(b"\r\n")
-        parts.append(f"--{boundary}--\r\n".encode())
-        return b"".join(parts), boundary
-
-    def _animate_request(
-        self,
-        path: str,
-        *,
-        method: str = "GET",
-        body: bytes | None = None,
-        content_type: str | None = None,
-        raw: bool = False,
-        timeout: float | None = None,
-    ) -> tuple[int, object]:
-        """One HTTP call to the video server.
-
-        Returns ``(status_code, payload)`` where payload is decoded JSON, or
-        raw bytes when ``raw``. HTTP errors come back as a status code with the
-        decoded error body rather than an exception, because every caller wants
-        to distinguish "job not ready" from "job is gone" from "box is down"
-        and an exception flattens those together.
-
-        ``timeout`` overrides ``animateTimeout`` for callers that must not
-        block a command on a wedged box; ``None`` keeps the registry value.
-        """
-        import urllib.error
-        import urllib.request
-
-        base = self._animate_base_url()
-        if not base:
-            return 0, {"error": {"message": "animateApiUrl is not configured"}}
-
-        headers = self._animate_headers()
-        if content_type:
-            headers["Content-Type"] = content_type
-
-        # Same fail-closed redirect policy as the image paths: a 3xx from a
-        # media host could point anywhere, and this request carries a bearer
-        # token in its headers.
-        opener = _no_redirect_opener()
-        if timeout is None:
-            timeout = self.plugin.registryValue("animateTimeout")
-        req = urllib.request.Request(f"{base}{path}", data=body, headers=headers, method=method)
-
-        try:
-            with opener.open(req, timeout=timeout) as resp:  # noqa: S310
-                data = resp.read() if raw else resp.read(256 * 1024)
-                if raw:
-                    return resp.status, data
-                return resp.status, json.loads(data.decode("utf-8", "replace"))
-        except urllib.error.HTTPError as e:
-            detail: object
-            try:
-                detail = json.loads(e.read(64 * 1024).decode("utf-8", "replace"))
-            except Exception:
-                detail = {"error": {"message": f"HTTP {e.code}"}}
-            return e.code, detail
-
-    def video_generation(
-        self,
-        prompt: str,
-        *,
-        nick: str = "",
-        reply_target: str = "",
-        is_channel: bool = False,
-        channel: str | None = None,
-        account: str | None = None,
-        reply_msgid: str = "",
-        reference: ReferenceImage | None = None,
-    ) -> VideoResult:
-        """Submit a video job and stash it for background delivery.
-
-        Returns as soon as the server hands back a job id — typically well
-        under a second. The clip takes ~70s at the default step count, which is
-        far too long to hold an IRC command open, so nothing here waits for it.
-
-        Args:
-            prompt: Text description of the video.
-            nick: Requester, for the eventual delivery line.
-            reply_target: Channel or PM nick to deliver the finished clip to.
-            is_channel: True when reply_target is a channel.
-            channel: Channel for per-channel config lookups.
-            account: Resolved account at submission, persisted with the task.
-            reply_msgid: msgid of the requesting message, so the clip is
-                delivered as an IRCv3 threaded reply minutes later rather than
-                as a bare line with nothing tying it to the request.
-            reference: Optional still to use as the clip's first frame. Its
-                presence moves the task to fl2va — see ``_animate_form``.
-
-        Returns:
-            VideoResult whose ``content`` is the acknowledgement to print now.
-        """
-        if not self.video_available(channel):
-            msg = (
-                _("Video is turned off in this channel.")
-                if self.animate_available()
-                else _("Error: video generation is not configured.")
-            )
-            return VideoResult(content=msg, error=msg)
-
-        model = (self.plugin.registryValue("animateModel", channel) or "").strip()
-        submitted_at = time.time()
-
-        try:
-            files = (
-                {
-                    "input_reference": (
-                        f"reference.{reference.extension}",
-                        reference.data,
-                        self._IMAGE_MIME_TYPES.get(reference.extension, "image/jpeg"),
-                    )
-                }
-                if reference
-                else None
-            )
-            body, boundary = self._multipart_body(
-                self._animate_form(prompt, channel, has_reference=reference is not None),
-                files=files,
-            )
-            status, payload = self._animate_request(
-                "/v1/videos",
-                method="POST",
-                body=body,
-                content_type=f"multipart/form-data; boundary={boundary}",
-            )
-        except Exception as e:
-            self.log.warning("video_generation submit failed: %s", e)
-            msg = _("Error: could not reach the video server.")
-            return VideoResult(content=msg, error=msg)
-
-        if status != 200 or not isinstance(payload, dict) or not payload.get("id"):
-            reason = self._animate_error_text(payload)
-            self.log.warning("video_generation rejected: status=%s reason=%s", status, reason[:200])
-            msg = _("Error: video server rejected the request: %s") % reason[:150]
-            return VideoResult(content=msg, error=msg)
-
-        job_id = str(payload.get("id"))
-        self.log.info("video_generation submitted: job_id=%s model=%s", job_id, model or "default")
-
-        # No delivery target means an inner caller with nobody to deliver to.
-        # Stashing would emit an empty-target PRIVMSG on every attempt, the
-        # same trap _stash_timeout guards for completions.
-        if not reply_target:
-            return VideoResult(
-                content=_("Video job %s submitted.") % job_id,
-                job_id=job_id,
-                queued=True,
-                model=model,
-            )
-
-        # Read the depth BEFORE stashing, or this clip counts itself as one of
-        # the clips ahead of it. Decoration, not a precondition: a locked
-        # database must not sink a job already running on the box, so a failure
-        # degrades to "position 1" rather than aborting the submission.
-        try:
-            ahead = max(0, int(self.plugin.db.count_pending_animate(submitted_at)))
-        except Exception as e:
-            self.log.warning("could not read animate queue depth: %s", e)
-            ahead = 0
-
-        stashed = self._stash_timeout(
-            task_type="animate",
-            nick=nick,
-            reply_target=reply_target,
-            is_channel=is_channel,
-            prompt=prompt,
-            model=model,
-            request_data={"job_id": job_id, "prompt": prompt, "reply_msgid": reply_msgid},
-            submitted_at=submitted_at,
-            account=account,
-        )
-        if not stashed:
-            # The job is running on the box regardless; there is just nothing
-            # left that will collect it. Say so rather than promise delivery.
-            self.log.warning("Could not stash animate job %s for delivery", job_id)
-            msg = _("Error: video job submitted but could not be tracked for delivery.")
-            return VideoResult(content=msg, job_id=job_id, error=msg)
-
-        # The box renders one clip at a time, so every clip ahead costs a full
-        # render before this one starts — the estimate is the honest ceiling.
-        per_clip = int(self.plugin.registryValue("animateRenderSeconds") or 135)
-        position = ahead + 1
-        wait = self._format_duration(position * per_clip)
-        return VideoResult(
-            content=_(
-                "Queued at position %d (%d ahead), estimated wait about %s. "
-                "The finished clip will be posted here."
-            )
-            % (position, ahead, wait),
-            job_id=job_id,
-            queued=True,
-            model=model,
-        )
-
-    @staticmethod
-    def _animate_error_text(payload: object) -> str:
-        """Pull a human-readable reason out of the server's error shape."""
-        if isinstance(payload, dict):
-            err = payload.get("error")
-            if isinstance(err, dict):
-                message = err.get("message")
-                if message:
-                    return str(message)
-            elif isinstance(err, str) and err:
-                return err
-            detail = payload.get("detail")
-            if detail:
-                return str(detail)
-        return "unknown error"
-
-    def _retry_video(self, task, request_data: dict) -> PendingTaskResult:
-        """Poll a submitted video job and publish it once it lands.
-
-        Unlike the other retry handlers this never resubmits — the work is
-        already running on the box, and a resubmit would book a second job's
-        worth of GPU time for the same request. It polls, and when the job is
-        done it pulls the MP4 and uploads it to the paste host.
-
-        Args:
-            task: PendingTaskRow from the database.
-            request_data: Parsed request payload with a 'job_id' key.
-
-        Returns:
-            PendingTaskResult with status and the public URL.
-        """
-
-        def _fail(reason: str) -> PendingTaskResult:
-            return PendingTaskResult(
-                status="failed_terminal",
-                task_type=task.task_type,
-                nick=task.nick,
-                reply_target=task.reply_target,
-                is_channel=bool(task.is_channel),
-                prompt_preview=task.prompt_preview,
-                model=task.model,
-                reason=reason,
-            )
-
-        job_id = request_data.get("job_id")
-        if not isinstance(job_id, str) or not job_id:
-            return _fail("Malformed request data: missing job_id")
-
-        if not self.animate_available():
-            return _fail("Video generation is no longer configured")
-
-        status, payload = self._animate_request(f"/v1/videos/{job_id}")
-
-        # 404 is terminal: the server restarted or the job was reaped, and no
-        # amount of further polling brings it back.
-        if status == 404:
-            return _fail("Video job is no longer on the server")
-        if status != 200 or not isinstance(payload, dict):
-            # Transient — a bounced box should not lose a job that may still be
-            # running. Raise so the poller releases it with backoff.
-            raise provider.RequestTimeoutError(  # noqa: TRY301
-                f"Video poll failed: status={status}"
-            )
-
-        job_status = str(payload.get("status") or "")
-        if job_status == "failed":
-            return _fail(self._animate_error_text(payload)[:200])
-        if job_status != "completed":
-            raise provider.RequestTimeoutError(  # noqa: TRY301
-                f"Video still rendering: status={job_status}"
-            )
-
-        code, data = self._animate_request(f"/v1/videos/{job_id}/content", raw=True)
-        if code != 200 or not isinstance(data, bytes) or not data:
-            return _fail("Video finished but the download failed")
-
-        url = self._save_video_bytes(data)
-        if not url:
-            return _fail("Video finished but could not be published")
-
-        return PendingTaskResult(
-            status="completed",
-            task_type=task.task_type,
-            nick=task.nick,
-            reply_target=task.reply_target,
-            is_channel=bool(task.is_channel),
-            prompt_preview=task.prompt_preview,
-            model=task.model,
-            content=url,
-        )
-
-    def cancel_video(self, job_id: str) -> bool:
-        """Ask the box to drop a job.
-
-        Best effort: the caller deletes the delivery row either way, so a box
-        that ignores DELETE only costs GPU time, never a stray delivery. It
-        follows that this must not raise — the command that calls it has
-        already promised the user the clip is gone.
-
-        Five seconds, not ``animateTimeout``: ``@renders clear`` cancels every
-        queued row in turn, so the registry's 60 s would let one wedged box
-        hold the command — and the user — for a minute per row.
-
-        Args:
-            job_id: The video job id stashed in the pending task's request data.
-
-        Returns:
-            True when the box accepted the cancel.
-        """
-        try:
-            status, payload = self._animate_request(
-                f"/v1/videos/{job_id}", method="DELETE", timeout=5.0
-            )
-        except Exception as e:  # noqa: BLE001 — cancel must never raise into a command
-            self.log.warning("video cancel failed for %s: %s", job_id, str(e)[:200])
-            return False
-
-        if status in (200, 202, 204):
-            return True
-
-        self.log.warning(
-            "video cancel rejected for %s: status=%s reason=%s",
-            job_id,
-            status,
-            self._animate_error_text(payload)[:200],
-        )
-        return False
-
-    def _save_video_bytes(self, video_bytes: bytes) -> str | None:
-        """Publish MP4 bytes and return the public URL.
-
-        Uploads to ``imageUploadUrl`` when configured — the reference host
-        accepts video on the same ``images[]`` field and files it as
-        ``vid_*.mp4`` — and falls back to the local HTTP root, which is the
-        same two-destination rule ``_save_image_bytes`` follows.
-        """
-        url = self._upload_image_bytes(video_bytes, "mp4")
-        if url:
-            return url
-
-        http_root, url_base = self.get_http_paths()
-        if not http_root:
-            return None
-
-        hash_input = hashlib.sha256(video_bytes[:256]).hexdigest() + str(time.time())
-        filename = f"vid_{hashlib.sha256(hash_input.encode()).hexdigest()[:16]}.mp4"
-        filepath = Path(http_root) / filename
-
-        try:
-            Path(http_root).mkdir(parents=True, exist_ok=True)
-            with AtomicFile(str(filepath), "wb") as f:
-                f.write(video_bytes)
-            return f"{url_base}/{filename}"
-        except OSError as e:
-            self.log.error("Failed to save video file: %s", e)
-            return None
 
     def own_image_hosts(self) -> frozenset[str]:
         """Hosts that only this bot can legitimately publish images to.
@@ -7124,11 +6357,6 @@ Examples (echo → action_prompt: ""):
         "jpeg": "image/jpeg",
         "webp": "image/webp",
         "gif": "image/gif",
-        # Video rides the same uploader: the reference host takes MP4 on the
-        # images[] field and files it as vid_*.mp4. Sharing the path means
-        # animate inherits the reply validation and the local fallback rather
-        # than growing a second, subtly different uploader.
-        "mp4": "video/mp4",
     }
 
     def _image_upload_base(self) -> str:
@@ -7227,13 +6455,8 @@ Examples (echo → action_prompt: ""):
         parsed = urlparse(url)
         # An image upload may legitimately come back under a different image
         # extension — the reference host recompresses, so png in can be jpg
-        # out — which is why images accept the whole set rather than the one
-        # sent. Video is not interchangeable with them: .mp4 is only a valid
-        # reply to an .mp4 upload, so a host answering an image POST with a
-        # video URL still fails closed.
-        valid_extensions = (
-            (".mp4",) if extension == "mp4" else (".png", ".jpg", ".jpeg", ".webp", ".gif")
-        )
+        # out — which is why it accepts the whole set rather than the one sent.
+        valid_extensions = (".png", ".jpg", ".jpeg", ".webp", ".gif")
         if (
             parsed.scheme not in ("http", "https")
             or parsed.hostname != urlparse(endpoint).hostname
@@ -7622,7 +6845,7 @@ Examples (echo → action_prompt: ""):
 
             # Collect files with mtime
             files: list[tuple[Path, float]] = []
-            for pattern in ("*.html", "*.png", "*.jpg", "*.jpeg", "*.webp", "*.gif", "*.mp4"):
+            for pattern in ("*.html", "*.png", "*.jpg", "*.jpeg", "*.webp", "*.gif"):
                 for file_path in dir_path.glob(pattern):
                     with contextlib.suppress(OSError):
                         files.append((file_path, file_path.stat().st_mtime))

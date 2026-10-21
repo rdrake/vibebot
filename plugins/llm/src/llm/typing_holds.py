@@ -1,17 +1,11 @@
 """One IRCv3 +typing indicator per (network, target), shared by every holder.
 
 Every path that wants the bot to look busy on a target — a command's planner
-turn, a chat reply, the render refresher that covers a two-minute clip — takes
-a *hold*. Holds are refcounted per ``(network, target)``: the first sends
+turn, a chat reply — takes a *hold*. Holds are refcounted per ``(network, target)``: the first sends
 ``+typing=active``, the last release sends ``+typing=done``, and everything in
 between is silent. A single daemon thread re-sends ``active`` for every held
 target every ``interval`` seconds, because clients drop the state after about
 six seconds without a refresh.
-
-Named groups (``set_group``) let a poller hand over the whole set of targets it
-wants held each pass and have the diff computed here, so the render refresher
-does not keep its own copy of the state and cannot disagree with the direct
-holders about who owns the final ``done``.
 
 The network is part of the key because ``#chan`` on two networks is two rooms.
 
@@ -47,7 +41,6 @@ class TypingHolds:
         self._send_lock = threading.Lock()
         self._counts: dict[Key, int] = {}
         self._ircs: dict[Key, Any] = {}
-        self._groups: dict[str, set[Key]] = {}
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -70,26 +63,6 @@ class TypingHolds:
             self._release(key)
 
         return release
-
-    def set_group(self, name: str, wanted: dict[Key, Any]) -> None:
-        """Make group ``name`` hold exactly ``wanted`` (key -> Irc to send on).
-
-        Keys new to the group are acquired, keys gone from it are released,
-        and keys that stay get their Irc replaced so keepalives go out on the
-        connection the caller resolved *this* pass, not a zombie from an
-        earlier one.
-        """
-        with self._lock:
-            current = self._groups.get(name, set())
-        for key in wanted.keys() - current:
-            self._acquire(key, wanted[key])
-        for key in current - wanted.keys():
-            self._release(key)
-        with self._lock:
-            for key in wanted.keys() & current:
-                if key in self._ircs:
-                    self._ircs[key] = wanted[key]
-            self._groups[name] = set(wanted)
 
     def holds(self, network: str, target: str) -> bool:
         with self._lock:
@@ -121,11 +94,9 @@ class TypingHolds:
                 self._ensure_thread()
             except Exception:
                 # A thread that would not start (``can't start new thread``)
-                # must not leave the refcount raised. ``set_group`` never
-                # records the group when this raises, so the next pass
-                # re-acquires; a count stuck above zero would mean the last
-                # release never fires and that target swallows every ``done``
-                # from here on.
+                # must not leave the refcount raised: a count stuck above
+                # zero would mean the last release never fires and that
+                # target swallows every ``done`` from here on.
                 remaining = self._counts.get(key, 0) - 1
                 if remaining <= 0:
                     self._counts.pop(key, None)
