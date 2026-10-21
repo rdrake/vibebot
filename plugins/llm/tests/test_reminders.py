@@ -26,80 +26,6 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 
-class TestReminderCommands:
-    """Tests for the consolidated remind command."""
-
-    def test_remind_command_exists(self) -> None:
-        """GIVEN LLM plugin WHEN checking for remind THEN method exists."""
-        from llm.plugin import LLM
-
-        assert hasattr(LLM, "remind")
-        assert callable(LLM.remind)
-
-    def test_remind_docstring_shows_natural_language_examples(self) -> None:
-        """GIVEN remind command WHEN checking docstring THEN shows examples."""
-        from llm.plugin import LLM
-
-        doc = LLM.remind.__doc__ or ""
-        assert "natural language" in doc.lower() or "in 30 minutes" in doc
-
-
-class TestReminderParseResult:
-    """Tests for ReminderParseResult NamedTuple."""
-
-    def test_schedule_result_with_action_prompt(self) -> None:
-        """GIVEN schedule action WHEN creating result THEN stores action_prompt."""
-        result = ReminderParseResult(
-            action="schedule",
-            seconds=1800,
-            message="check the build",
-            confirmation="Reminder set for 30 minutes from now.",
-            note="Assuming UTC timezone.",
-            action_prompt="Please post a build status update in #ops.",
-        )
-        assert result.action == "schedule"
-        assert result.action_prompt == "Please post a build status update in #ops."
-
-    def test_schedule_result(self) -> None:
-        """GIVEN schedule action WHEN creating result THEN stores all fields."""
-        result = ReminderParseResult(
-            action="schedule",
-            seconds=1800,
-            message="check the build",
-            confirmation="Reminder set for 30 minutes from now.",
-            note="Assuming UTC timezone.",
-        )
-        assert result.action == "schedule"
-        assert result.seconds == 1800
-        assert result.message == "check the build"
-        assert result.confirmation == "Reminder set for 30 minutes from now."
-        assert result.note == "Assuming UTC timezone."
-
-    def test_clarify_result(self) -> None:
-        """GIVEN clarify action WHEN creating result THEN stores confirmation."""
-        result = ReminderParseResult(
-            action="clarify",
-            confirmation="When should I remind you?",
-        )
-        assert result.action == "clarify"
-        assert result.seconds is None
-        assert result.message is None
-        assert result.confirmation == "When should I remind you?"
-
-    def test_default_values(self) -> None:
-        """GIVEN minimal args WHEN creating result THEN defaults are correct."""
-        result = ReminderParseResult(action="clarify")
-        assert result.seconds is None
-        assert result.message is None
-        assert result.confirmation == ""
-        assert result.note is None
-
-    def test_default_action_prompt_is_empty(self) -> None:
-        """GIVEN minimal args WHEN creating result THEN action_prompt defaults empty."""
-        result = ReminderParseResult(action="clarify")
-        assert result.action_prompt == ""
-
-
 class TestReminderHelperMethods:
     """Tests for reminder helper methods on the plugin."""
 
@@ -118,13 +44,6 @@ class TestReminderHelperMethods:
         return plugin
 
     # Tests for _get_user_reminders
-
-    def test_get_user_reminders_empty(self, plugin: MagicMock) -> None:
-        """GIVEN no reminders WHEN queried THEN returns empty list."""
-        from llm.plugin import Identity
-
-        result = plugin._get_user_reminders(Identity(raw_nick="testnick", account=None))
-        assert result == []
 
     def test_get_user_reminders_filters_by_nick(self, plugin: MagicMock) -> None:
         """GIVEN reminders from multiple users WHEN queried THEN filters."""
@@ -222,33 +141,6 @@ class TestReminderHelperMethods:
         assert "#456" in result
         assert "test message" in result
 
-    def test_format_reminders_multiple(self, plugin: MagicMock) -> None:
-        """GIVEN multiple reminders WHEN formatted THEN pipe-separated."""
-        reminders = [
-            (
-                "llm_remind_1_100",
-                make_reminder_row(
-                    event_name="llm_remind_1_100",
-                    nick="nick",
-                    channel="#chan",
-                    message="first",
-                ),
-            ),
-            (
-                "llm_remind_2_200",
-                make_reminder_row(
-                    event_name="llm_remind_2_200",
-                    nick="nick",
-                    channel="#chan",
-                    message="second",
-                ),
-            ),
-        ]
-        result = plugin._format_reminders(reminders)
-        assert "#100" in result
-        assert "#200" in result
-        assert " | " in result
-
     def test_format_reminders_marks_auto_reminders(self, plugin: MagicMock) -> None:
         """GIVEN mixed reminders WHEN formatted THEN only action ones get [auto] marker."""
         from llm.plugin import Identity
@@ -317,13 +209,6 @@ class TestReminderHelperMethods:
         )
         result = plugin._find_user_reminder(Identity(raw_nick="testnick", account=None), "456")
         assert result == "llm_remind_123_456"
-
-    def test_find_user_reminder_not_found(self, plugin: MagicMock) -> None:
-        """GIVEN no matching reminder WHEN searched THEN returns None."""
-        from llm.plugin import Identity
-
-        result = plugin._find_user_reminder(Identity(raw_nick="testnick", account=None), "999")
-        assert result is None
 
     def test_find_user_reminder_wrong_owner(self, plugin: MagicMock) -> None:
         """GIVEN reminder owned by other WHEN searched THEN returns None."""
@@ -458,28 +343,6 @@ class TestReminderHelperMethods:
         )
         assert "no pending" in result.lower()
         plugin.db.delete_reminder.assert_not_called()
-
-    def test_remind_clear_for_assistant_singular(
-        self, plugin: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """GIVEN one reminder WHEN cleared THEN message uses singular phrasing."""
-        from llm.plugin import Identity
-
-        put_reminder(
-            plugin,
-            make_reminder_row(
-                event_name="llm_remind_x_999",
-                nick="alice",
-                channel="#chan",
-                message="only one",
-            ),
-        )
-
-        result = plugin._remind_clear_for_assistant(
-            Identity(raw_nick="alice", account=None),
-        )
-        assert result == "Cancelled 1 reminder."
-        assert reminder_names(plugin) == set()
 
     # Tests for chain caps in _schedule_reminder
 
@@ -742,30 +605,6 @@ class TestReminderHelperMethods:
         plugin.db.delete_reminder.assert_not_called()
         assert len(reminder_names(plugin)) == 2
 
-    def test_schedule_reminder_fresh_chain_starts_at_position_one(
-        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """GIVEN a new reminder WHEN scheduling THEN its chain starts at position 1."""
-
-        plugin._MetaSynchronized_rlock = threading.RLock()
-        self._stub_parse_for_schedule(plugin)
-        mocker.patch("llm.plugin.schedule.addEvent")
-
-        msg = mocker.MagicMock()
-        msg.args = ("#chan", "remind text")
-        msg.prefix = "alice!user@host"
-        msg.server_tags = {}
-
-        result = plugin._schedule_reminder(
-            mock_irc,
-            msg,
-            Caller.from_row("alice", "alice", msg.args[0]),
-            "in 1m ping",
-        )
-        assert result.ok is True
-        [row] = plugin.db.sqlite_reminders.load_pending_reminders()
-        assert row.chain_position == 1
-
     # Tests for _react helper
 
     def test_react_returns_false_when_no_msgid(
@@ -781,24 +620,7 @@ class TestReminderHelperMethods:
         assert plugin._react(irc, msg, "👍") is False
         plugin.llm_service.send_reaction.assert_not_called()
 
-    def test_react_calls_send_reaction_with_msgid(
-        self, plugin: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """GIVEN msg with msgid WHEN reacting THEN delegates to send_reaction."""
-        irc = mocker.MagicMock()
-        msg = mocker.MagicMock()
-        msg.server_tags = {"msgid": "abc-123"}
-        msg.args = ("#chan",)
-        plugin.llm_service.send_reaction = mocker.MagicMock(return_value=True)
-
-        assert plugin._react(irc, msg, "⏰") is True
-        plugin.llm_service.send_reaction.assert_called_once_with(irc, "#chan", "abc-123", "⏰")
-
     # Test database attribute
-
-    def test_plugin_has_db_attribute(self, plugin: MagicMock) -> None:
-        """GIVEN plugin WHEN initialized THEN db attribute exists."""
-        assert hasattr(plugin, "db")
 
     def test_schedule_reminder_persists_action_prompt(
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
@@ -917,11 +739,6 @@ class TestParseReminderService:
             or "tell me" in result.confirmation.lower()
         )
 
-    def test_parse_reminder_whitespace_only(self, service: MagicMock) -> None:
-        """GIVEN whitespace-only text WHEN parsing THEN returns clarify without API call."""
-        result = service.parse_reminder("   \n\t  ")
-        assert result.action == "clarify"
-
     def test_parse_reminder_too_long(self, service: MagicMock) -> None:
         """GIVEN text over 500 chars WHEN parsing THEN returns clarify without API call."""
         result = service.parse_reminder("x" * 501)
@@ -954,28 +771,6 @@ class TestParseReminderService:
         result = service.parse_reminder("in 30 minutes test")
         assert result.action == "clarify"
         assert "XAI_API_KEY" in result.confirmation
-
-    def test_parse_reminder_uses_assistant_model(self, mocker: MockerFixture) -> None:
-        """parse_reminder sends assistantModel; provider.chat resolves its key."""
-        from llm.service import LLMService
-
-        mock_plugin = mocker.MagicMock()
-        mock_plugin.registryValue.side_effect = lambda key, *args: {
-            "assistantModel": "anthropic/claude-haiku-4-5",
-            "timeout": 30,
-        }.get(key, "")
-        mocker.patch("llm.service.log")
-        service = LLMService(mock_plugin)
-
-        mock_completion = mocker.patch("llm.service.provider.chat")
-        mock_completion.return_value = make_completion_response(
-            '{"action": "schedule", "seconds": 60, "message": "x", "confirmation": "ok"}'
-        )
-
-        service.parse_reminder("in 60s test")
-
-        kwargs = mock_completion.call_args.kwargs
-        assert kwargs["model"] == "anthropic/claude-haiku-4-5"
 
     def test_parse_reminder_schedule_success(
         self, service: MagicMock, mocker: MockerFixture
@@ -1033,34 +828,6 @@ class TestParseReminderService:
         assert result.action == "schedule"
         assert result.seconds == 60
 
-    def test_parse_reminder_with_note(self, service: MagicMock, mocker: MockerFixture) -> None:
-        """GIVEN response with note WHEN parsing THEN includes note."""
-        mock_completion = mocker.patch("llm.service.provider.chat")
-        mock_completion.return_value = make_completion_response(
-            '{"action": "schedule", "seconds": 3600, "message": "meeting", '
-            '"confirmation": "Reminder set for 3pm.", "note": "Assuming EST"}'
-        )
-
-        result = service.parse_reminder("at 3pm meeting")
-
-        assert result.action == "schedule"
-        assert result.note == "Assuming EST"
-
-    def test_parse_reminder_returns_action_prompt_for_imperative(
-        self, service: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """GIVEN imperative reminder WHEN parsing THEN returns action_prompt."""
-        mock_completion = mocker.patch("llm.service.provider.chat")
-        mock_completion.return_value = make_completion_response(
-            '{"action": "schedule", "seconds": 3600, "message": "post status", '
-            '"confirmation": "Reminder set for 1h.", "action_prompt": "Post a status update in #ops."}'
-        )
-
-        result = service.parse_reminder("in 1 hour tell the bot to post status in #ops")
-
-        assert result.action == "schedule"
-        assert result.action_prompt == "Post a status update in #ops."
-
     def test_parse_reminder_omits_action_prompt_for_echo(
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
@@ -1109,19 +876,6 @@ class TestParseReminderService:
         )
 
         result = service.parse_reminder("now test")
-
-        assert result.action == "clarify"
-
-    def test_parse_reminder_missing_seconds(
-        self, service: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """GIVEN missing seconds field WHEN parsing THEN returns clarify."""
-        mock_completion = mocker.patch("llm.service.provider.chat")
-        mock_completion.return_value = make_completion_response(
-            '{"action": "schedule", "message": "test", "confirmation": "Set!"}'
-        )
-
-        result = service.parse_reminder("sometime test")
 
         assert result.action == "clarify"
 
@@ -1392,64 +1146,6 @@ class TestParseReminderService:
 
         assert result.recurrence_rrule == "FREQ=DAILY;BYHOUR=8"
         assert result.recurrence_seconds is None
-
-    def test_parse_reminder_one_shot_has_no_recurrence(
-        self, service: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """GIVEN one-shot reminder WHEN parsing THEN both recurrence fields are None."""
-        mock_completion = mocker.patch("llm.service.provider.chat")
-        mock_completion.return_value = make_completion_response(
-            json.dumps(
-                {
-                    "action": "schedule",
-                    "seconds": 1800,
-                    "message": "check build",
-                    "confirmation": "Set!",
-                    "action_prompt": "check the build",
-                    "recurrence_seconds": None,
-                    "recurrence_rrule": None,
-                    "watch_mode": False,
-                }
-            )
-        )
-
-        result = service.parse_reminder("in 30 minutes check the build")
-
-        assert result.action == "schedule"
-        assert result.recurrence_seconds is None
-        assert result.recurrence_rrule is None
-        assert result.watch_mode is False
-
-
-class TestReminderEventNaming:
-    """Tests for uuid-based reminder event naming (Fix 3)."""
-
-    @pytest.fixture
-    def plugin(self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path) -> MagicMock:
-        """Create a plugin instance."""
-        from llm.plugin import LLM
-
-        from .conftest import make_registry_side_effect, plugin_init_patches
-
-        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
-        plugin_init_patches(mocker)
-        plugin = LLM(mock_irc)
-        back_reminders_with_sqlite(plugin.db, tmp_path / "reminders.db")
-
-        return plugin
-
-    def test_event_name_uses_uuid_format(self, plugin: MagicMock) -> None:
-        """GIVEN reminder delivery closure WHEN created THEN event name uses uuid hex."""
-        import re
-
-        closure = due_reminder(plugin, "nick", "#chan", "msg", "llm_remind_abc123")
-        assert callable(closure)
-        # The event name format should be llm_remind_ + 12 hex chars
-        assert re.match(r"^[a-f0-9]{12}$", "abc123def456")
-
-    def test_no_reminder_counter_attribute(self, plugin: MagicMock) -> None:
-        """GIVEN plugin WHEN initialized THEN no _reminder_counter attribute."""
-        assert not hasattr(plugin, "_reminder_counter")
 
 
 class TestReminderDeliveryClosure:

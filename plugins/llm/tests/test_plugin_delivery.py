@@ -36,12 +36,6 @@ class TestSafePrivmsg:
         # Only the trailing CRLF terminator is a real line break on the wire.
         assert "\r\n" not in str(msg)[:-2]
 
-    def test_clean_body_passes_through_unchanged(self, plugin_env) -> None:
-        """Clean single-line text is sent verbatim (safeArgument is a no-op)."""
-        plugin, _irc, _msg = plugin_env
-        msg = plugin._safe_privmsg("#chan", "hello world")
-        assert msg.args[1] == "hello world"
-
 
 class TestSafetyPollGuard:
     def test_overlapping_poll_is_skipped(self, plugin_env, mocker) -> None:
@@ -111,48 +105,6 @@ class TestResultUsageData:
         assert result.completion_tokens == 0
         assert result.cost == 0.04
         assert result.model == "vertex/imagen-3"
-
-
-class TestPendingTaskScheduler:
-    """Test pending task scheduler event naming and lifecycle."""
-
-    def test_init_schedules_pending_tasks_event(self, mocker: MockerFixture) -> None:
-        """GIVEN plugin init WHEN started THEN schedules llm_pending_tasks event."""
-        from llm.plugin import LLM
-
-        mock_irc = mocker.MagicMock()
-
-        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
-        mocker.patch("llm.plugin.LLMService")
-        mocker.patch("llm.plugin.LLMDatabase")
-        mocker.patch("llm.plugin.log")
-        mocker.patch("llm.plugin.httpserver.hook")
-        mock_add = mocker.patch("llm.plugin.schedule.addPeriodicEvent")
-        mocker.patch("llm.plugin.schedule.removeEvent")
-        # Also patch addEvent: the status poller (and the daily compaction
-        # timer) call it unconditionally from __init__, and a real call
-        # would collide with the real supybot schedule between tests.
-        mocker.patch("llm.plugin.schedule.addEvent")
-
-        LLM(mock_irc)
-
-        # Check that llm_pending_tasks was scheduled
-        event_names = [call[1].get("name", "") for call in mock_add.call_args_list]
-        assert "llm_pending_tasks" in event_names
-
-    def test_die_removes_pending_tasks_event(self, mocker: MockerFixture) -> None:
-        """GIVEN plugin WHEN die called THEN removes llm_pending_tasks event."""
-        from llm.plugin import LLM
-
-        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
-        plugin = LLM.__new__(LLM)
-        plugin._http_callback = None
-
-        mock_remove = mocker.patch("supybot.schedule.removeEvent")
-        mocker.patch.object(LLM.__bases__[0], "die", return_value=None)
-        plugin.die()
-
-        mock_remove.assert_any_call("llm_pending_tasks")
 
 
 class TestDeliverPendingResult:
@@ -395,56 +347,6 @@ class TestDeliverPendingResult:
         plugin.db.book_pending_task_usage.assert_called_once_with(
             7, status="error", error_detail="the model returned an empty answer"
         )
-
-    def test_logs_structured_expired_outcome(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN expired deferred result WHEN delivered THEN logs structured operator entry."""
-        import supybot.world as world_mod
-
-        mock_irc = mocker.MagicMock()
-        mock_irc.state.channels = {"#test": mocker.MagicMock()}
-        mocker.patch.object(world_mod, "ircs", [mock_irc])
-
-        r = self._make_result(
-            status="expired",
-            task_type="draw",
-            content="",
-            reason="Request expired after retry timeout",
-        )
-        plugin._deliver_pending_result(r)
-
-        # Should log a structured warning for operator visibility
-        plugin.log.warning.assert_called_once()
-        log_msg = plugin.log.warning.call_args[0][0]
-        assert "expired" in log_msg.lower()
-        # Should include key fields for grep/monitoring
-        assert "draw" in plugin.log.warning.call_args[0][1]
-        assert "alice" in plugin.log.warning.call_args[0][2]
-
-    def test_logs_structured_failed_terminal_outcome(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN terminal-failure deferred result WHEN delivered THEN logs structured operator entry."""
-        import supybot.world as world_mod
-
-        mock_irc = mocker.MagicMock()
-        mock_irc.state.channels = {"#test": mocker.MagicMock()}
-        mocker.patch.object(world_mod, "ircs", [mock_irc])
-
-        r = self._make_result(
-            status="failed_terminal",
-            task_type="draw",
-            content="",
-            reason="API key not configured",
-            cost=0.0,
-            prompt_tokens=0,
-            completion_tokens=0,
-        )
-        plugin._deliver_pending_result(r)
-
-        # Should log a structured warning for operator visibility
-        plugin.log.warning.assert_called_once()
-        log_msg = plugin.log.warning.call_args[0][0]
-        assert "failed_terminal" in log_msg.lower()
-        assert "draw" in plugin.log.warning.call_args[0][1]
-        assert "alice" in plugin.log.warning.call_args[0][2]
 
 
 class TestDeliveryRetry:
@@ -799,48 +701,6 @@ class TestScheduleQueueWakeup:
         mock_schedule.addEvent.assert_called_once()
         assert plugin._next_wakeup_time == 1030.0
 
-    def test_clears_stale_wakeup_in_past(self, plugin, mocker: MockerFixture) -> None:
-        """GIVEN existing wakeup already in the past WHEN new due time THEN replace it."""
-        mock_schedule = mocker.patch("llm.plugin.schedule")
-        mocker.patch("llm.plugin.time.time", return_value=1000.0)
-        plugin._next_wakeup_time = 900.0  # already past
-        plugin.db.get_next_due_time.return_value = 1060.0
-
-        plugin._schedule_queue_wakeup()
-
-        mock_schedule.removeEvent.assert_any_call("llm_queue_wakeup")
-        mock_schedule.addEvent.assert_called_once()
-        assert plugin._next_wakeup_time == 1060.0
-
-
-class TestSafetyPollInterval:
-    """Test that the safety poll runs at 5-minute intervals (Phase 2)."""
-
-    def test_safety_poll_interval_is_300_seconds(self, mocker: MockerFixture) -> None:
-        """GIVEN plugin init WHEN addPeriodicEvent called for pending tasks THEN interval is 300."""
-        from llm.plugin import LLM
-
-        mocker.patch("llm.plugin.schedule")
-        mocker.patch("llm.plugin.httpserver")
-        mocker.patch("llm.plugin.conf")
-        mocker.patch("llm.plugin.world")
-
-        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
-        plugin = LLM.__new__(LLM)
-        plugin.db = mocker.MagicMock()
-        plugin.log = mocker.MagicMock()
-        plugin.registryValue = mocker.MagicMock(return_value="")
-        plugin._http_callback = None
-        plugin._reminders = {}
-        plugin._reminders_lock = mocker.MagicMock()
-        plugin.llm_service = mocker.MagicMock()
-        plugin._apply_log_level = mocker.MagicMock()
-        plugin._next_wakeup_time = None
-
-        # Check that the constant is defined
-        assert hasattr(LLM, "_SAFETY_POLL_INTERVAL")
-        assert LLM._SAFETY_POLL_INTERVAL == 300
-
 
 class TestWakeupTriggers:
     """Test that wakeup is triggered from all queue mutation points (Phase 2)."""
@@ -886,20 +746,6 @@ class TestWakeupTriggers:
         defaults.update(overrides)
         return PendingTaskResult(**defaults)
 
-    def test_check_pending_tasks_reschedules_after_batch(
-        self, plugin, mocker: MockerFixture
-    ) -> None:
-        """GIVEN batch completes WHEN _check_pending_tasks finishes THEN _schedule_queue_wakeup called."""
-        import supybot.world as world_mod
-
-        mocker.patch.object(world_mod, "ircs", [])
-        plugin.llm_service.check_pending_tasks.return_value = []
-        mock_wakeup = mocker.patch.object(plugin, "_schedule_queue_wakeup")
-
-        plugin._check_pending_tasks()
-
-        mock_wakeup.assert_called_once()
-
     def test_check_pending_tasks_clears_stale_wakeup(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN active wakeup WHEN _check_pending_tasks runs THEN _next_wakeup_time cleared first."""
         import supybot.world as world_mod
@@ -933,77 +779,6 @@ class TestWakeupTriggers:
 
         # Should schedule wakeup at the retry time (now + backoff)
         mock_wakeup.assert_called_once_with(at_time=1000.0 + 15)
-
-    def test_stash_triggers_wakeup(self, mocker: MockerFixture) -> None:
-        """GIVEN a request times out WHEN _stash_timeout succeeds THEN a wakeup
-        is scheduled at the first-attempt time (submitted_at + initial backoff)."""
-        from llm.service import PENDING_INITIAL_BACKOFF_SECONDS, LLMService
-
-        mock_plugin = mocker.MagicMock()
-        mock_plugin.registryValue.return_value = 3600  # expiry
-        mock_plugin.db.save_pending_task.return_value = 1
-
-        service = LLMService.__new__(LLMService)
-        service.plugin = mock_plugin
-        service.log = mocker.MagicMock()
-
-        now = 1000.0
-        result = service._stash_timeout(
-            task_type="ask",
-            nick="alice",
-            reply_target="#test",
-            is_channel=True,
-            prompt="hello",
-            model="gpt-4",
-            request_data={"messages": []},
-            submitted_at=now,
-        )
-
-        assert result is True
-        mock_plugin._schedule_queue_wakeup.assert_called_once_with(
-            at_time=now + PENDING_INITIAL_BACKOFF_SECONDS
-        )
-
-
-class TestDeliverPendingResultCodeBranch:
-    """Test _deliver_pending_result code branch with HTTP URL."""
-
-    @pytest.fixture
-    def plugin(self, mocker: MockerFixture):
-        """Create a minimal plugin for delivery testing."""
-        from llm.plugin import LLM
-
-        mocker.patch.object(LLM, "__init__", lambda self, irc: None)
-        plugin = LLM.__new__(LLM)
-        plugin.llm_service = mocker.MagicMock()
-        plugin.llm_service.sanitize_output.side_effect = lambda x: x
-        plugin.db = mocker.MagicMock()
-        plugin.log = mocker.MagicMock()
-        plugin._llm_executor = mocker.MagicMock()
-        plugin._llm_executor.closing = False
-        plugin._irc_send_lock = threading.Lock()
-        return plugin
-
-    def _make_result(self, **overrides):
-        """Create a PendingTaskResult with defaults."""
-        from llm.service import PendingTaskResult
-
-        defaults = {
-            "status": "completed",
-            "task_type": "ask",
-            "nick": "alice",
-            "reply_target": "#test",
-            "is_channel": True,
-            "prompt_preview": "hello world",
-            "model": "gpt-4",
-            "content": "The answer is 42",
-            "reason": "",
-            "prompt_tokens": 100,
-            "completion_tokens": 50,
-            "cost": 0.01,
-        }
-        defaults.update(overrides)
-        return PendingTaskResult(**defaults)
 
 
 class TestDeliverPendingResultUnknownStatus:

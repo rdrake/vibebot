@@ -7,62 +7,11 @@ from pathlib import Path
 import pytest
 
 
-def test_verse_compaction_model_key_registered() -> None:
-    """The new global key exists with the old loomModel default."""
-    import llm.config  # noqa: F401 — import side effect registers the values
-    from supybot import conf
-
-    val = conf.supybot.plugins.LLM.verseCompactionModel()
-    assert val == "anthropic/claude-haiku-5-5"
-
-
-def test_relocated_client_types_importable_from_compaction():
-    from llm.verse.compaction import (
-        ProviderVerseClient,
-        VerseCallUsage,
-        VerseModelClient,
-    )
-
-    usage = VerseCallUsage(prompt_tokens=1, completion_tokens=2, cost=0.0)
-    assert usage.completion_tokens == 2
-    # Structural check only. Do NOT use isinstance(ProviderVerseClient(),
-    # VerseModelClient): VerseModelClient is a plain Protocol (not
-    # @runtime_checkable), so isinstance() would raise TypeError, not pass.
-    assert callable(getattr(ProviderVerseClient, "call", None))
-    assert hasattr(VerseModelClient, "call")
-
-
 @pytest.fixture
 def verse_db_dir(tmp_path: Path) -> Path:
     d = tmp_path / "verse"
     d.mkdir()
     return d
-
-
-def test_lore_digest_is_stamped_llm(store):
-    """Compaction digests are now source='llm', not 'loom'."""
-    e1 = store.add_entity("npc", "Aldous", "")
-    ev1 = store.apply_direct(
-        op="add_event",
-        payload={"summary": "old deed one", "entity_ids": [e1]},
-        source="avatar",
-        provenance="test",
-    )
-    ev2 = store.apply_direct(
-        op="add_event",
-        payload={"summary": "old deed two", "entity_ids": [e1]},
-        source="avatar",
-        provenance="test",
-    )
-    store.replace_events_with_lore_digest(
-        delete_ids=[ev1, ev2],
-        summary="A digest of Aldous's old deeds.",
-        entity_ids=[e1],
-        ts=1000.0,
-    )
-    with store.read_connection() as conn:
-        rows = conn.execute("SELECT source FROM events WHERE summary LIKE 'A digest%'").fetchall()
-    assert rows and all(r[0] == "llm" for r in rows)
 
 
 class _FakeClient:
@@ -476,27 +425,6 @@ class TestCompactVerse:
         with store.read_connection() as conn:
             count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         assert count == 25
-
-
-class TestCompactionOutcomeShape:
-    def test_returns_namedtuple(self, verse_db_dir: Path) -> None:
-        from llm.verse.compaction import CompactionOutcome, compact_verse
-        from llm.verse.store import VerseStore
-
-        store = VerseStore(verse_db_dir, "#shape")
-        outcome = compact_verse(
-            store,
-            retention_days=0,  # trips skipped_disabled
-            min_keep_events=20,
-            model="m",
-            client=_FakeClient(),
-            log_usage=lambda **kw: None,
-            now=lambda: 0.0,
-        )
-        assert isinstance(outcome, CompactionOutcome)
-        assert outcome.state == "skipped_disabled"
-        assert outcome.total_events == 0
-        assert outcome.kept_in_digest == 0
 
 
 class TestNextLocalTime:

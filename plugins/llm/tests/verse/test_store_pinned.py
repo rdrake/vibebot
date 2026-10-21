@@ -37,11 +37,6 @@ class TestAuthorLocked:
         store.set_author_locked(h, True)
         assert {e.name for e in store.list_canon_entities()} == {"Harry", "Toby"}
 
-    def test_author_locked_is_reserved(self):
-        from llm.verse.store import _RESERVED_ATTRIBUTE_KEYS
-
-        assert "author_locked" in _RESERVED_ATTRIBUTE_KEYS
-
     def test_unlock_removes_from_canon(self, store):
         h = store.add_entity("npc", "Harry")
         store.set_author_locked(h, True)

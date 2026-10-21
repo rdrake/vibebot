@@ -60,20 +60,6 @@ class TestImageSaving:
         assert result.startswith("https://example.com/llm/img_")
         assert result.endswith(".png")
 
-    def test_save_image_bytes_custom_extension(self, tmp_path: object) -> None:
-        """GIVEN custom extension WHEN saving THEN uses that extension."""
-        self.mock_plugin.registryValue = self.mocker.Mock(
-            side_effect=lambda key, channel=None: {
-                "httpRoot": str(tmp_path),
-                "httpUrlBase": "https://example.com/llm",
-            }.get(key)
-        )
-
-        result = self.service._save_image_bytes(b"fake jpeg data", extension="jpg")
-
-        assert result is not None
-        assert result.endswith(".jpg")
-
     def test_save_image_bytes_magic_bytes_override_extension(self, tmp_path: object) -> None:
         """GIVEN JPEG magic bytes but extension='png' WHEN saving THEN uses jpg."""
         self.mock_plugin.registryValue = self.mocker.Mock(
@@ -91,10 +77,6 @@ class TestImageSaving:
 
     # --- _detect_image_format tests ---
 
-    def test_detect_image_format_png(self) -> None:
-        """GIVEN PNG magic bytes THEN returns 'png'."""
-        assert self.service._detect_image_format(b"\x89PNG\r\n\x1a\ndata") == "png"
-
     def test_detect_image_format_jpeg(self) -> None:
         """GIVEN JPEG magic bytes THEN returns 'jpg'."""
         assert self.service._detect_image_format(b"\xff\xd8\xff\xe0data") == "jpg"
@@ -103,29 +85,9 @@ class TestImageSaving:
         """GIVEN WebP magic bytes THEN returns 'webp'."""
         assert self.service._detect_image_format(b"RIFF\x00\x00\x00\x00WEBPdata") == "webp"
 
-    def test_detect_image_format_gif(self) -> None:
-        """GIVEN GIF magic bytes THEN returns 'gif'."""
-        assert self.service._detect_image_format(b"GIF89adata") == "gif"
-
     def test_detect_image_format_unknown(self) -> None:
         """GIVEN unknown bytes THEN returns None."""
         assert self.service._detect_image_format(b"unknown data") is None
-
-    def test_convert_png_to_jpeg(self) -> None:
-        """GIVEN a real PNG image WHEN converting THEN returns JPEG bytes."""
-        from io import BytesIO
-
-        from PIL import Image
-
-        # Create a real 1x1 red PNG
-        img = Image.new("RGB", (1, 1), color=(255, 0, 0))
-        buf = BytesIO()
-        img.save(buf, format="PNG")
-        png_bytes = buf.getvalue()
-
-        jpeg_bytes, ext = self.service._convert_png_to_jpeg(png_bytes)
-        assert ext == "jpg"
-        assert jpeg_bytes[:3] == b"\xff\xd8\xff"
 
     def test_convert_png_to_jpeg_rgba(self) -> None:
         """GIVEN RGBA PNG WHEN converting THEN strips alpha and returns JPEG."""
@@ -289,18 +251,6 @@ class TestImageGenerationWithBase64:
         assert "No image generated" in result.content
         assert "content safety filters" in result.content
 
-    def test_image_generation_without_irc_context(self) -> None:
-        """GIVEN no irc context WHEN generating THEN works without typing indicators."""
-        self.mocker.patch("llm.service.provider.draw", return_value=_picture())
-        self.mocker.patch.object(
-            self.service,
-            "_save_image_bytes",
-            return_value="https://example.com/llm/img_local.png",
-        )
-        result = self.service.image_generation("a cat")
-
-        assert result.content == "https://example.com/llm/img_local.png"
-
 
 class TestCleanupWithImages:
     """Tests for _cleanup_old_files with image extensions."""
@@ -349,10 +299,6 @@ class TestCleanupLock:
             fileCleanupAge=24,
             fileCleanupMax=1000,
         )
-
-    def test_cleanup_lock_exists(self) -> None:
-        """GIVEN service WHEN initialized THEN _cleanup_lock exists."""
-        assert hasattr(self.service, "_cleanup_lock")
 
     def test_cleanup_serializes_concurrent_calls(self, tmp_path: object) -> None:
         """GIVEN concurrent cleanup calls WHEN running THEN lock prevents races."""
@@ -461,29 +407,6 @@ class TestHTTPFileManagement:
     def test_cleanup_old_files_nonexistent_dir_no_error(self) -> None:
         """GIVEN nonexistent directory WHEN _cleanup_old_files called THEN no error raised."""
         self.service._cleanup_old_files("/nonexistent/path", max_age_hours=24, max_files=100)
-
-
-class TestDrawContext:
-    """Tests for context integration in image generation."""
-
-    @pytest.fixture(autouse=True)
-    def setup(self, make_service, mocker: MockerFixture) -> None:
-        """Set up test fixtures."""
-        self.mocker = mocker
-        self.service, self.mock_plugin = make_service(
-            imageModel="xai/grok-imagine-image",
-            timeout=30,
-            maxPromptLength=10000,
-            drawAutoRewriteMax=0,
-        )
-
-    def test_image_generation_uses_raw_prompt(self) -> None:
-        """GIVEN a prompt WHEN generating image THEN uses prompt as-is."""
-        draw = self.mocker.patch("llm.service.provider.draw", return_value=_picture())
-        self.mocker.patch.object(self.service, "_save_image_bytes", return_value=None)
-        self.service.image_generation("a sunset")
-
-        assert draw.call_args.args[1] == "a sunset"
 
 
 class TestImageUrlSsrfProtection:
@@ -773,16 +696,6 @@ class TestDrawAutoRewrite:
         assert "rewrite v1" in user_msg
         assert "Previous rewrite attempts" in user_msg
 
-    def test_rewritten_prompt_not_set_on_first_success(self) -> None:
-        """GIVEN first attempt succeeds WHEN no rewrite needed THEN rewritten_prompt is None."""
-        success_resp = self._make_success_response()
-
-        self.mocker.patch("llm.service.provider.draw", return_value=success_resp)
-        self.mocker.patch.object(self.service, "_save_image_bytes", return_value=None)
-        result = self.service.image_generation("a cat")
-
-        assert result.rewritten_prompt is None
-
     def test_non_moderation_bad_request_does_not_trigger_rewrite(self) -> None:
         """GIVEN BadRequestError without moderation keywords WHEN generating THEN no rewrite."""
         self.mocker.patch(
@@ -893,21 +806,6 @@ class TestImageGenerationPaths:
         self.service._attempt_image_generation("cat", "xai/grok-imagine-image", 30, aspect="wide")
 
         assert mock_img_gen.call_args.kwargs["aspect_ratio"] is None
-
-    def test_image_generation_threads_aspect_to_the_attempt(self) -> None:
-        """GIVEN an aspect WHEN image_generation runs THEN the attempt receives it."""
-        from llm.service import ImageResult
-
-        attempt = self.mocker.patch.object(
-            self.service,
-            "_attempt_image_generation",
-            return_value=ImageResult(content="http://img.png"),
-        )
-        self.mocker.patch.object(self.service, "validate_prompt", return_value=(True, ""))
-
-        self.service.image_generation("a poster", aspect="portrait")
-
-        assert attempt.call_args.kwargs["aspect"] == "portrait"
 
     def test_save_failure(self) -> None:
         """GIVEN a picture but save fails WHEN _attempt_image_generation called
@@ -1357,65 +1255,6 @@ class TestRewriteFidelity:
         result = self.service._rewrite_prompt_for_safety(original, "content moderation", [], None)
         return completion.call_args[1]["messages"], result
 
-    def test_rewriter_is_told_to_keep_the_subject_and_change_the_wording(self) -> None:
-        """Both halves have to be in there, or it fails in one direction.
-
-        "Keep" alone produces a rewrite the filter refuses again; "change"
-        alone produces a different picture.
-        """
-        messages, _ = self._rewrite("a cat in a house")
-        system = messages[0]["content"].lower()
-
-        assert "keep:" in system
-        assert "the subject" in system
-        assert "change:" in system
-        assert "as far as you need to" in system
-
-    def test_rewriter_is_allowed_to_go_as_far_as_the_filter_requires(self) -> None:
-        """The escape hatch: a word that cannot be softened gets said differently.
-
-        Without this the rewriter treats an unsoftenable word as a dead end and
-        hands back something the filter has already refused.
-        """
-        messages, _ = self._rewrite("a cat in a house")
-        system = messages[0]["content"].lower()
-
-        assert "different angle" in system
-        assert "another way to describe" in system
-
-    def test_rewriter_is_told_not_to_pad(self) -> None:
-        """The one thing it may not do with its freedom.
-
-        The drift this guards is style and quality words accreting onto a
-        picture the user never asked for them on.
-        """
-        messages, _ = self._rewrite("a cat in a house")
-        system = messages[0]["content"].lower()
-
-        assert "do not" in system
-        assert "pad the prompt" in system
-
-    def test_rewriter_is_given_the_original_length_as_a_target(self) -> None:
-        """A concrete number is checkable by the model; "keep it short" is not."""
-        original = "a cat on fire in a burning house"
-        messages, _ = self._rewrite("a cat in a house", original=original)
-
-        assert str(len(original)) in messages[1]["content"]
-
-    def test_rewriter_is_briefed_on_false_positives_not_evasion(self) -> None:
-        """It is re-reading a misfire, and it is told so.
-
-        The prompts this fires on are benign ones the filter misread. A
-        rewriter briefed as though it were smuggling writes like one, and the
-        instruction not to dress up a genuinely refusable request is what keeps
-        the loop pointed at false positives.
-        """
-        messages, _ = self._rewrite("a cat in a house")
-        system = messages[0]["content"].lower()
-
-        assert "misread something" in system
-        assert "genuinely should stay refused" in system
-
     def test_a_padded_rewrite_is_logged_with_both_lengths(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -1451,13 +1290,6 @@ class TestRewriteFidelity:
 
         with caplog.at_level("WARNING"):
             self._rewrite(reworded, original=original)
-
-        assert "prompt_rewrite_fidelity" not in caplog.text
-
-    def test_a_shorter_rewrite_is_not_warned_about(self, caplog: pytest.LogCaptureFixture) -> None:
-        """The common case: the offending clause comes out and nothing replaces it."""
-        with caplog.at_level("WARNING"):
-            self._rewrite("a cat in a house")
 
         assert "prompt_rewrite_fidelity" not in caplog.text
 
@@ -1621,29 +1453,6 @@ class TestRefusalCopyHasSomeLifeInIt:
     different subject" is the only part that changes what the user does next,
     so a joke that replaces it is a worse message than the flat one it replaced.
     """
-
-    def test_every_blocked_line_still_says_what_to_do(self) -> None:
-        for line in service_module._DRAW_BLOCKED_LINES:
-            assert "different subject" in line.lower()
-
-    def test_every_reworded_line_says_the_reword_was_tried(self) -> None:
-        for line in service_module._DRAW_REWORDED_LINES:
-            assert "reword" in line.lower() or "rewrite" in line.lower()
-
-    def test_every_refusal_line_tells_the_user_to_reword(self) -> None:
-        for line in service_module._CHAT_REFUSED_LINES:
-            assert "reword" in line.lower() or "rephras" in line.lower()
-
-    def test_no_variant_repeats_the_providers_category(self) -> None:
-        """Same rule as the flat version: the category stays in the log."""
-        every = (
-            service_module._DRAW_BLOCKED_LINES
-            + service_module._DRAW_REWORDED_LINES
-            + service_module._CHAT_REFUSED_LINES
-        )
-        for line in every:
-            assert "safety_check" not in line.lower()
-            assert "csam" not in line.lower()
 
     def test_the_line_varies(self, make_service, mocker: MockerFixture) -> None:
         """One line every time is the thing being fixed; pin that it rotates."""

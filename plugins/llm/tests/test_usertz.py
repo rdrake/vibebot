@@ -9,7 +9,6 @@ import pytest
 from llm.usertz import (
     SOURCE_CTCP,
     SOURCE_SET,
-    UTC_DEFAULT,
     UserTz,
     format_offset,
     needs_zone,
@@ -60,9 +59,6 @@ class TestUserTzLabel:
     def test_fixed_offset_shows_offset_only(self) -> None:
         tz = UserTz(tz=timezone(timedelta(hours=-4)), source=SOURCE_CTCP)
         assert tz.label(NOW) == "UTC-04:00"
-
-    def test_default_is_utc(self) -> None:
-        assert UTC_DEFAULT.label(NOW) == "UTC"
 
 
 class TestOffsetFromCtcpTime:

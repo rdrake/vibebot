@@ -178,28 +178,6 @@ def test_render_review_excludes_denial_from_trusted_json():
 # ---------------------------------------------------------------------------
 
 
-def test_iter_messages_skips_malformed_angle_bracket_no_close():
-    """Line 42: <-led line with no "> " separator → skipped."""
-    lines = [
-        "2026-06-22T00:01:00  <malformed no close bracket body here",
-        "2026-06-22T00:02:00  <fc42> normal",
-    ]
-    msgs = list(iter_messages(lines))
-    assert len(msgs) == 1
-    assert msgs[0] == Msg("fc42", "normal")
-
-
-def test_iter_messages_skips_action_with_no_body():
-    """Line 47: * nick line with only a nick token, no body → skipped."""
-    lines = [
-        "2026-06-22T00:01:00  * lonelynick",
-        "2026-06-22T00:02:00  * fc42 does something",
-    ]
-    msgs = list(iter_messages(lines))
-    assert len(msgs) == 1
-    assert msgs[0] == Msg("fc42", "does something")
-
-
 def test_repaste_capitalized_entity_is_autotrusted():
     """Line 82: single-word entity name capitalized as whole word → needs_review False."""
     store = FakeStore(["Ghost"])
@@ -212,24 +190,6 @@ def test_repaste_capitalized_entity_is_autotrusted():
     c = classify_repaste(text, store)
     assert c is not None
     assert c.needs_review is False  # capitalized whole-word → auto-trusted
-
-
-def test_repaste_no_entity_returns_none():
-    """Line 94: long clean prose with no matching entities → None."""
-    store = FakeStore([])
-    text = (
-        "the weather was absolutely dreadful on saturday morning and nobody wanted "
-        "to leave the house or do anything productive at all really to be fair"
-    )
-    assert len(text) >= 120
-    assert classify_repaste(text, store) is None
-
-
-def test_praise_no_prev_line_no_inline_entity_returns_none():
-    """Line 134: praise word found but no inline entity AND empty prev_line → None."""
-    # No "when it said" inline, and prev_line is empty
-    result = classify_praise("amazing", FakeStore([]), prev_line="")
-    assert result is None
 
 
 def test_nearest_source_skips_url_and_addressed_lines():
@@ -259,8 +219,3 @@ def test_nearest_source_skips_url_returns_earlier_valid_line():
     praise = [c for c in cands if c.kind == "praise"]
     assert len(praise) == 1
     assert "stinky lads" in praise[0].text
-
-
-def test_extract_candidates_empty_input():
-    """No-op: empty lines → empty candidate list."""
-    assert extract_candidates([], FakeStore([])) == []

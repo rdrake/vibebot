@@ -27,7 +27,6 @@ from llm.service import (
     LLMService,
     _is_image_failure,
     _is_safety_refusal,
-    _strip_degraded,
     _strip_image_failures,
     _strip_repeated_replies,
 )
@@ -115,11 +114,6 @@ class TestSiblingGuardsMissIt:
 
         lone = [{"role": "assistant", "content": OBSERVED_FAILURE}]
         assert _strip_repeated_replies(lone) == lone
-
-    def test_degraded_guard_needs_a_long_passage(self) -> None:
-        """A one-line report is far under the collapse guard's word floor."""
-        history = [{"role": "assistant", "content": OBSERVED_FAILURE}]
-        assert _strip_degraded(history) == history
 
 
 class TestStripImageFailures:

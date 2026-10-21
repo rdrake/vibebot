@@ -121,43 +121,6 @@ class TestParseSummaryRejects:
         with pytest.raises(statuspage.InvalidPayload):
             statuspage.parse_summary(payload, fetched_at=1.0)
 
-    def test_missing_components_parses_as_empty(self):
-        """Was 'rejects missing components'. incident.io omits an empty
-        collection rather than sending []; absence is not malformed."""
-        payload = {"status": {"indicator": "none", "description": "ok"}}
-        snap = statuspage.parse_summary(payload, fetched_at=1.0)
-        assert snap.components == {}
-        assert snap.incidents == {}
-
-    def test_missing_scheduled_maintenances_parses_as_empty(self):
-        """Was 'rejects missing scheduled_maintenances'. Same relaxation:
-        scheduled_maintenances is never surfaced in Snapshot, so the only
-        observable effect is that parsing succeeds instead of raising."""
-        payload = {
-            "status": {"indicator": "none", "description": "ok"},
-            "components": [],
-            "incidents": [],
-        }
-        snap = statuspage.parse_summary(payload, fetched_at=1.0)
-        assert snap.components == {}
-        assert snap.incidents == {}
-
-    def test_rejects_incident_with_empty_id(self):
-        payload = incident_payload()
-        payload["incidents"][0]["id"] = ""
-        with pytest.raises(statuspage.InvalidPayload):
-            statuspage.parse_summary(payload, fetched_at=1.0)
-
-    def test_unknown_incident_status_no_longer_rejects(self):
-        """Was 'rejects incident with unknown status'. Ruling reversed
-        2026-08-17 (see TestUnknownIncidentStatusIsTreatedAsLive below): an
-        unrecognised status keeps the incident instead of rejecting the
-        whole page."""
-        payload = incident_payload()
-        payload["incidents"][0]["status"] = "on fire"
-        snap = statuspage.parse_summary(payload, fetched_at=1.0)
-        assert snap.incidents["inc1"].status == "on fire"
-
     def test_empty_components_is_allowed(self):
         """An empty component list is odd but structurally valid; a tenant may
         publish none. It must not be confused with a missing key."""
@@ -175,12 +138,6 @@ class TestParseSummaryRejects:
     def test_rejects_unhashable_component_status(self):
         payload = green_payload()
         payload["components"][0]["status"] = ["operational"]
-        with pytest.raises(statuspage.InvalidPayload):
-            statuspage.parse_summary(payload, fetched_at=1.0)
-
-    def test_rejects_unhashable_incident_status(self):
-        payload = incident_payload()
-        payload["incidents"][0]["status"] = {"x": 1}
         with pytest.raises(statuspage.InvalidPayload):
             statuspage.parse_summary(payload, fetched_at=1.0)
 

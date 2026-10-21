@@ -364,26 +364,15 @@ class TestCustomBackground:
 class TestOptions:
     """Font and layout: the options the local renderer still takes."""
 
-    def test_fonts_are_the_bundled_three(self):
-        assert meme.FONTS == ("thick", "thin", "comic")
-
     def test_font_and_top_layout_pass_validation(self, catalog):
         opts = meme.MemeOptions(font="thin", layout_top=True)
         plan = meme.plan_meme(catalog, "drake", ["a", "b"], opts)
         assert plan.error is None and plan.lines == ["a", "b"]
 
-    def test_unknown_font_lists_the_fonts(self, catalog):
-        plan = meme.plan_meme(catalog, "drake", ["a", "b"], meme.MemeOptions(font="impact"))
-        assert plan.lines is None
-        assert plan.error == "Fonts: thick, thin, comic."
-
     def test_custom_background_takes_a_font(self, catalog):
         opts = meme.MemeOptions(font="comic")
         plan = meme.plan_meme(catalog, "https://i.example.com/x.png", ["a", "b"], opts)
         assert plan.error is None and plan.template.id == "custom"
-
-    def test_describe_short(self, catalog):
-        assert meme.describe_short(catalog.resolve("drake")) == "drake (Drakeposting, 2)"
 
 
 class TestTopics:

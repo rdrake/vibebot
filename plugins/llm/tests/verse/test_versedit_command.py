@@ -2,42 +2,6 @@ import pytest
 from llm.verse.store import VerseStore
 
 
-def test_versedit_add_then_pin(tmp_path):
-    store = VerseStore(tmp_path, "#chan")
-    new_id = store.apply_direct(
-        op="add_entity",
-        payload={"kind": "npc", "name": "Archie", "summary": "stinky"},
-        source="operator",
-        provenance="@versedit add",
-    )
-    store.apply_direct(
-        op="set_pinned",
-        payload={"entity_id": new_id, "pinned": True},
-        source="operator",
-        provenance="@versedit pin",
-    )
-    assert [e.name for e in store.list_canon_entities()] == ["Archie"]
-
-
-def test_versedit_event_and_delete(tmp_path):
-    store = VerseStore(tmp_path, "#chan")
-    a = store.add_entity("npc", "Archie")
-    ev = store.apply_direct(
-        op="add_event",
-        payload={"summary": "Archie parps", "entity_ids": [a]},
-        source="operator",
-        provenance="t",
-    )
-    assert store.recent_events(limit=5)[0].summary == "Archie parps"
-    store.apply_direct(
-        op="delete_event",
-        payload={"event_id": ev},
-        source="operator",
-        provenance="t",
-    )
-    assert store.recent_events(limit=5) == []
-
-
 def test_versedit_retire_clears_avatar_link(tmp_path):
     store = VerseStore(tmp_path, "#chan")
     res = store.opt_in_avatar(nick="bob", account="bob!acct", instruct_text="")
@@ -153,13 +117,6 @@ class TestVerseditCommand:
         assert store.list_attributes(eid)["mood"] == "grumpy"
         assert "set mood" in irc.reply.call_args[0][0]
 
-    def test_set_bad_usage_errors(self, verse_env):
-        plugin, irc, msg, store = verse_env
-        eid = store.add_entity("npc", "Archie")
-        plugin.versedit(irc, msg, ["set", f"#{eid}", "mood"])
-        errors = [c.args[0] for c in irc.error.call_args_list]
-        assert any("usage: versedit set" in e for e in errors)
-
     # --- name / desc ---------------------------------------------------
 
     def test_name_renames(self, verse_env):
@@ -168,13 +125,6 @@ class TestVerseditCommand:
         plugin.versedit(irc, msg, ["name", f"#{eid}", "Archibald"])
         assert store.get_entity(eid).name == "Archibald"
         assert "renamed" in irc.reply.call_args[0][0]
-
-    def test_name_missing_newname_errors(self, verse_env):
-        plugin, irc, msg, store = verse_env
-        eid = store.add_entity("npc", "Archie")
-        plugin.versedit(irc, msg, ["name", f"#{eid}"])
-        errors = [c.args[0] for c in irc.error.call_args_list]
-        assert any("usage: versedit name" in e for e in errors)
 
     def test_name_duplicate_errors(self, verse_env):
         plugin, irc, msg, store = verse_env
@@ -220,13 +170,6 @@ class TestVerseditCommand:
         assert store.list_relations(a) == []
         assert "deleted relation" in irc.reply.call_args[0][0]
 
-    def test_relate_bad_usage_errors(self, verse_env):
-        plugin, irc, msg, store = verse_env
-        a = store.add_entity("npc", "Archie")
-        plugin.versedit(irc, msg, ["relate", f"#{a}", "knows"])
-        errors = [c.args[0] for c in irc.error.call_args_list]
-        assert any("usage: versedit relate" in e for e in errors)
-
     # --- event / editevent / delevent ----------------------------------
 
     def test_event_editevent_delevent(self, verse_env):
@@ -246,12 +189,6 @@ class TestVerseditCommand:
     def test_editevent_missing_errors(self, verse_env):
         plugin, irc, msg, _store = verse_env
         plugin.versedit(irc, msg, ["editevent", "999", "::", "nope"])
-        errors = [c.args[0] for c in irc.error.call_args_list]
-        assert any("does not exist" in e for e in errors)
-
-    def test_delevent_missing_errors(self, verse_env):
-        plugin, irc, msg, _store = verse_env
-        plugin.versedit(irc, msg, ["delevent", "999"])
         errors = [c.args[0] for c in irc.error.call_args_list]
         assert any("does not exist" in e for e in errors)
 

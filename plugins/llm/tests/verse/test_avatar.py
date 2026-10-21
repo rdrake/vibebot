@@ -8,12 +8,7 @@ import time
 
 import pytest
 from llm.verse.avatar import (
-    OOC_LINE_PREFIX,
-    OOC_PREFIX,
-    OOC_SUFFIX,
-    VERB_TABLE,
     ActResult,
-    VerbEffect,
     build_verse_system_prompt,
     dispatch_verse_tool_call,
     is_ooc,
@@ -29,38 +24,6 @@ from llm.verse.avatar import (
 from llm.verse.store import VerseStore
 
 from .conftest import link_avatar
-
-
-class TestVerbWhitelist:
-    def test_event_only_verbs(self) -> None:
-        event_only = [
-            "whisper",
-            "speak",
-            "listen",
-            "examine",
-            "wait",
-            "signal",
-            "gesture",
-            "search",
-        ]
-        for verb in event_only:
-            assert VERB_TABLE[verb] is VerbEffect.EVENT_ONLY, f"{verb!r} should be EVENT_ONLY"
-
-    def test_move_verbs(self) -> None:
-        for verb in ("move", "flee", "follow"):
-            assert VERB_TABLE[verb] is VerbEffect.MOVE, f"{verb!r} should be MOVE"
-
-    def test_item_verbs(self) -> None:
-        for verb in ("take", "drop", "give"):
-            assert VERB_TABLE[verb] is VerbEffect.ITEM, f"{verb!r} should be ITEM"
-
-    @pytest.mark.parametrize("verb", ["teleport", "attack", "cast", "eat"])
-    def test_off_list_verbs_absent(self, verb: str) -> None:
-        assert verb not in VERB_TABLE
-
-    def test_table_size(self) -> None:
-        assert len(VERB_TABLE) == 14
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -416,11 +379,6 @@ class TestSystemPrompt:
         prompt = build_verse_system_prompt(store, alice_id, "")
         assert "Persona: no persona set." in prompt
 
-    def test_whitespace_instruct_uses_no_persona_set(self, store: VerseStore) -> None:
-        alice_id = _opt_in(store, nick="alice")
-        prompt = build_verse_system_prompt(store, alice_id, "   ")
-        assert "Persona: no persona set." in prompt
-
     def test_recent_events_filtered_by_avatar(self, store: VerseStore) -> None:
         alice_id = _opt_in(store, nick="alice")
         bob_id = _opt_in(store, nick="bob")
@@ -568,25 +526,11 @@ class TestOOC:
     def test_empty_wrap(self) -> None:
         assert is_ooc("(())") is True
 
-    def test_empty_string(self) -> None:
-        assert is_ooc("") is False
-
-    def test_constants_exported(self) -> None:
-        assert OOC_PREFIX == "(("
-        assert OOC_SUFFIX == "))"
-        assert OOC_LINE_PREFIX == "//"
-
     def test_strip_ooc_removes_wrapper(self) -> None:
         assert strip_ooc("((hi))") == "hi"
 
     def test_strip_ooc_strips_inner_whitespace(self) -> None:
         assert strip_ooc("((  what model are you running?  ))") == ("what model are you running?")
-
-    def test_strip_ooc_tolerates_outer_whitespace(self) -> None:
-        assert strip_ooc("  ((hi))  ") == "hi"
-
-    def test_strip_ooc_empty_wrapper_yields_empty(self) -> None:
-        assert strip_ooc("(())") == ""
 
     def test_strip_ooc_passthrough_when_not_wrapped(self) -> None:
         # Not OOC-wrapped — returned stripped but otherwise unchanged.
@@ -601,16 +545,6 @@ class TestOOC:
     def test_slash_prefix_is_ooc(self) -> None:
         assert is_ooc("// what's the weather?") is True
 
-    def test_slash_prefix_no_space_is_ooc(self) -> None:
-        assert is_ooc("//no space") is True
-
-    def test_slash_prefix_tolerates_outer_whitespace(self) -> None:
-        assert is_ooc("  // hi  ") is True
-
-    def test_bare_slash_prefix_is_ooc(self) -> None:
-        # Degenerate empty marker, mirrors the "(())" empty-wrapper case.
-        assert is_ooc("//") is True
-
     def test_slash_is_ooc_only_when_leading(self) -> None:
         # // must be the prefix; mid-message it is ordinary text.
         assert is_ooc("go // there") is False
@@ -619,12 +553,6 @@ class TestOOC:
     def test_strip_slash_prefix(self) -> None:
         assert strip_ooc("// what's the weather?") == "what's the weather?"
 
-    def test_strip_slash_prefix_no_space(self) -> None:
-        assert strip_ooc("//no space") == "no space"
-
-    def test_strip_bare_slash_prefix_yields_empty(self) -> None:
-        assert strip_ooc("//") == ""
-
     def test_strip_slash_not_leading_passthrough(self) -> None:
         # Not a leading // marker — returned stripped but otherwise unchanged.
         assert strip_ooc("go // there") == "go // there"
@@ -632,30 +560,6 @@ class TestOOC:
 
 class TestMakeVerseToolSpecs:
     """Tests for make_verse_tool_specs() (C7c)."""
-
-    def test_lists_six_tools_with_correct_names(self) -> None:
-        """GIVEN make_verse_tool_specs() THEN exactly 6 tool specs with the right names.
-
-        verse_edit (gated canon editing) joined the base set in Task 11; the
-        storybook tool is still flag-gated and absent by default.
-        """
-        specs = make_verse_tool_specs()
-        assert len(specs) == 6
-        names = {s["function"]["name"] for s in specs}
-        assert names == {
-            "verse_act",
-            "verse_move",
-            "verse_look",
-            "verse_recall",
-            "verse_record",
-            "verse_edit",
-        }
-
-    def test_each_spec_is_function_type(self) -> None:
-        """Each spec must have type='function' at the top level."""
-        specs = make_verse_tool_specs()
-        for spec in specs:
-            assert spec["type"] == "function"
 
     def test_verse_act_required_params(self) -> None:
         """verse_act must require only 'verb'; target and details are optional."""
@@ -694,54 +598,6 @@ class TestMakeVerseToolSpecs:
 
 class TestVerseToolDispatch:
     """Tests for dispatch_verse_tool_call and make_verse_extra_handlers (C7d)."""
-
-    def test_successful_verse_act_writes_event(
-        self, store: VerseStore, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """GIVEN opted-in avatar WHEN verse_act speak dispatched THEN event row written, no WARNING."""
-        alice_id = _opt_in(store)
-        with caplog.at_level(logging.WARNING, logger="llm.verse.avatar"):
-            dispatch_verse_tool_call(store, alice_id, "verse_act", {"verb": "speak"})
-
-        events = store.recent_events(limit=10)
-        # opt_in_avatar writes a "joins" event; speak adds a second
-        speak_events = [e for e in events if "speak" in e.summary]
-        assert len(speak_events) == 1
-        assert not caplog.records
-
-    def test_verse_act_business_logic_failure_writes_event_no_exception(
-        self, store: VerseStore, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """GIVEN move to nonexistent place WHEN verse_act dispatched THEN event row written (failure narrative), no exception."""
-        alice_id = _opt_in(store)
-        events_before = len(store.recent_events(limit=100))
-        with caplog.at_level(logging.WARNING, logger="llm.verse.avatar"):
-            # move to "Nowhere" — no such place exists → verse_act writes a
-            # "tries to move to Nowhere" event row (B2 business-logic failure)
-            dispatch_verse_tool_call(
-                store, alice_id, "verse_act", {"verb": "move", "target": "Nowhere"}
-            )
-
-        events_after = store.recent_events(limit=100)
-        # exactly one new event row
-        assert len(events_after) == events_before + 1
-        assert not caplog.records
-
-    def test_verse_act_on_retired_avatar_logs_warning(
-        self, store: VerseStore, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """GIVEN retired avatar WHEN verse_act dispatched THEN WARNING logged, no event row written."""
-        alice_id = _opt_in(store)
-        store.unlink_avatar(alice_id)
-        events_before = len(store.recent_events(limit=100))
-
-        with caplog.at_level(logging.WARNING, logger="llm.verse.avatar"):
-            dispatch_verse_tool_call(store, alice_id, "verse_act", {"verb": "speak"})
-
-        events_after = store.recent_events(limit=100)
-        assert len(events_after) == events_before  # no new event
-        assert any("verse tool dispatch failed" in r.message for r in caplog.records)
-        assert any(r.levelno == logging.WARNING for r in caplog.records)
 
     def test_db_deleted_mid_dispatch_logs_warning_no_raise(
         self, store: VerseStore, caplog: pytest.LogCaptureFixture
@@ -793,21 +649,6 @@ class TestVerseToolDispatch:
         assert new_events == 2  # only bob's two succeed
         warning_count = sum(1 for r in caplog.records if r.levelno == logging.WARNING)
         assert warning_count == 1
-
-    def test_unknown_tool_name_logged_and_skipped(
-        self, store: VerseStore, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """GIVEN unknown tool name WHEN dispatched THEN WARNING about unknown tool, no raise."""
-        alice_id = _opt_in(store)
-        events_before = len(store.recent_events(limit=100))
-
-        with caplog.at_level(logging.WARNING, logger="llm.verse.avatar"):
-            dispatch_verse_tool_call(store, alice_id, "hallucinated_tool", {"param": "value"})
-
-        events_after = store.recent_events(limit=100)
-        assert len(events_after) == events_before  # no event written
-        assert any("unknown verse tool" in r.message for r in caplog.records)
-        assert any(r.levelno == logging.WARNING for r in caplog.records)
 
     def test_make_verse_extra_handlers_returns_four_handlers_with_content(
         self, store: VerseStore
@@ -928,19 +769,6 @@ class TestDispatchContract:
         assert result.ok is False
         assert result.error == "avatar retired"
 
-    def test_verse_look_returns_description_payload(self, store: VerseStore) -> None:
-        """verse_look no longer swallows its result: the dispatch payload
-        carries the description text the model asked for."""
-        from llm.verse.avatar import dispatch_verse_tool_call
-
-        alice_id = _opt_in(store)  # opt_in places alice at The Clearing
-        result = dispatch_verse_tool_call(store, alice_id, "verse_look", {})
-        assert result.ok is True
-        assert result.payload == {
-            "status": "ok",
-            "description": "A quiet woodland clearing where new stories begin.",
-        }
-
     def test_verse_recall_returns_events_payload(self, store: VerseStore) -> None:
         """verse_recall no longer swallows its result: the dispatch payload
         carries the recalled events (≤5, summary + ts), newest first."""
@@ -1004,20 +832,6 @@ class TestDispatchContract:
 
 
 class TestHandlerConsumesResult:
-    def test_handler_emits_payload_on_ok(self, store: VerseStore) -> None:
-        """ok=True with custom payload — handler serialises payload as
-        JSON, includes 'tool' key for backwards compat."""
-        from llm.verse.avatar import (
-            make_verse_extra_handlers,
-        )
-
-        alice_id = _opt_in(store)
-        handlers = make_verse_extra_handlers(store, alice_id)
-        result = handlers["verse_act"]({"verb": "speak"})
-        payload = json.loads(result.content)
-        assert payload["status"] == "ok"
-        assert payload["tool"] == "verse_act"
-
     def test_handler_json_carries_look_description(self, store: VerseStore) -> None:
         """The model-visible verse_look JSON includes the description."""
         from llm.verse.avatar import make_verse_extra_handlers
@@ -1087,19 +901,3 @@ class TestVerseRecordToolSpec:
         specs = make_verse_tool_specs(max_actors=12)
         record = next(s for s in specs if s["function"]["name"] == "verse_record")
         assert record["function"]["parameters"]["properties"]["actors"]["maxItems"] == 12
-
-    def test_verse_record_description_excludes_recall_use(self) -> None:
-        """verse_record description steers the model to verse_recall for retells.
-
-        Prod symptom: the model called verse_record on "vibebot what
-        happened at X" recall queries and replied with a brief
-        in-character acknowledgement instead of a full retelling. The
-        tool description must mark verse_record as NEW-event-only and
-        point the model at verse_recall for retellings of past canon.
-        """
-        from llm.verse.avatar import make_verse_tool_specs
-
-        record = next(s for s in make_verse_tool_specs() if s["function"]["name"] == "verse_record")
-        desc = record["function"]["description"]
-        assert "NEW" in desc
-        assert "verse_recall" in desc

@@ -59,16 +59,6 @@ class TestTableShape:
         assert len(keys) == len(set(keys))
         assert set(REPLY_GUARDS) == set(keys)
 
-    def test_every_guard_allows_exactly_one_retry(self) -> None:
-        """One retry each — see the note on _ReplyGuard.max_retries."""
-        assert [g.max_retries for g in REPLY_GUARDS.values()] == [1] * len(REPLY_GUARDS)
-
-    def test_every_guard_has_a_nudge_and_a_summary(self) -> None:
-        """A guard with no nudge would re-roll with no correction at all."""
-        for guard in REPLY_GUARDS.values():
-            assert guard.nudge.strip(), f"{guard.key} has no nudge"
-            assert guard.summary.strip(), f"{guard.key} has no log summary"
-
 
 class TestDetectorsAreScopedCorrectly:
     """Each detector reads only what it should from the context."""

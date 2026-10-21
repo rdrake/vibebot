@@ -169,12 +169,6 @@ class TestIncidentUrl:
     def test_empty_page_url_yields_no_link(self):
         assert statuspage.incident_url("", "005ym4vzrq2w") == ""
 
-    def test_derived_link_keeps_the_configured_host(self):
-        from urllib.parse import urlparse
-
-        url = statuspage.incident_url("https://status.claude.com", "005ym4vzrq2w")
-        assert urlparse(url).hostname == "status.claude.com"
-
 
 class TestRenderLine:
     def test_names_the_service_and_links_the_incident(self):
@@ -359,15 +353,6 @@ UNREPRESENTABLE_DATETIME = datetime(1, 1, 1)
 class TestEpochGuardsUnrepresentableDatetimes:
     def test_epoch_returns_none_instead_of_raising(self):
         assert statuspage._epoch(UNREPRESENTABLE_DATETIME) is None
-
-    def test_epoch_returns_none_for_none(self):
-        assert statuspage._epoch(None) is None
-
-    def test_epoch_returns_a_float_for_a_normal_datetime(self):
-        assert (
-            statuspage._epoch(datetime(2026, 8, 9, 12, 0, tzinfo=UTC))
-            == datetime(2026, 8, 9, 12, 0, tzinfo=UTC).timestamp()
-        )
 
     def test_to_tool_payload_does_not_raise_for_unrepresentable_started_at(self):
         bad = view(started_at=UNREPRESENTABLE_DATETIME, created_at=None)

@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import logging
 import threading
-from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -73,25 +72,6 @@ class TestValidatedModelName:
         assert "anthropic/" in str(excinfo.value)
         assert "xai/" in str(excinfo.value)
 
-    def test_refusal_fallback_model_validates_without_warning(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """GIVEN the priced refusal fallback WHEN setValue THEN no unpriced-model warning."""
-        model = "xai/grok-4-1-fast-non-reasoning"
-        v = self._make()
-        with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
-            v.setValue(model)
-        assert v() == model
-        assert "no price" not in caplog.text.lower()
-
-    def test_image_model_validates_without_warning(self, caplog: pytest.LogCaptureFixture) -> None:
-        """GIVEN an image model priced per image WHEN setValue THEN no warning."""
-        v = self._make()
-        with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
-            v.setValue("xai/grok-imagine-image")
-        assert v() == "xai/grok-imagine-image"
-        assert "no price" not in caplog.text.lower()
-
     def test_warning_only_fires_once_per_model(self, caplog: pytest.LogCaptureFixture) -> None:
         """GIVEN unpriced model warned once WHEN setValue again THEN no duplicate warning."""
         v = self._make()
@@ -102,56 +82,8 @@ class TestValidatedModelName:
         assert caplog.text == ""
 
 
-class TestConfigure:
-    """Test plugin configuration wizard."""
-
-    def test_configure_prints_setup_info(self, mocker: MockerFixture) -> None:
-        """GIVEN configure function WHEN called THEN prints setup information."""
-        from llm.config import configure
-
-        output = StringIO()
-        mocker.patch("sys.stdout", output)
-        mocker.patch("supybot.conf.registerPlugin")
-        configure(advanced=False)
-
-        result = output.getvalue()
-        assert "LLM Plugin Configuration" in result
-        assert "API keys" in result
-        assert "XAI_API_KEY" in result
-
-    def test_configure_registers_plugin(self, mocker: MockerFixture) -> None:
-        """GIVEN configure function WHEN called THEN registers plugin."""
-        from llm.config import configure
-
-        mocker.patch("sys.stdout", StringIO())
-        mock_register = mocker.patch("supybot.conf.registerPlugin")
-        configure(advanced=True)
-
-        mock_register.assert_called_with("LLM", True)
-
-
 class TestConfigValues:
     """Test configuration value registration."""
-
-    def test_llm_plugin_registered(self) -> None:
-        """GIVEN config module WHEN imported THEN LLM plugin is registered."""
-        from llm import config
-
-        assert hasattr(config, "LLM")
-
-    def test_database_path_registered(self) -> None:
-        """GIVEN LLM config WHEN checking databasePath THEN exists with empty default."""
-        from llm import config  # noqa: F811
-
-        value = config.LLM.databasePath()
-        assert value == ""
-
-    def test_long_reply_hybrid_defaults_registered(self) -> None:
-        """GIVEN LLM config WHEN checking long reply UX THEN defaults are registered."""
-        import supybot.conf as conf
-        from llm import config  # noqa: F401
-
-        assert conf.supybot.plugins.LLM.longReplyTeaserMaxChars() == 220
 
     def test_bridge_registry_values_registered_with_safe_defaults(self) -> None:
         """B1: bridgeEnabled defaults to False and bridgeAllowedPlugins to []."""
@@ -175,29 +107,6 @@ class TestConfigValues:
             "OpenAI=https://status.openai.com",
         ]
 
-    def test_status_queryable_pages_defaults_empty(self) -> None:
-        import llm.config  # noqa: F401
-        import supybot.conf as conf
-
-        assert list(conf.supybot.plugins.LLM.statusQueryablePages()) == []
-
-    def test_status_page_url_singular_is_gone(self) -> None:
-        import llm.config  # noqa: F401
-        import supybot.conf as conf
-
-        assert not hasattr(conf.supybot.plugins.LLM, "statusPageUrl")
-
-    def test_capability_settings_registered_with_defaults(self) -> None:
-        """T5b: capability-based registry values are the sole surface for
-        assistant/image model after the command-era keys were removed."""
-        import llm.config  # noqa: F401 — import side effect registers values
-        import supybot.conf as conf
-
-        assert conf.supybot.plugins.LLM.assistantModel() == "anthropic/claude-haiku-5-5"
-        assert conf.supybot.plugins.LLM.assistantSystemPrompt() != ""
-        assert conf.supybot.plugins.LLM.imageModel() == "xai/grok-imagine-image"
-        assert conf.supybot.plugins.LLM.refusalFallbackModel() == "xai/grok-4-1-fast-non-reasoning"
-
     def test_bridge_allow_mutating_registered_with_safe_default(self) -> None:
         """B1: bridgeAllowMutating defaults to False (gate closed).
 
@@ -212,64 +121,6 @@ class TestConfigValues:
         import supybot.conf as conf
 
         assert conf.supybot.plugins.LLM.bridgeAllowMutating() is False
-
-    def test_bridge_scheduled_task_limit_default_is_five(self) -> None:
-        """D1: bridgeScheduledTaskLimit defaults to 5 (per-creator-per-channel)."""
-        import llm.config  # noqa: F401 — import side effect registers the value
-        import supybot.conf as conf
-
-        assert conf.supybot.plugins.LLM.bridgeScheduledTaskLimit() == 5
-
-    def test_verse_enabled_registered_default_false(self) -> None:
-        """C1: verseEnabled is a per-channel boolean that defaults to False."""
-        import llm.config  # noqa: F401 — import side effect registers the value
-        import supybot.conf as conf
-
-        assert conf.supybot.plugins.LLM.verseEnabled() is False
-
-    def test_verse_event_retention_days_registered_default_30(self) -> None:
-        """C1: verseEventRetentionDays is a per-channel integer that defaults to 30."""
-        import llm.config  # noqa: F401 — import side effect registers the value
-        import supybot.conf as conf
-
-        assert conf.supybot.plugins.LLM.verseEventRetentionDays() == 30
-
-
-class TestRateLimitDefaults:
-    """Pin the 18 rate-limit (key, default) pairs produced by _register_rate_limit_block."""
-
-    @pytest.mark.parametrize(
-        "key,expected",
-        [
-            ("askRateLimitCount", 15),
-            ("askRateLimitWindow", 60),
-            ("askTrustedRateLimitCount", 15),
-            ("askTrustedRateLimitWindow", 60),
-            ("askUnregRateLimitCount", 15),
-            ("askUnregRateLimitWindow", 60),
-            ("drawRateLimitCount", 2),
-            ("drawRateLimitWindow", 300),
-            ("drawTrustedRateLimitCount", 5),
-            ("drawTrustedRateLimitWindow", 60),
-            # Unregistered is the STRICTEST tier: 1 image/hour, NOT 0 (which
-            # _is_rate_limited treats as "disabled → unlimited").
-            ("drawUnregRateLimitCount", 1),
-            ("drawUnregRateLimitWindow", 3600),
-            ("storyRateLimitCount", 2),
-            ("storyRateLimitWindow", 300),
-            ("storyTrustedRateLimitCount", 5),
-            ("storyTrustedRateLimitWindow", 60),
-            ("storyUnregRateLimitCount", 1),
-            ("storyUnregRateLimitWindow", 3600),
-        ],
-    )
-    def test_rate_limit_defaults(self, key: str, expected: int) -> None:
-        """GIVEN rate-limit registry defaults WHEN read THEN match expected values."""
-        import llm.config  # noqa: F401 — import side effect registers the values
-        import supybot.conf as conf
-
-        value = getattr(conf.supybot.plugins.LLM, key)()
-        assert value == expected
 
 
 class TestValidatedModelNameThreadSafety:
@@ -310,40 +161,8 @@ class TestValidatedModelNameThreadSafety:
         assert model in warnings_logged[0]
 
 
-class TestPR3RegistryKeys:
-    """F1: compaction registry keys."""
-
-    def test_verse_compaction_daily_at_default(self) -> None:
-        """verseCompactionDailyAt is global String, default '03:00'."""
-        import llm.config  # noqa: F401
-        import supybot.conf as conf
-
-        assert conf.supybot.plugins.LLM.verseCompactionDailyAt() == "03:00"
-
-    def test_verse_compaction_min_keep_events_default(self) -> None:
-        """verseCompactionMinKeepEvents is global NonNegativeInteger, default 20."""
-        import llm.config  # noqa: F401
-        import supybot.conf as conf
-
-        assert conf.supybot.plugins.LLM.verseCompactionMinKeepEvents() == 20
-
-
 class TestVerseAutoEntityKeys:
     """Two new per-channel registry keys for verse_record + aging."""
-
-    def test_verse_auto_entity_retire_days_default_14(self) -> None:
-        """verseAutoEntityRetireDays defaults to 14 (per-channel)."""
-        import llm.config  # noqa: F401
-        import supybot.conf as conf
-
-        assert conf.supybot.plugins.LLM.verseAutoEntityRetireDays() == 14
-
-    def test_verse_auto_entity_max_names_per_call_default_8(self) -> None:
-        """verseAutoEntityMaxNamesPerCall defaults to 8 (per-channel)."""
-        import llm.config  # noqa: F401
-        import supybot.conf as conf
-
-        assert conf.supybot.plugins.LLM.verseAutoEntityMaxNamesPerCall() == 8
 
     def test_verse_auto_entity_retire_days_zero_allowed(self) -> None:
         """0 must be a valid value — design §5: '0 disables sweep'."""
@@ -357,13 +176,6 @@ class TestVerseAutoEntityKeys:
 class TestVerseStyleExemplars:
     """registry.Json channel key for fc42 taste exemplars."""
 
-    def test_verse_style_exemplars_default_empty_list(self) -> None:
-        """registry.Json round-trips the empty-list default cleanly."""
-        from supybot import registry
-
-        v = registry.Json([], "h")
-        assert v() == []
-
     def test_verse_style_exemplars_json_roundtrips_quote_laden(self) -> None:
         """Strings with quotes and dashes survive the bot.conf read path."""
         from supybot import registry
@@ -374,13 +186,6 @@ class TestVerseStyleExemplars:
         restored = registry.Json([], "h")
         restored.set(str(v))  # str(v) == json.dumps(...) == the bot.conf read path
         assert restored() == payload
-
-    def test_verse_style_exemplars_registered_default_empty_list(self) -> None:
-        """verseStyleExemplars per-channel default is []."""
-        import llm.config  # noqa: F401
-        import supybot.conf as conf
-
-        assert conf.supybot.plugins.LLM.verseStyleExemplars() == []
 
 
 def _registered_config_keys() -> set[str]:

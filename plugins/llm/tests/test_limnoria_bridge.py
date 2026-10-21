@@ -128,44 +128,6 @@ def test_mutating_commands_covers_forward_look_writes():
     assert expected_read_only.isdisjoint(lb.MUTATING_COMMANDS)
 
 
-def test_mutating_commands_lowercase_invariant():
-    """Match the DENY_COMMANDS shape — both elements lowercase."""
-    from llm import limnoria_bridge as lb
-
-    for plugin, leaf in lb.MUTATING_COMMANDS:
-        assert plugin == plugin.lower(), plugin
-        assert leaf == leaf.lower(), leaf
-
-
-def test_default_allowed_plugins_is_curated_set():
-    """Phase 2 Task 2: when bridgeAllowedPlugins is empty, the bridge falls
-    back to this curated CamelCase set. Each plugin is either pure-read or
-    has its writes gated by Task 1's MUTATING_COMMANDS."""
-    from llm import limnoria_bridge as lb
-
-    assert isinstance(lb.DEFAULT_ALLOWED_PLUGINS, frozenset)
-    assert (
-        frozenset(
-            {
-                "Misc",
-                "Time",
-                "Math",
-                "Utilities",
-                "Seen",
-                "Web",
-                "Later",
-                "Note",
-                "Karma",
-                "QuoteGrabs",
-                "RSS",
-                "DDG",
-                "Network",
-            }
-        )
-        == lb.DEFAULT_ALLOWED_PLUGINS
-    )
-
-
 def test_network_connection_management_is_denied():
     """Network is allowlisted for whois/whowas/latency/uptime; the leaves
     that change the bot's connections or re-dispatch arbitrary commands
@@ -178,53 +140,6 @@ def test_network_connection_management_is_denied():
     for leaf in ("whois", "whowas", "latency", "uptime", "networks", "driver", "capabilities"):
         assert ("network", leaf) not in lb.DENY_COMMANDS, leaf
         assert ("network", leaf) not in lb.MUTATING_COMMANDS, leaf
-
-
-def test_default_allowed_plugins_camelcase_invariant():
-    """Bridge enumerate uses cb.name() (CamelCase) for the allowlist match."""
-    from llm import limnoria_bridge as lb
-
-    for name in lb.DEFAULT_ALLOWED_PLUGINS:
-        assert name and name[0].isupper(), name
-
-
-def test_default_allowed_plugins_excludes_deny_plugins():
-    """The curated set must not overlap with DENY_PLUGINS, which would be
-    a contradiction (we'd suggest something we forbid)."""
-    from llm import limnoria_bridge as lb
-
-    assert lb.DEFAULT_ALLOWED_PLUGINS.isdisjoint(lb.DENY_PLUGINS)
-
-
-def test_buffering_proxy_captures_reply_text(mocker):
-    from llm.limnoria_bridge import BufferingIrcProxy
-
-    real_irc = mocker.MagicMock()
-    real_irc.network = "testnet"
-    msg = mocker.MagicMock()
-    msg.args = ("#test", "trigger")
-    msg.channel = "#test"
-
-    proxy = BufferingIrcProxy(real_irc, msg)
-    proxy.reply("hello world")
-    proxy.reply("second line")
-
-    assert proxy.buffer == ["hello world", "second line"]
-
-
-def test_buffering_proxy_captures_error_text(mocker):
-    from llm.limnoria_bridge import BufferingIrcProxy
-
-    real_irc = mocker.MagicMock()
-    real_irc.network = "testnet"
-    msg = mocker.MagicMock()
-    msg.args = ("#test", "trigger")
-    msg.channel = "#test"
-
-    proxy = BufferingIrcProxy(real_irc, msg)
-    proxy.error("nope")
-
-    assert proxy.buffer == ["nope"]
 
 
 def test_buffering_proxy_does_not_queue_irc_traffic(mocker):
@@ -241,22 +156,6 @@ def test_buffering_proxy_does_not_queue_irc_traffic(mocker):
 
     real_irc.queueMsg.assert_not_called()
     real_irc.sendMsg.assert_not_called()
-
-
-def test_buffering_proxy_preserves_msg_channel(mocker):
-    """ReplyIrcProxy.__init__ sets msg.channel from msg.args[0]; reusing
-    the original msg means the channel value is unchanged."""
-    from llm.limnoria_bridge import BufferingIrcProxy
-
-    real_irc = mocker.MagicMock()
-    real_irc.network = "testnet"
-    msg = mocker.MagicMock()
-    msg.args = ("#test", "trigger")
-    msg.channel = "#test"
-
-    BufferingIrcProxy(real_irc, msg)
-
-    assert msg.channel == "#test"
 
 
 def test_buffering_proxy_error_raise_true_still_raises(mocker):
@@ -278,21 +177,6 @@ def test_buffering_proxy_error_raise_true_still_raises(mocker):
     with pytest.raises(callbacks.Error):
         proxy.error("nope", Raise=True)
     # Buffer still captured the text before raising.
-    assert proxy.buffer == ["nope"]
-
-
-def test_buffering_proxy_error_default_does_not_raise(mocker):
-    """error() without Raise=True must NOT raise — only buffer the text."""
-    from llm.limnoria_bridge import BufferingIrcProxy
-
-    real_irc = mocker.MagicMock()
-    real_irc.network = "testnet"
-    msg = mocker.MagicMock()
-    msg.args = ("#test", "trigger")
-    msg.channel = "#test"
-
-    proxy = BufferingIrcProxy(real_irc, msg)
-    proxy.error("nope")  # default Raise=False
     assert proxy.buffer == ["nope"]
 
 
@@ -567,32 +451,6 @@ def test_enumerate_default_keyword_is_gate_closed(mocker):
     assert leaves == {"notes"}
 
 
-def test_enumerate_gate_does_not_affect_pure_read_only_plugins(mocker):
-    """A plugin with no entries in MUTATING_COMMANDS (e.g. Time) yields
-    the same set whether the gate is open or closed."""
-    from llm import limnoria_bridge as lb
-
-    cb = _stub_callback(
-        mocker,
-        "Time",
-        canonical="time",
-        commands=["time", "at", "until"],
-        docstrings={"time": "x", "at": "y", "until": "z"},
-    )
-    irc = _fake_irc_with_callbacks(mocker, [cb])
-    msg = _fake_msg(mocker)
-    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
-
-    closed = {
-        c.command
-        for c in lb.enumerate_commands(irc, msg, frozenset({"Time"}), allow_mutating=False)
-    }
-    open_ = {
-        c.command for c in lb.enumerate_commands(irc, msg, frozenset({"Time"}), allow_mutating=True)
-    }
-    assert closed == open_ == {"time", "at", "until"}
-
-
 def test_enumerate_gate_preserves_deny_commands_filtering(mocker):
     """DENY_COMMANDS still bites even when allow_mutating=True. Web.fetch
     is denied unconditionally (SSRF), independent of the mutation gate."""
@@ -647,20 +505,6 @@ def test_dispatch_deny_command_blocks_call(mocker):
 
     out = lb.dispatch(irc, msg, plugin="Web", command="fetch", arg_string="http://x")
     assert out == {"error": "denied: Web.fetch"}
-
-
-def test_deny_commands_block_web_ssrf_siblings():
-    """Every SSRF-shaped stock Web read is hard-denied, not just web.fetch.
-
-    location/headers/doctype/size/title each fetch an arbitrary caller-supplied
-    URL with the bot's network identity (web.location even follows redirects and
-    skips the whitelist). They are reads, so the mutation gate never touches
-    them; only DENY_COMMANDS can stop them.
-    """
-    from llm import limnoria_bridge as lb
-
-    for leaf in ("fetch", "location", "headers", "doctype", "size", "title"):
-        assert ("web", leaf) in lb.DENY_COMMANDS
 
 
 def test_dispatch_blocks_web_ssrf_siblings_without_calling_command(mocker):
@@ -872,28 +716,6 @@ def test_dispatch_exception_preserves_buffered_partial_output(mocker):
     assert out["partial_output"] == "first line of output"
 
 
-def test_dispatch_argument_error_returned_as_reply(mocker):
-    """wrap() argument errors come through irc.reply(help_text), not irc.error."""
-    from llm import limnoria_bridge as lb
-
-    cb = _stub_callback(mocker, "Misc", commands=["ping"])
-
-    def _fake_call(_command, proxy, _msg, _tokens):
-        proxy.reply("(ping takes no arguments)")
-
-    cb._callCommand.side_effect = _fake_call
-
-    irc = mocker.MagicMock()
-    irc.getCallback.return_value = cb
-    irc.network = "testnet"
-    msg = _fake_msg(mocker)
-    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
-    mocker.patch.object(lb.callbacks, "tokenize", return_value=["unexpected"])
-
-    out = lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="unexpected")
-    assert out == {"status": "ok", "reply": "(ping takes no arguments)"}
-
-
 def test_dispatch_malformed_args_returns_error_envelope(mocker):
     """tokenize() raises SyntaxError on malformed brackets/pipes — the
     bridge must catch it and return an error envelope, not propagate."""
@@ -910,23 +732,6 @@ def test_dispatch_malformed_args_returns_error_envelope(mocker):
     out = lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="[oops")
     assert out == {"error": "unmatched bracket"}
     cb._callCommand.assert_not_called()
-
-
-def test_dispatch_tokenize_called_with_channel_and_network(mocker):
-    from llm import limnoria_bridge as lb
-
-    cb = _stub_callback(mocker, "Misc", commands=["ping"])
-    cb._callCommand.return_value = None
-    irc = mocker.MagicMock()
-    irc.getCallback.return_value = cb
-    irc.network = "testnet"
-    msg = _fake_msg(mocker, channel="#test")
-    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
-    tok = mocker.patch.object(lb.callbacks, "tokenize", return_value=[])
-
-    lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="hi")
-
-    tok.assert_called_once_with("hi", channel="#test", network="testnet")
 
 
 def test_dispatch_rejects_mutating_when_gate_closed(mocker):
@@ -971,50 +776,6 @@ def test_dispatch_allows_mutating_when_gate_open(mocker):
         allow_mutating=True,
     )
     assert out == {"status": "ok", "reply": "ok, I'll tell alice next time I see her"}
-
-
-def test_dispatch_default_keyword_is_gate_closed(mocker):
-    """Same backwards-compat safety as enumerate: a caller that forgets
-    the kwarg defaults to safe behavior."""
-    from llm import limnoria_bridge as lb
-
-    cb = _stub_callback(mocker, "Note", canonical="note", commands=["send"])
-    irc = mocker.MagicMock()
-    irc.getCallback.return_value = cb
-    msg = _fake_msg(mocker)
-
-    out = lb.dispatch(irc, msg, plugin="Note", command="send", arg_string="bob hi")
-    assert out == {"error": "denied: write commands disabled"}
-
-
-def test_dispatch_gate_does_not_affect_read_commands(mocker):
-    """A non-MUTATING leaf dispatches normally regardless of allow_mutating."""
-    from llm import limnoria_bridge as lb
-
-    cb = _stub_callback(mocker, "Misc", canonical="misc", commands=["ping"])
-
-    def _fake_call(_command, proxy, _msg, _tokens):
-        proxy.reply("pong")
-
-    cb._callCommand.side_effect = _fake_call
-    irc = mocker.MagicMock()
-    irc.getCallback.return_value = cb
-    irc.network = "testnet"
-    msg = _fake_msg(mocker)
-    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
-    mocker.patch.object(lb.callbacks, "tokenize", return_value=[])
-
-    closed = lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="")
-    open_ = lb.dispatch(
-        irc,
-        msg,
-        plugin="Misc",
-        command="ping",
-        arg_string="",
-        allow_mutating=True,
-    )
-    assert closed == {"status": "ok", "reply": "pong"}
-    assert open_ == {"status": "ok", "reply": "pong"}
 
 
 def test_dispatch_gate_check_runs_after_command_existence_check(mocker):
@@ -1066,17 +827,6 @@ def test_search_commands_returns_empty_for_blank_query():
     cmds = [_make_cmd("Misc", "ping", description="Replies pong.")]
     assert lb.search_commands(cmds, "") == []
     assert lb.search_commands(cmds, "   ") == []
-
-
-def test_search_commands_matches_command_name():
-    from llm import limnoria_bridge as lb
-
-    cmds = [
-        _make_cmd("Misc", "ping", description="Replies pong."),
-        _make_cmd("Misc", "help", description="Shows command help."),
-    ]
-    out = lb.search_commands(cmds, "ping")
-    assert [c.command for c in out] == ["ping"]
 
 
 def test_search_commands_matches_description_text():

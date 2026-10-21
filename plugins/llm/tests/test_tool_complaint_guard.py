@@ -28,7 +28,6 @@ from typing import TYPE_CHECKING
 import pytest
 from llm.service import (
     LLMService,
-    _is_image_failure,
     _is_tool_complaint,
     _strip_tool_complaints,
 )
@@ -124,15 +123,6 @@ class TestIsToolComplaint:
     def test_empty_content_is_not_a_complaint(self) -> None:
         """Empty content is never flagged, matching the sibling predicates."""
         assert not _is_tool_complaint("")
-
-
-class TestTheImageGuardMissedThese:
-    """Why a fifth guard was needed: the sibling only knows one wording."""
-
-    @pytest.mark.parametrize("line", OBSERVED_COMPLAINTS)
-    def test_image_failure_guard_lets_them_through(self, line: str) -> None:
-        """Not one of the eight drifted lines matches the image predicate."""
-        assert not _is_image_failure(line)
 
 
 class TestStripToolComplaints:

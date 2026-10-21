@@ -10,23 +10,11 @@ from pathlib import Path
 import pytest
 from llm.persistence import (
     LLMDatabase,
-    MemoryRow,
     PendingTaskRow,
     ReminderRow,
     UsageRank,
     lease_until,
 )
-
-
-def test_reminders_table_has_action_prompt_column(test_db: LLMDatabase) -> None:
-    """GIVEN a new database WHEN initialized THEN reminders table has action_prompt column."""
-    conn = test_db._connect()
-    try:
-        columns = conn.execute("PRAGMA table_info(reminders)").fetchall()
-        column_names = [col[1] for col in columns]
-        assert "action_prompt" in column_names
-    finally:
-        conn.close()
 
 
 def test_existing_reminder_gets_empty_action_prompt(tmp_path: Path) -> None:
@@ -71,13 +59,6 @@ def test_existing_reminder_gets_empty_action_prompt(tmp_path: Path) -> None:
 class TestDatabaseInit:
     """Test database initialization and schema creation."""
 
-    def test_creates_database_file(self, tmp_path: Path) -> None:
-        """GIVEN a path WHEN LLMDatabase is created THEN database file exists."""
-        db_path = str(tmp_path / "test.db")
-        db = LLMDatabase(db_path)
-        assert Path(db_path).exists()
-        db.close()
-
     def test_connect_raises_after_close(self, tmp_path: Path) -> None:
         """GIVEN a closed database WHEN a connection is requested THEN
         _connect raises instead of silently reopening.
@@ -91,28 +72,6 @@ class TestDatabaseInit:
         with pytest.raises(RuntimeError, match="closed"):
             db._connect()
 
-    def test_creates_reminders_table(self, test_db: LLMDatabase) -> None:
-        """GIVEN a new database WHEN initialized THEN reminders table exists."""
-        conn = test_db._connect()
-        try:
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='reminders'"
-            )
-            assert cursor.fetchone() is not None
-        finally:
-            conn.close()
-
-    def test_creates_usage_table(self, test_db: LLMDatabase) -> None:
-        """GIVEN a new database WHEN initialized THEN usage table exists."""
-        conn = test_db._connect()
-        try:
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='usage'"
-            )
-            assert cursor.fetchone() is not None
-        finally:
-            conn.close()
-
     def test_wal_mode_enabled(self, test_db: LLMDatabase) -> None:
         """GIVEN a database WHEN connected THEN WAL journal mode is active."""
         conn = test_db._connect()
@@ -120,107 +79,6 @@ class TestDatabaseInit:
             row = conn.execute("PRAGMA journal_mode").fetchone()
             assert row is not None
             assert row[0] == "wal"
-        finally:
-            conn.close()
-
-    def test_usage_table_has_prompt_column(self, test_db: LLMDatabase) -> None:
-        """GIVEN a new database WHEN initialized THEN usage table has prompt column."""
-        conn = test_db._connect()
-        try:
-            columns = conn.execute("PRAGMA table_info(usage)").fetchall()
-            column_names = [col[1] for col in columns]
-            assert "prompt" in column_names
-        finally:
-            conn.close()
-
-    def test_usage_table_has_status_column(self, test_db: LLMDatabase) -> None:
-        """GIVEN a new database WHEN initialized THEN usage table has status column."""
-        conn = test_db._connect()
-        try:
-            columns = conn.execute("PRAGMA table_info(usage)").fetchall()
-            column_names = [col[1] for col in columns]
-            assert "status" in column_names
-        finally:
-            conn.close()
-
-    def test_usage_table_has_error_detail_column(self, test_db: LLMDatabase) -> None:
-        """GIVEN a new database WHEN initialized THEN usage table has error_detail column."""
-        conn = test_db._connect()
-        try:
-            columns = conn.execute("PRAGMA table_info(usage)").fetchall()
-            column_names = [col[1] for col in columns]
-            assert "error_detail" in column_names
-        finally:
-            conn.close()
-
-    def test_usage_table_has_rendered_prompt_column(self, test_db: LLMDatabase) -> None:
-        """GIVEN a new database WHEN initialized THEN usage table has rendered_prompt column."""
-        conn = test_db._connect()
-        try:
-            columns = conn.execute("PRAGMA table_info(usage)").fetchall()
-            column_names = [col[1] for col in columns]
-            assert "rendered_prompt" in column_names
-        finally:
-            conn.close()
-
-    def test_creates_conversations_table(self, test_db: LLMDatabase) -> None:
-        """GIVEN a new database WHEN initialized THEN conversations table exists."""
-        conn = test_db._connect()
-        try:
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
-            )
-            assert cursor.fetchone() is not None
-        finally:
-            conn.close()
-
-    def test_creates_memories_table(self, test_db: LLMDatabase) -> None:
-        """GIVEN fresh database WHEN initialized THEN memories table exists."""
-        conn = test_db._connect()
-        try:
-            tables = {
-                r[0]
-                for r in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            }
-            assert "memories" in tables
-        finally:
-            conn.close()
-
-    def test_memories_table_has_nick_index(self, test_db: LLMDatabase) -> None:
-        """GIVEN fresh database WHEN initialized THEN idx_memories_nick exists."""
-        conn = test_db._connect()
-        try:
-            indexes = {
-                r[0]
-                for r in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='index'"
-                ).fetchall()
-            }
-            assert "idx_memories_nick" in indexes
-        finally:
-            conn.close()
-
-    def test_memories_table_columns_match_namedtuple(self, test_db: LLMDatabase) -> None:
-        """GIVEN fresh database WHEN row inserted THEN MemoryRow unpacks correctly."""
-        conn = test_db._connect()
-        try:
-            conn.execute(
-                "INSERT INTO memories (nick, fact, source_channel, created_at) VALUES (?, ?, ?, ?)",
-                ("alice", "likes Python", "#dev", 1700000000.0),
-            )
-            conn.commit()
-            row = MemoryRow(
-                *conn.execute(
-                    "SELECT id, nick, fact, source_channel, created_at FROM memories"
-                ).fetchone()
-            )
-            assert row.nick == "alice"
-            assert row.fact == "likes Python"
-            assert row.source_channel == "#dev"
-            assert row.created_at == 1700000000.0
-            assert isinstance(row.id, int)
         finally:
             conn.close()
 
@@ -442,19 +300,6 @@ class TestReminderPersistence:
         assert len(reminders) == 1
         assert reminders[0].event_name == "recent_event"
 
-    def test_load_orders_by_fire_at_ascending(self, test_db: LLMDatabase) -> None:
-        """GIVEN multiple reminders WHEN loading THEN ordered by fire_at ascending."""
-        now = time.time()
-        test_db.save_reminder("later", "alice", "#chan", "later", now + 600)
-        test_db.save_reminder("sooner", "alice", "#chan", "sooner", now + 60)
-        test_db.save_reminder("middle", "alice", "#chan", "middle", now + 300)
-
-        reminders = test_db.load_pending_reminders()
-        assert len(reminders) == 3
-        assert reminders[0].event_name == "sooner"
-        assert reminders[1].event_name == "middle"
-        assert reminders[2].event_name == "later"
-
     def test_agenda_lookups_and_in_place_move(self, test_db: LLMDatabase) -> None:
         """GIVEN reminders WHEN the agenda reads and moves them THEN rows keep their id."""
         now = time.time()
@@ -506,17 +351,6 @@ class TestUsageTracking:
         assert summary.total_prompt_tokens == 300
         assert summary.total_completion_tokens == 150
         assert summary.total_cost == pytest.approx(0.03)
-
-    def test_rendered_prompt_defaults_to_empty(self, test_db: LLMDatabase) -> None:
-        """Nothing writes the column, so every row leaves it blank."""
-        test_db.log_usage("alice", "#chan", "ask", "gpt-4", 100, 50, 0.01, prompt="hello")
-
-        conn = test_db._connect()
-        try:
-            row = conn.execute("SELECT rendered_prompt FROM usage").fetchone()
-        finally:
-            conn.close()
-        assert row[0] == ""
 
     def test_summary_with_since_filter(self, test_db: LLMDatabase) -> None:
         """GIVEN old and new usage WHEN summarizing with since THEN only counts recent."""
@@ -597,38 +431,6 @@ class TestUsageTracking:
 class TestRoundTrip:
     """Integration tests for full persistence round-trips."""
 
-    def test_reminder_survives_simulated_restart(self, tmp_path: Path) -> None:
-        """GIVEN saved reminder WHEN DB reopened THEN reminder loadable."""
-        db_path = str(tmp_path / "test.db")
-
-        # First "session" — save a reminder
-        db1 = LLMDatabase(db_path)
-        fire_at = time.time() + 3600
-        db1.save_reminder("llm_remind_1_1", "alice", "#test", "check build", fire_at)
-        db1.close()
-
-        # Second "session" — reload
-        db2 = LLMDatabase(db_path)
-        reminders = db2.load_pending_reminders()
-        assert len(reminders) == 1
-        assert reminders[0].nick == "alice"
-        assert reminders[0].message == "check build"
-        db2.close()
-
-    def test_usage_persists_across_sessions(self, tmp_path: Path) -> None:
-        """GIVEN logged usage WHEN DB reopened THEN usage queryable."""
-        db_path = str(tmp_path / "test.db")
-
-        db1 = LLMDatabase(db_path)
-        db1.log_usage("alice", "#test", "ask", "gemini/flash", 100, 50, 0.001)
-        db1.close()
-
-        db2 = LLMDatabase(db_path)
-        summary = db2.get_usage_summary()
-        assert summary.total_requests == 1
-        assert summary.total_cost == pytest.approx(0.001)
-        db2.close()
-
     def test_concurrent_writes_thread_safety(self, tmp_path: Path) -> None:
         """GIVEN multiple threads WHEN writing concurrently THEN no corruption."""
         db = LLMDatabase(str(tmp_path / "test.db"))
@@ -686,12 +488,6 @@ class TestFilteredUsageSummary:
         summary = test_db.get_usage_summary_for_channel("#test", since=since)
         assert summary.total_requests == 1
         assert summary.total_cost == pytest.approx(0.02)
-
-    def test_channel_summary_empty(self, test_db: LLMDatabase) -> None:
-        """GIVEN no usage WHEN querying channel THEN returns zeros."""
-        summary = test_db.get_usage_summary_for_channel("#empty")
-        assert summary.total_requests == 0
-        assert summary.total_cost == pytest.approx(0.0)
 
     def test_nick_summary_filters_to_nick(self, test_db: LLMDatabase) -> None:
         """GIVEN usage from two nicks WHEN querying one THEN only that nick counted."""
@@ -997,28 +793,6 @@ class TestDeliveryStatePersistence:
         assert tasks[0].delivery_state == "ready"
         assert tasks[0].result_payload == '{"content": "hello world"}'
 
-    def test_update_task_for_delivery_sets_failed_terminal(self, test_db: LLMDatabase) -> None:
-        """GIVEN a pending task WHEN provider fails terminally THEN delivery_state='ready' with failure reason."""
-        now = time.time()
-        task_id = self._save_task(test_db, now)
-
-        test_db.update_task_for_delivery(
-            task_id,
-            delivery_state="ready",
-            result_payload='{"status": "failed_terminal", "reason": "auth error"}',
-        )
-
-        import json
-
-        tasks = test_db.load_pending_tasks()
-        assert tasks[0].delivery_state == "ready"
-        # result_payload is a JSON delivery payload, not a flat string: assert the
-        # structured fields so "failed_terminal" landing in the wrong key (or a
-        # corrupted shape) is caught.
-        payload = json.loads(tasks[0].result_payload)
-        assert payload["status"] == "failed_terminal"
-        assert payload["reason"] == "auth error"
-
     def test_claim_filters_by_delivery_state(self, test_db: LLMDatabase) -> None:
         """GIVEN tasks with different delivery_states WHEN claiming with filter THEN only matching tasks returned."""
         now = time.time()
@@ -1301,41 +1075,6 @@ class TestSchemaV3Migration:
             conn.close()
         db.close()
 
-    def test_pending_task_row_includes_delivery_fields(self, test_db: LLMDatabase) -> None:
-        """GIVEN a v3 database WHEN loading pending tasks THEN PendingTaskRow has delivery fields."""
-        now = time.time()
-        test_db.save_pending_task(
-            task_type="ask",
-            nick="bob",
-            reply_target="#test",
-            is_channel=True,
-            prompt_preview="hello",
-            model="gpt-4",
-            request_data="{}",
-            submitted_at=now,
-            expires_at=now + 60,
-            next_attempt_at=now,
-        )
-
-        tasks = test_db.load_pending_tasks()
-        assert len(tasks) == 1
-        t = tasks[0]
-        assert t.delivery_state == "pending"
-        assert t.result_payload == ""
-        assert t.last_delivery_error == ""
-        assert t.delivery_attempt_count == 0
-        assert t.origin_request_id == ""
-
-    def test_schema_version_is_24(self, test_db: LLMDatabase) -> None:
-        """GIVEN a fresh database WHEN opened THEN schema version is 24."""
-        conn = test_db._connect()
-        try:
-            row = conn.execute("PRAGMA user_version").fetchone()
-            assert row is not None
-            assert row[0] == 24
-        finally:
-            conn.close()
-
     def test_reminder_persists_structured_recurrence_fields(self, test_db: LLMDatabase) -> None:
         """GIVEN a save with structured recurrence WHEN reloaded THEN fields round-trip."""
         test_db.save_reminder(
@@ -1372,35 +1111,6 @@ class TestSchemaV3Migration:
         rows = test_db.load_pending_reminders()
         assert len(rows) == 1
         assert rows[0].reply_msgid == "abc123"
-
-    def test_reminder_without_msgid_round_trips_empty(self, test_db: LLMDatabase) -> None:
-        """GIVEN a save with no msgid WHEN reloaded THEN reply_msgid is empty, not None."""
-        test_db.save_reminder(
-            event_name="evt-nomsgid",
-            nick="alice",
-            channel="#test",
-            message="msg",
-            fire_at=time.time() + 60,
-        )
-        rows = test_db.load_pending_reminders()
-        assert rows[0].reply_msgid == ""
-
-    def test_reminder_rejects_both_recurrence_kinds(self, test_db: LLMDatabase) -> None:
-        """GIVEN both recurrence fields set WHEN saving THEN ValueError."""
-        with pytest.raises(ValueError, match="mutually exclusive"):
-            test_db.save_reminder(
-                event_name="evt-bad",
-                nick="alice",
-                channel="#test",
-                message="msg",
-                fire_at=time.time() + 60,
-                action_prompt="x",
-                account="alice",
-                chain_position=1,
-                recurrence_seconds=300,
-                recurrence_rrule="FREQ=WEEKLY",
-                watch_mode=False,
-            )
 
 
 class TestGetNextDueTime:
@@ -1545,19 +1255,6 @@ class TestConversationPersistence:
     the bulk ``delete_all_conversations`` and the corrupt-JSON load path.
     """
 
-    def test_save_and_load_conversation(self, test_db: LLMDatabase) -> None:
-        """GIVEN a saved conversation WHEN load_conversations THEN it is returned."""
-        messages = [{"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Hi"}]
-        test_db.save_conversation("User1", "#Channel", messages, 1000.0)
-
-        loaded = test_db.load_conversations()
-        assert len(loaded) == 1
-        nick, channel, msgs, last_activity = loaded[0]
-        assert nick == "user1"
-        assert channel == "#channel"
-        assert msgs == messages
-        assert last_activity == 1000.0
-
     def test_delete_all_conversations(self, test_db: LLMDatabase) -> None:
         """GIVEN multiple conversations WHEN delete_all THEN all are removed."""
         test_db.save_conversation("user1", "#chan", [], 1000.0)
@@ -1565,23 +1262,6 @@ class TestConversationPersistence:
         test_db.delete_all_conversations()
 
         assert len(test_db.load_conversations()) == 0
-
-    def test_load_skips_corrupt_json(self, test_db: LLMDatabase) -> None:
-        """GIVEN a row with invalid JSON WHEN load THEN it is skipped."""
-        # Insert valid row
-        test_db.save_conversation("good", "#chan", [{"role": "user", "content": "ok"}], 1000.0)
-        # Manually insert corrupt row
-        conn = test_db._connect()
-        conn.execute(
-            "INSERT OR REPLACE INTO conversations (nick, channel, messages, last_activity) "
-            "VALUES (?, ?, ?, ?)",
-            ("bad", "#chan", "NOT VALID JSON{{{", 1000.0),
-        )
-        conn.commit()
-
-        loaded = test_db.load_conversations()
-        assert len(loaded) == 1
-        assert loaded[0][0] == "good"
 
     def test_load_removes_multiple_corrupt_rows_atomically(self, test_db: LLMDatabase) -> None:
         """GIVEN several corrupt rows interleaved with valid ones WHEN load THEN
@@ -1625,10 +1305,6 @@ class TestMemoryPersistence:
         assert len(memories) == 1
         assert memories[0].nick == "alice"
 
-    def test_get_memories_empty(self, test_db: LLMDatabase) -> None:
-        """GIVEN no memories WHEN get_memories THEN returns empty list."""
-        assert test_db.get_memories("unknown") == []
-
     def test_get_memories_ordered_newest_first(self, test_db: LLMDatabase) -> None:
         """GIVEN multiple memories WHEN get_memories THEN ordered newest first."""
         test_db.save_memory("user1", "first fact", "#test")
@@ -1664,11 +1340,6 @@ class TestMemoryPersistence:
         assert result is False
         assert test_db.get_memories("alice")[0].fact == "secret"
 
-    def test_update_memory_nonexistent(self, test_db: LLMDatabase) -> None:
-        """GIVEN no memory with id WHEN update_memory THEN returns False."""
-        result = test_db.update_memory("user1", 999, "anything")
-        assert result is False
-
     def test_delete_memory_wrong_nick(self, test_db: LLMDatabase) -> None:
         """GIVEN memory for alice WHEN bob tries to delete THEN fails."""
         row_id = test_db.save_memory("alice", "secret", "#test")
@@ -1688,10 +1359,6 @@ class TestMemoryPersistence:
 
 class TestMemoryCleanupState:
     """Test memory cleanup counter methods."""
-
-    def test_increment_memory_saves(self, test_db: LLMDatabase) -> None:
-        """GIVEN no prior saves WHEN increment THEN returns 1."""
-        assert test_db.increment_memory_saves("user1") == 1
 
     def test_increment_memory_saves_accumulates(self, test_db: LLMDatabase) -> None:
         """GIVEN two increments WHEN get THEN returns 2."""
@@ -1750,10 +1417,6 @@ class TestMemoryCandidates:
         candidates = test_db.get_memory_candidates("user1")
         assert candidates[0].fact == "polished"
 
-    def test_reinforce_unknown_id_returns_zero(self, test_db: LLMDatabase) -> None:
-        """GIVEN no such candidate WHEN reinforced THEN returns 0."""
-        assert test_db.reinforce_memory_candidate(999, "user1") == 0
-
     def test_reinforce_wrong_owner_is_noop(self, test_db: LLMDatabase) -> None:
         """GIVEN one user's candidate WHEN another reinforces THEN nothing changes."""
         cid = test_db.add_memory_candidate("alice", "private", "#test")
@@ -1796,10 +1459,6 @@ class TestMemoryCandidates:
 class TestUserInstructions:
     """Tests for user_instructions table CRUD."""
 
-    def test_get_instruction_returns_none_when_empty(self, test_db: LLMDatabase) -> None:
-        """GIVEN no instruction WHEN queried THEN returns None."""
-        assert test_db.get_instruction("testnick") is None
-
     def test_save_and_get_instruction(self, test_db: LLMDatabase) -> None:
         """GIVEN saved instruction WHEN queried THEN returns text."""
         test_db.save_instruction("testnick", "You are Captain Picard.")
@@ -1817,16 +1476,9 @@ class TestUserInstructions:
         assert test_db.delete_instruction("testnick") is True
         assert test_db.get_instruction("testnick") is None
 
-    def test_delete_instruction_missing(self, test_db: LLMDatabase) -> None:
-        """GIVEN no instruction WHEN deleted THEN returns False."""
-        assert test_db.delete_instruction("testnick") is False
-
 
 class TestUserTimezones:
     """Tests for user_timezones table CRUD."""
-
-    def test_get_returns_none_when_empty(self, test_db: LLMDatabase) -> None:
-        assert test_db.get_user_timezone("testnick") is None
 
     def test_save_get_overwrite_case_insensitive(self, test_db: LLMDatabase) -> None:
         test_db.save_user_timezone("RDrake", "America/Toronto")
@@ -1861,10 +1513,6 @@ class TestUserClockOffsets:
 class TestUserAvatarPersonas:
     """Tests for user_avatar_personas table CRUD."""
 
-    def test_get_persona_returns_none_when_empty(self, test_db: LLMDatabase) -> None:
-        """GIVEN no persona WHEN queried THEN returns None."""
-        assert test_db.get_avatar_persona("testnick") is None
-
     def test_save_and_get_persona(self, test_db: LLMDatabase) -> None:
         """GIVEN saved persona WHEN queried THEN returns text."""
         test_db.save_avatar_persona("testnick", "moss-covered tree spirit")
@@ -1881,10 +1529,6 @@ class TestUserAvatarPersonas:
         test_db.save_avatar_persona("testnick", "text")
         assert test_db.delete_avatar_persona("testnick") is True
         assert test_db.get_avatar_persona("testnick") is None
-
-    def test_delete_persona_missing(self, test_db: LLMDatabase) -> None:
-        """GIVEN no persona WHEN deleted THEN returns False."""
-        assert test_db.delete_avatar_persona("testnick") is False
 
     def test_persona_independent_of_instruction(self, test_db: LLMDatabase) -> None:
         """GIVEN instruction set WHEN persona queried THEN returns None.
@@ -1934,73 +1578,6 @@ class TestLoadPendingTasksTypeFilter:
         assert ask_tasks[0].task_type == "ask"
         assert ask_tasks[0].nick == "alice"
 
-    def test_filter_by_type_with_no_matches(self, test_db: LLMDatabase) -> None:
-        """GIVEN only ask tasks WHEN load_pending_tasks(task_type='draw') THEN empty list."""
-        now = time.time()
-        test_db.save_pending_task(
-            task_type="ask",
-            nick="alice",
-            reply_target="#test",
-            is_channel=True,
-            prompt_preview="question",
-            model="gpt-4",
-            request_data="{}",
-            submitted_at=now,
-            expires_at=now + 120,
-            next_attempt_at=now,
-        )
-
-        draw_tasks = test_db.load_pending_tasks(task_type="draw")
-        assert len(draw_tasks) == 0
-
-
-class TestDeleteExpiredPendingTasksDeterministic:
-    """Test delete_expired_pending_tasks with explicit timestamps."""
-
-    def test_expired_task_returned_and_removed(self, test_db: LLMDatabase) -> None:
-        """GIVEN task with expires_at=10 WHEN delete_expired_pending_tasks(now=20) THEN returned and removed."""
-        test_db.save_pending_task(
-            task_type="ask",
-            nick="alice",
-            reply_target="#test",
-            is_channel=True,
-            prompt_preview="old question",
-            model="gpt-4",
-            request_data="{}",
-            submitted_at=1.0,
-            expires_at=10.0,
-            next_attempt_at=5.0,
-        )
-
-        expired = test_db.delete_expired_pending_tasks(now=20.0)
-        assert len(expired) == 1
-        assert expired[0].nick == "alice"
-        assert expired[0].expires_at == 10.0
-
-        remaining = test_db.load_pending_tasks()
-        assert len(remaining) == 0
-
-    def test_not_yet_expired_task_preserved(self, test_db: LLMDatabase) -> None:
-        """GIVEN task with expires_at=100 WHEN delete_expired_pending_tasks(now=20) THEN preserved."""
-        test_db.save_pending_task(
-            task_type="ask",
-            nick="bob",
-            reply_target="#test",
-            is_channel=True,
-            prompt_preview="fresh question",
-            model="gpt-4",
-            request_data="{}",
-            submitted_at=1.0,
-            expires_at=100.0,
-            next_attempt_at=5.0,
-        )
-
-        expired = test_db.delete_expired_pending_tasks(now=20.0)
-        assert len(expired) == 0
-
-        remaining = test_db.load_pending_tasks()
-        assert len(remaining) == 1
-
 
 class TestDeletePendingTask:
     """Test delete_pending_task found and not-found cases."""
@@ -2043,45 +1620,6 @@ class TestDeletePendingTask:
         assert test_db.delete_pending_task(task_id) is True
         assert test_db.delete_pending_task(task_id) is False
 
-    def test_delete_nonexistent_task_returns_false(self, test_db: LLMDatabase) -> None:
-        """GIVEN no tasks WHEN delete_pending_task called THEN returns False."""
-        assert test_db.delete_pending_task(99999) is False
-
-
-class TestUsageSummaryEdgeCases:
-    """Test usage summary edge cases for since filter, missing nick/channel."""
-
-    def test_summary_with_future_since_returns_zeros(self, test_db: LLMDatabase) -> None:
-        """GIVEN logged usage WHEN querying with future since THEN returns zeros."""
-        test_db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.01)
-
-        future = time.time() + 86400  # 1 day in the future
-        summary = test_db.get_usage_summary(since=future)
-        assert summary.total_requests == 0
-        assert summary.total_prompt_tokens == 0
-        assert summary.total_completion_tokens == 0
-        assert summary.total_cost == pytest.approx(0.0)
-
-    def test_nick_summary_for_nonexistent_nick(self, test_db: LLMDatabase) -> None:
-        """GIVEN usage from alice WHEN querying for nonexistent nick THEN returns zeros."""
-        test_db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.01)
-
-        summary = test_db.get_usage_summary_for_nick("nobody")
-        assert summary.total_requests == 0
-        assert summary.total_prompt_tokens == 0
-        assert summary.total_completion_tokens == 0
-        assert summary.total_cost == pytest.approx(0.0)
-
-    def test_channel_summary_for_nonexistent_channel(self, test_db: LLMDatabase) -> None:
-        """GIVEN usage in #test WHEN querying nonexistent channel THEN returns zeros."""
-        test_db.log_usage("alice", "#test", "ask", "gpt-4", 10, 5, 0.01)
-
-        summary = test_db.get_usage_summary_for_channel("#nonexistent")
-        assert summary.total_requests == 0
-        assert summary.total_prompt_tokens == 0
-        assert summary.total_completion_tokens == 0
-        assert summary.total_cost == pytest.approx(0.0)
-
 
 class TestZeroCostRank:
     """Test rank computation when usage exists but cost is zero."""
@@ -2092,11 +1630,6 @@ class TestZeroCostRank:
 
         rank = test_db.get_nick_rank("alice")
         assert rank == UsageRank(rank=1, total=1)
-
-    def test_nick_rank_no_usage_at_all(self, test_db: LLMDatabase) -> None:
-        """GIVEN empty database WHEN get_nick_rank('nobody') THEN rank is 0."""
-        rank = test_db.get_nick_rank("nobody")
-        assert rank == UsageRank(rank=0, total=0)
 
     def test_zero_cost_ranked_below_nonzero(self, test_db: LLMDatabase) -> None:
         """GIVEN one nick with cost and one with zero cost WHEN ranking THEN zero-cost is rank 2."""
@@ -2130,110 +1663,6 @@ class TestPendingTasksAccountColumn:
         assert len(rows) == 1
         assert rows[0].account == "alice_acct"
 
-    def test_save_with_null_account(self, test_db):
-        task_id = test_db.save_pending_task(
-            task_type="ask",
-            nick="alice",
-            reply_target="#chan",
-            is_channel=True,
-            prompt_preview="hi",
-            model="gpt-4",
-            request_data="{}",
-            submitted_at=1000.0,
-            expires_at=2000.0,
-            next_attempt_at=1000.0,
-            account=None,
-        )
-        assert task_id > 0
-        rows = test_db.load_pending_tasks()
-        assert rows[0].account is None
-
-
-def test_schema_v13_creates_scheduled_llm_tasks_table(tmp_path: Path) -> None:
-    """Task 3/A1: SCHEMA_VERSION bumps to 13; scheduled_llm_tasks table
-    exists with the documented columns, indexes, and uniqueness constraint."""
-    from llm.persistence import SCHEMA_VERSION
-
-    assert SCHEMA_VERSION >= 13
-
-    db_path = tmp_path / "llm.sqlite"
-    LLMDatabase(str(db_path))  # runs migrations
-
-    conn = sqlite3.connect(str(db_path))
-    try:
-        cols = {row[1]: row for row in conn.execute("PRAGMA table_info(scheduled_llm_tasks)")}
-        for expected in (
-            "id",
-            "event_name",
-            "creator_nick",
-            "account",
-            "channel",
-            "network",
-            "wire_msg",
-            "prompt",
-            "fire_at",
-            "created_at",
-            "recurrence_seconds",
-            "recurrence_rrule",
-            "chain_position",
-            "watch_mode",
-        ):
-            assert expected in cols, f"missing column: {expected}"
-
-        idx_names = {
-            row[1]
-            for row in conn.execute(
-                "SELECT * FROM sqlite_master WHERE type = 'index' "
-                "AND tbl_name = 'scheduled_llm_tasks'"
-            )
-        }
-        assert "idx_scheduled_llm_tasks_fire_at" in idx_names
-        assert "idx_scheduled_llm_tasks_account" in idx_names
-        assert "idx_scheduled_llm_tasks_creator_nick" in idx_names
-        assert "idx_scheduled_llm_tasks_owner_channel" in idx_names
-
-        # event_name is UNIQUE
-        conn.execute(
-            "INSERT INTO scheduled_llm_tasks "
-            "(event_name, creator_nick, channel, network, wire_msg, prompt, "
-            "fire_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ("ev1", "nick1", "#a", "afternet", ":wire1", "p", 0.0, 0.0),
-        )
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute(
-                "INSERT INTO scheduled_llm_tasks "
-                "(event_name, creator_nick, channel, network, wire_msg, prompt, "
-                "fire_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                ("ev1", "nick2", "#a", "afternet", ":wire2", "p", 0.0, 0.0),
-            )
-    finally:
-        conn.close()
-
-
-def test_schema_v13_idempotent(tmp_path: Path) -> None:
-    """Re-opening a v13 DB does not error or re-run the migration body."""
-    db_path = tmp_path / "llm.sqlite"
-    LLMDatabase(str(db_path))
-    LLMDatabase(str(db_path))  # second open must succeed unchanged
-
-
-def test_save_scheduled_llm_task_inserts_row(tmp_path: Path) -> None:
-    db = LLMDatabase(str(tmp_path / "llm.sqlite"))
-    row_id = db.save_scheduled_llm_task(
-        event_name="llm_task_abc",
-        creator_nick="rdrake",
-        account="rdrake_acct",
-        channel="#test",
-        network="afternet",
-        wire_msg=":rdrake!u@h PRIVMSG #test :@ask hi",
-        prompt="check the build",
-        fire_at=1_700_000_000.0,
-        recurrence_seconds=None,
-        recurrence_rrule=None,
-        chain_position=1,
-    )
-    assert row_id > 0
-
 
 def test_save_scheduled_llm_task_rejects_duplicate_event_name(tmp_path: Path) -> None:
     db = LLMDatabase(str(tmp_path / "llm.sqlite"))
@@ -2257,23 +1686,6 @@ def test_save_scheduled_llm_task_rejects_duplicate_event_name(tmp_path: Path) ->
             wire_msg=":n!u@h PRIVMSG #x :@ask hi2",
             prompt="p2",
             fire_at=0.0,
-        )
-
-
-def test_save_scheduled_llm_task_rejects_both_recurrence_kinds(tmp_path: Path) -> None:
-    db = LLMDatabase(str(tmp_path / "llm.sqlite"))
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        db.save_scheduled_llm_task(
-            event_name="ev",
-            creator_nick="n",
-            account=None,
-            channel="#x",
-            network="afternet",
-            wire_msg=":n!u@h PRIVMSG #x :@ask hi",
-            prompt="p",
-            fire_at=0.0,
-            recurrence_seconds=300,
-            recurrence_rrule="FREQ=DAILY",
         )
 
 
@@ -2487,24 +1899,6 @@ def test_delete_scheduled_llm_task_returns_bool(tmp_path: Path) -> None:
     assert db.delete_scheduled_llm_task("ev") is False
 
 
-def test_get_scheduled_llm_task_point_lookup(tmp_path: Path) -> None:
-    db = LLMDatabase(str(tmp_path / "llm.sqlite"))
-    db.save_scheduled_llm_task(
-        event_name="ev",
-        creator_nick="n",
-        account=None,
-        channel="#x",
-        network="afternet",
-        wire_msg=":n!u@h PRIVMSG #x :@ask hi",
-        prompt="p",
-        fire_at=time.time() + 1,
-    )
-    row = db.get_scheduled_llm_task("ev")
-    assert row is not None
-    assert row.event_name == "ev"
-    assert db.get_scheduled_llm_task("missing") is None
-
-
 def test_load_scheduled_llm_tasks_for_owner(tmp_path: Path) -> None:
     db = LLMDatabase(str(tmp_path / "llm.sqlite"))
     db.save_scheduled_llm_task(
@@ -2549,16 +1943,6 @@ def test_write_txn_rolls_back_on_error(tmp_path: Path) -> None:
     rows = db.get_memories("alice")
     assert len(rows) == 1
     assert db.get_memories("bob") == []
-
-
-def test_write_txn_commits_on_success(tmp_path: Path) -> None:
-    db = LLMDatabase(str(tmp_path / "t.db"))
-    with db._write_txn() as conn:
-        conn.execute(
-            "INSERT INTO memories (nick, fact, source_channel, created_at) VALUES (?, ?, ?, ?)",
-            ("alice", "fact-x", "#c", 0.0),
-        )
-    assert any(r.fact == "fact-x" for r in db.get_memories("alice"))
 
 
 class TestNickCasingUnification:

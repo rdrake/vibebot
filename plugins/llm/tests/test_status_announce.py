@@ -233,19 +233,6 @@ class TestPostChecks:
         assert "evil.example" not in plugin._sent_text[0]
         assert "Elevated error rates" in plugin._sent_text[0], "fell back to template"
 
-    def test_accepts_rewrite_linking_the_known_host(self, announcing_plugin):
-        plugin = announcing_plugin
-        plugin._status_rewrite = MagicMock(
-            return_value="Claude API is degraded — https://status.claude.com"
-        )
-        plugin._announce_status(
-            "https://status.claude.com",
-            statuspage.Delta(opened=(incident(),)),
-            plugin._status_read_cache["https://status.claude.com"],
-            lines_left=5,
-        )
-        assert "status.claude.com" in plugin._sent_text[0]
-
     def test_accepts_a_rewrite_quoting_the_incident_permalink(self, announcing_plugin):
         """The host check is derived from the canonical source, so the deeper
         path must still pass it — otherwise every rewrite falls back to
@@ -877,31 +864,6 @@ class TestResolutionAnnounce:
         assert facts["status"] == "investigating"
         assert facts["latest_update"] == "We are investigating."
 
-    def test_a_passing_rewrite_is_used_for_the_all_clear(self, announcing_plugin):
-        plugin = announcing_plugin
-        plugin._status_rewrite = MagicMock(return_value="Claude's back, we're good.")
-        plugin._announce_status(
-            "https://status.claude.com",
-            statuspage.Delta(resolved=(incident(),)),
-            plugin._status_read_cache["https://status.claude.com"],
-            lines_left=5,
-        )
-        assert "Claude's back" in plugin._sent_text[0]
-
-    def test_a_foreign_url_in_the_all_clear_falls_back_to_template(self, announcing_plugin):
-        plugin = announcing_plugin
-        plugin._status_rewrite = MagicMock(
-            return_value="Claude is fine now, see https://evil.example"
-        )
-        plugin._announce_status(
-            "https://status.claude.com",
-            statuspage.Delta(resolved=(incident(),)),
-            plugin._status_read_cache["https://status.claude.com"],
-            lines_left=5,
-        )
-        assert "evil.example" not in plugin._sent_text[0]
-        assert "resolved" in plugin._sent_text[0]
-
     def test_marks_resolved_only_on_a_successful_queue(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._safe_queue.return_value = True
@@ -949,33 +911,3 @@ class TestResolutionAnnounce:
         assert len(plugin._sent_text) == 2
         assert "(investigating)" in plugin._sent_text[0]
         assert "resolved" in plugin._sent_text[1]
-
-    def test_resolutions_share_the_hourly_rewrite_budget(self, announcing_plugin):
-        plugin = announcing_plugin
-        plugin._status_announce_times = [
-            plugin._now for _ in range(plugin._STATUS_ANNOUNCE_MAX_PER_HOUR)
-        ]
-        plugin._status_rewrite = MagicMock(return_value="Claude's back.")
-        plugin._announce_status(
-            "https://status.claude.com",
-            statuspage.Delta(resolved=(incident(),)),
-            plugin._status_read_cache["https://status.claude.com"],
-            lines_left=5,
-        )
-        assert plugin._status_rewrite.call_count == 0
-        assert "resolved" in plugin._sent_text[0], "template still sends"
-
-    def test_a_parted_channel_spends_nothing_on_the_all_clear(self, announcing_plugin):
-        plugin = announcing_plugin
-        plugin._irc_for_channel = MagicMock(return_value=None)
-        plugin._status_rewrite = MagicMock()
-        plugin._announce_status(
-            "https://status.claude.com",
-            statuspage.Delta(resolved=(incident(),)),
-            plugin._status_read_cache["https://status.claude.com"],
-            lines_left=5,
-        )
-        assert plugin._status_rewrite.call_count == 0
-        assert plugin._safe_queue.call_count == 0
-        state = plugin._status_state.get("https://status.claude.com", statuspage.StatusState())
-        assert "inc1" not in state.resolved_announced

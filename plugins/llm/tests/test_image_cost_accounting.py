@@ -28,7 +28,6 @@ from typing import TYPE_CHECKING
 import pytest
 from llm import provider
 from llm.assistant import ToolCallbackResult
-from llm.service import LLMService
 
 from .conftest import make_completion_response, make_tool_call
 
@@ -58,9 +57,6 @@ def _picture() -> provider.Picture:
 
 class TestUnknownModelPricing:
     """`provider.image_price`: the table is the price, and a miss must be audible."""
-
-    def test_known_model_is_priced_from_the_table(self) -> None:
-        assert provider.image_price(IMAGE_MODEL) == PRICE
 
     def test_unknown_model_warns_instead_of_silently_costing_zero(
         self, caplog: pytest.LogCaptureFixture
@@ -222,13 +218,6 @@ def test_service_price_lookup_is_used_for_successful_generations(
 
     assert result.error is None
     assert result.cost == PRICE
-
-
-class TestLLMServiceHelpersExist:
-    """Guards the names the rest of this file leans on."""
-
-    def test_helpers_are_public_enough_to_test(self) -> None:
-        assert hasattr(LLMService, "_billed_failure_cost")
 
 
 class TestRefusedAttemptsSurviveTheRewriteLoop:

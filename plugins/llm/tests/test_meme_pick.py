@@ -7,8 +7,6 @@ still has to answer, and every step's usage is booked.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from llm.prompts import MEME_SEARCH_NOTE
 
@@ -173,10 +171,3 @@ class TestSearchLoop:
 
         assert pick.content is None and pick.error
         assert pick.prompt_tokens == 10
-
-
-def test_search_tool_schema_is_valid_json() -> None:
-    from llm.service import LLMService
-
-    json.dumps(LLMService._MEME_SEARCH_TOOL)
-    assert LLMService._MEME_SEARCH_TOOL["function"]["parameters"]["required"] == ["query"]

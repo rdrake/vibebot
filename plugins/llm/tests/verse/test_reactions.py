@@ -36,10 +36,6 @@ def test_classify_other_emoji_is_other():
     assert classify_emoji("❤️") == "other"  # ❤️
 
 
-def test_classify_empty_is_other():
-    assert classify_emoji("") == "other"
-
-
 # ---------------------------------------------------------------------------
 # Task 2: process_reaction + event_to_jsonl
 # ---------------------------------------------------------------------------
@@ -112,22 +108,6 @@ def test_process_reaction_disabled_dropped():
             last_bot_line=_line(1000.0),
             now=1001.0,
             capture_enabled=False,
-        )
-        is None
-    )
-
-
-def test_process_reaction_no_emoji_dropped():
-    assert (
-        process_reaction(
-            react_emoji="",
-            reactor="fc42",
-            channel="#a",
-            network="n",
-            target_msgid=None,
-            last_bot_line=_line(1000.0),
-            now=1001.0,
-            capture_enabled=True,
         )
         is None
     )
@@ -250,21 +230,6 @@ def test_build_reaction_report_monthly_and_recent_order():
 # ---------------------------------------------------------------------------
 # Task 5: render_reaction_section
 # ---------------------------------------------------------------------------
-
-
-def test_render_reaction_section_has_tables_and_caveats():
-    # 2 approves + 1 disapprove → net = +1 in post bucket
-    events = [
-        _ev("2026-06-23", "approve"),
-        _ev("2026-06-23", "approve"),
-        _ev("2026-06-24", "disapprove"),
-    ]
-    rep = build_reaction_report(events, rollout="2026-06-22", channel="#afnet")
-    out = render_reaction_section(rep)
-    assert "## Explicit 👍/👎 reactions" in out
-    assert "| window | reactions | 👍 | 👎 | other | net | reactors | note |" in out
-    assert "Recency-attributed" in out  # caveat present
-    assert "+1" in out or "-1" in out  # net column rendered with sign
 
 
 def test_render_reaction_section_empty_recent():

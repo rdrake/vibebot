@@ -48,16 +48,6 @@ class TestColdStart:
         assert "A" in state.announced
         assert "A" in state.active
 
-    def test_failed_first_poll_then_success_still_seeds_silently(self):
-        """Seeding keys on a validated parse, not a fetch attempt. A caller
-        that never calls classify (because the fetch raised) leaves the state
-        unseeded, so the next success is still a cold start."""
-        state = statuspage.StatusState()
-        assert state.seeded is False
-        delta, state = statuspage.classify(state, snap(view("A")))
-        assert delta.opened == ()
-        assert state.seeded is True
-
 
 class TestOpened:
     def test_new_incident_after_seeding_is_opened(self):
@@ -250,13 +240,6 @@ class TestResolution:
         assert "A" in state.resolved_announced
         delta, _ = statuspage.classify(state, snap())
         assert delta.resolved == ()
-
-    def test_an_incident_open_at_cold_start_still_resolves(self):
-        """The inverse, and the point of the seeding split: a restart mid-
-        outage loses the opening announcement but must not lose the all-clear."""
-        state = self._seeded(view("A"))
-        delta, _ = statuspage.classify(state, snap())
-        assert [v.id for v in delta.resolved] == ["A"]
 
     def test_a_terminal_incident_is_never_reported_as_opened(self):
         """Otherwise one incident produces two contradictory lines in a

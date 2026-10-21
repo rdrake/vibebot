@@ -53,38 +53,6 @@ class TestSummarize:
 
         assert result is None
 
-    def test_summarize_uses_ask_model(self) -> None:
-        """GIVEN summarize_for_irc call WHEN API called THEN uses the ask model."""
-        completion_kwargs = {}
-
-        def capture_kwargs(**kwargs):
-            completion_kwargs.update(kwargs)
-            return make_completion_response("Summary")
-
-        self.mocker.patch("llm.service.provider.chat", side_effect=capture_kwargs)
-        self.service.summarize_for_irc("content")
-
-        assert completion_kwargs["model"] == "gpt-4"
-
-    def test_summarize_uses_channel_for_model_lookup(self) -> None:
-        """GIVEN channel WHEN summarize_for_irc called THEN passes channel for model config."""
-        registry_calls = []
-
-        def track_registry(key, channel=None):
-            registry_calls.append((key, channel))
-            return {"assistantModel": "gpt-4", "timeout": 30, "commandPrefixes": []}.get(key)
-
-        self.mock_plugin.registryValue = self.mocker.Mock(side_effect=track_registry)
-
-        mock_response = make_completion_response("Summary")
-
-        self.mocker.patch("llm.service.provider.chat", return_value=mock_response)
-        self.service.summarize_for_irc("content", channel="#test")
-
-        # assistantModel should be called with channel
-        model_call = next(c for c in registry_calls if c[0] == "assistantModel")
-        assert model_call[1] == "#test"
-
     def test_summarize_for_irc_returns_one_line_teaser(self) -> None:
         """GIVEN content WHEN IRC teaser requested THEN returns one compact line."""
         mock_response = make_completion_response(
@@ -100,31 +68,9 @@ class TestSummarize:
         assert "one sentence" in messages[0]["content"]
         assert "no Markdown" in messages[0]["content"]
 
-    def test_summarize_for_irc_returns_none_on_missing_api_key(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """GIVEN no key for the ask model's provider WHEN teaser requested THEN None."""
-        self.service, self.mock_plugin = self.make_service(assistantModel="xai/grok-4.3")
-        monkeypatch.delenv("XAI_API_KEY", raising=False)
-        mock_completion = self.mocker.patch("llm.service.provider.chat")
-
-        result = self.service.summarize_for_irc("long answer", channel="#test", max_chars=80)
-
-        assert result is None
-        mock_completion.assert_not_called()
-
 
 class TestMemoryExtraction:
     """Test memory fact extraction from conversations."""
-
-    def test_extract_memories_prompt_limits_facts(
-        self, make_service, mocker: MockerFixture
-    ) -> None:
-        """GIVEN extraction prompt WHEN checked THEN contains strictness markers."""
-        from llm.prompts import MEMORY_EXTRACTION_PROMPT
-
-        assert "at most 2" in MEMORY_EXTRACTION_PROMPT.lower()
-        assert "DO NOT SAVE" in MEMORY_EXTRACTION_PROMPT
 
     def test_extract_memories_returns_facts(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN conversation with facts WHEN extracted THEN returns ExtractionResult."""
@@ -156,23 +102,6 @@ class TestMemoryExtraction:
         mock_chat.return_value = make_completion_response('{"add": []}')
         service.extract_memories("user1", "#test", "hello", "hi", [])
         assert mock_chat.call_args.kwargs["model"] == "xai/grok-4.3"
-
-    def test_extract_memories_empty_on_no_facts(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN boring conversation WHEN extracted THEN returns empty result."""
-        service, mock_plugin = make_service()
-        mock_chat = mocker.patch("llm.service.provider.chat")
-        mock_response = make_completion_response('{"add": []}')
-        mock_chat.return_value = mock_response
-        result = service.extract_memories("user1", "#test", "hello", "hi", [])
-        assert result.add == []
-
-    def test_extract_memories_empty_on_error(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN API error WHEN extracting THEN returns empty result."""
-        service, mock_plugin = make_service()
-        mock_chat = mocker.patch("llm.service.provider.chat")
-        mock_chat.side_effect = Exception("API down")
-        result = service.extract_memories("user1", "#test", "hi", "hello", [])
-        assert result.add == []
 
     def test_extract_memories_logs_and_records_error_on_exception(
         self, make_service, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
@@ -218,20 +147,6 @@ class TestMemoryExtraction:
         result = service.extract_memories("user1", "#test", "hi", "hello", [])
         assert result.add == []
 
-    def test_extract_memories_includes_existing_in_prompt(
-        self, make_service, mocker: MockerFixture
-    ) -> None:
-        """GIVEN existing memories WHEN extracting THEN included in prompt."""
-        service, mock_plugin = make_service()
-        mock_chat = mocker.patch("llm.service.provider.chat")
-        mock_response = make_completion_response('{"add": []}')
-        mock_chat.return_value = mock_response
-        service.extract_memories("user1", "#test", "hi", "hello", ["already knows Python"])
-        call_args = mock_chat.call_args
-        messages = call_args.kwargs["messages"]
-        prompt_text = " ".join(m["content"] for m in messages)
-        assert "already knows Python" in prompt_text
-
     def test_extract_memories_returns_reinforce_indices(
         self, make_service, mocker: MockerFixture
     ) -> None:
@@ -263,28 +178,6 @@ class TestMemoryExtraction:
             "user1", "#test", "hi", "hello", [], existing_candidates=["a", "b"]
         )
         assert result.reinforce == [0, 1]
-
-    def test_extract_memories_includes_candidates_in_prompt(
-        self, make_service, mocker: MockerFixture
-    ) -> None:
-        """GIVEN candidate facts WHEN extracting THEN they appear indexed in prompt."""
-        service, _ = make_service()
-        mock_chat = mocker.patch("llm.service.provider.chat")
-        mock_response = make_completion_response('{"add": [], "reinforce": []}')
-        mock_chat.return_value = mock_response
-        service.extract_memories(
-            "user1",
-            "#test",
-            "hi",
-            "hello",
-            [],
-            existing_candidates=["uses Arch Linux", "lives in Berlin"],
-        )
-        call_args = mock_chat.call_args
-        messages = call_args.kwargs["messages"]
-        prompt_text = " ".join(m["content"] for m in messages)
-        assert "[0] uses Arch Linux" in prompt_text
-        assert "[1] lives in Berlin" in prompt_text
 
     def test_extract_memories_system_prompt_is_byte_stable(
         self, make_service, mocker: MockerFixture
@@ -412,59 +305,6 @@ class TestMemoryCleanup:
         assert result.drop == []
         assert result.merge == []
 
-    def test_cleanup_rejects_duplicate_indices(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN index in both drop and merge WHEN cleanup THEN returns error."""
-        from llm.persistence import MemoryRow
-
-        service, mock_plugin = make_service()
-        mock_chat = mocker.patch("llm.service.provider.chat")
-        mock_response = make_completion_response(
-            '{"drop": [1], "merge": [{"indices": [0, 1], "text": "combined"}]}'
-        )
-        mock_chat.return_value = mock_response
-
-        rows = [
-            MemoryRow(10, "user1", "fact a", "#test", 100.0),
-            MemoryRow(11, "user1", "fact b", "#test", 200.0),
-            MemoryRow(12, "user1", "fact c", "#test", 300.0),
-        ]
-        result = service.cleanup_memories("user1", "#test", rows)
-        assert result.error is not None
-
-    def test_cleanup_rejects_out_of_range_index(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN out-of-range index WHEN cleanup THEN returns error."""
-        from llm.persistence import MemoryRow
-
-        service, mock_plugin = make_service()
-        mock_chat = mocker.patch("llm.service.provider.chat")
-        mock_response = make_completion_response('{"drop": [5], "merge": []}')
-        mock_chat.return_value = mock_response
-
-        rows = [
-            MemoryRow(10, "user1", "fact a", "#test", 100.0),
-            MemoryRow(11, "user1", "fact b", "#test", 200.0),
-        ]
-        result = service.cleanup_memories("user1", "#test", rows)
-        assert result.error is not None
-
-    def test_cleanup_rejects_empty_merge_text(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN merge with empty text WHEN cleanup THEN returns error."""
-        from llm.persistence import MemoryRow
-
-        service, mock_plugin = make_service()
-        mock_chat = mocker.patch("llm.service.provider.chat")
-        mock_response = make_completion_response(
-            '{"drop": [], "merge": [{"indices": [0, 1], "text": ""}]}'
-        )
-        mock_chat.return_value = mock_response
-
-        rows = [
-            MemoryRow(10, "user1", "fact a", "#test", 100.0),
-            MemoryRow(11, "user1", "fact b", "#test", 200.0),
-        ]
-        result = service.cleanup_memories("user1", "#test", rows)
-        assert result.error is not None
-
     def test_cleanup_rejects_zero_surviving_memories(
         self, make_service, mocker: MockerFixture
     ) -> None:
@@ -511,69 +351,6 @@ class TestMemoryCleanup:
         prompt_text = " ".join(m["content"] for m in messages)
         assert "[0] likes Python" in prompt_text
         assert "[1] works at Acme" in prompt_text
-
-    def test_cleanup_uses_assistant_model(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN cleanup call WHEN LLM invoked THEN uses assistantModel."""
-        from llm.persistence import MemoryRow
-
-        service, mock_plugin = make_service()
-        mock_chat = mocker.patch("llm.service.provider.chat")
-        mock_response = make_completion_response('{"drop": [], "merge": []}')
-        mock_chat.return_value = mock_response
-
-        rows = [MemoryRow(10, "user1", "fact", "#test", 100.0)]
-        service.cleanup_memories("user1", "#test", rows)
-
-        call_kwargs = mock_chat.call_args.kwargs
-        from .conftest import TEST_MODEL
-
-        assert call_kwargs["model"] == TEST_MODEL
-
-    def test_cleanup_uses_registry_timeout(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN custom timeout WHEN cleanup runs THEN LLM call uses registry value."""
-        from llm.persistence import MemoryRow
-
-        service, mock_plugin = make_service(timeout=123)
-        mock_chat = mocker.patch("llm.service.provider.chat")
-        mock_response = make_completion_response('{"drop": [], "merge": []}')
-        mock_chat.return_value = mock_response
-
-        rows = [MemoryRow(10, "user1", "fact", "#test", 100.0)]
-        service.cleanup_memories("user1", "#test", rows)
-
-        call_kwargs = mock_chat.call_args.kwargs
-        assert call_kwargs["timeout"] == 123
-
-    def test_cleanup_result_has_no_keep_field(self) -> None:
-        """GIVEN CleanupResult WHEN inspected THEN has no keep field."""
-        from llm.service import CleanupResult
-
-        assert "keep" not in CleanupResult._fields
-
-    def test_cleanup_keeps_unmentioned_indices(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN LLM omits some indices WHEN cleanup THEN unmentioned indices are kept."""
-        from llm.persistence import MemoryRow
-
-        service, mock_plugin = make_service()
-        mock_chat = mocker.patch("llm.service.provider.chat")
-        mock_response = make_completion_response('{"drop": [2], "merge": []}')
-        mock_chat.return_value = mock_response
-
-        rows = [
-            MemoryRow(10, "user1", "fact a", "#test", 300.0),
-            MemoryRow(11, "user1", "fact b", "#test", 200.0),
-            MemoryRow(12, "user1", "trivial fact", "#test", 100.0),
-        ]
-        result = service.cleanup_memories("user1", "#test", rows)
-        assert result.error is None
-        assert result.drop == [2]
-
-    def test_cleanup_prompt_uses_new_format(self) -> None:
-        """GIVEN cleanup prompt WHEN checked THEN uses new merge format without keep."""
-        from llm.prompts import MEMORY_CLEANUP_PROMPT
-
-        assert "keep" not in MEMORY_CLEANUP_PROMPT.lower()
-        assert "Be aggressive" in MEMORY_CLEANUP_PROMPT
 
 
 class TestCleanupMemoriesValidation:

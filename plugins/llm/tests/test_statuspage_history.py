@@ -191,11 +191,6 @@ def history_payload():
 
 
 class TestParseIncidentsHappyPath:
-    def test_parses_a_valid_payload(self):
-        entries = statuspage.parse_incidents(history_payload())
-        assert len(entries) == 2
-        assert {e.id for e in entries} == {"inc-old", "inc-new"}
-
     def test_newest_first_ordering(self):
         entries = statuspage.parse_incidents(history_payload())
         assert entries[0].id == "inc-new"

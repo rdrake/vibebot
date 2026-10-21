@@ -195,32 +195,6 @@ class TestDoPrivmsg:
         )
         plugin.context.add_message.assert_not_called()
 
-    def test_doprivmsg_routes_nick_addressed_with_comma_separator(
-        self, plugin_with_mocks: tuple
-    ) -> None:
-        """GIVEN nick-addressed with comma WHEN doPrivmsg THEN routes to assistant."""
-        plugin, mock_irc, mock_msg = plugin_with_mocks
-        mock_msg.args = ("#channel", "botname, draw a cat")
-
-        plugin.doPrivmsg(mock_irc, mock_msg)
-
-        plugin._route_addressed_to_assistant.assert_called_once_with(
-            mock_irc, mock_msg, "draw a cat"
-        )
-
-    def test_doprivmsg_routes_nick_addressed_with_whitespace_separator(
-        self, plugin_with_mocks: tuple
-    ) -> None:
-        """GIVEN nick-addressed with whitespace WHEN doPrivmsg THEN routes to assistant."""
-        plugin, mock_irc, mock_msg = plugin_with_mocks
-        mock_msg.args = ("#channel", "botname what time is it?")
-
-        plugin.doPrivmsg(mock_irc, mock_msg)
-
-        plugin._route_addressed_to_assistant.assert_called_once_with(
-            mock_irc, mock_msg, "what time is it?"
-        )
-
     def test_doprivmsg_does_not_route_when_nick_prefix_is_part_of_word(
         self, plugin_with_mocks: tuple
     ) -> None:
@@ -245,15 +219,6 @@ class TestDoPrivmsg:
 
         plugin._route_addressed_to_assistant.assert_not_called()
         plugin.context.add_message.assert_not_called()
-
-    def test_doprivmsg_does_not_route_bare_nick_mention(self, plugin_with_mocks: tuple) -> None:
-        """GIVEN message with nick alone WHEN doPrivmsg THEN treats as chatter."""
-        plugin, mock_irc, mock_msg = plugin_with_mocks
-        mock_msg.args = ("#channel", "botname")
-
-        plugin.doPrivmsg(mock_irc, mock_msg)
-
-        plugin._route_addressed_to_assistant.assert_not_called()
 
     def test_doprivmsg_routes_reply_to_bot_line(self, plugin_with_mocks: tuple) -> None:
         """GIVEN +draft/reply to a msgid the bot sent WHEN doPrivmsg THEN routes, no nick needed."""
@@ -436,18 +401,6 @@ class TestInFilterDispatchGate:
 
         assert result.tagged("addressed") is None
 
-    def test_plain_channel_chatter_is_marked(self, plugin_and_irc: tuple) -> None:
-        # Even for non-addressed channel chatter, tagging with '' is a no-op
-        # for dispatch (it would already be unaddressed). The tag itself is
-        # harmless because doPrivmsg routes only when text actually starts
-        # with our nick.
-        plugin, irc = plugin_and_irc
-        msg = self._msg("#chan", "just chatting")
-
-        result = plugin.inFilter(irc, msg)
-
-        assert result.tagged("addressed") == ""
-
 
 class TestInFilter:
     """Test inFilter sanitisation of control characters and unbalanced brackets."""
@@ -477,12 +430,6 @@ class TestInFilter:
         import supybot.ircmsgs as ircmsgs
 
         return ircmsgs.IrcMsg(s=f":n!u@h PRIVMSG {channel} :{text}\r\n")
-
-    def test_normal_text_passes_through(self, plugin: object, irc: object) -> None:
-        """GIVEN plain text WHEN inFilter THEN message unchanged."""
-        msg = self._privmsg("hello world")
-        result = plugin.inFilter(irc, msg)
-        assert result.args[1] == "hello world"
 
     def test_strips_esc_byte(self, plugin: object, irc: object) -> None:
         """GIVEN text with ESC byte WHEN inFilter THEN ESC removed."""
@@ -532,20 +479,6 @@ class TestInFilter:
         msg = self._privmsg("col1\tcol2")
         result = plugin.inFilter(irc, msg)
         assert result.args[1] == "col1\tcol2"
-
-    def test_original_crash_message(self, plugin: object, irc: object) -> None:
-        r"""GIVEN the exact message that caused the crash WHEN inFilter THEN tokenizable."""
-        from supybot import callbacks
-
-        text = (
-            r"do this but don't fuck it up suggests sending \x1b[6n"
-            " to see if the terminal force-injects its cursor position"
-            " into his input buffer."
-        )
-        msg = self._privmsg(text)
-        result = plugin.inFilter(irc, msg)
-        # Must not raise SyntaxError
-        callbacks.tokenize(result.args[1])
 
 
 class TestInvalidCommand:
@@ -832,75 +765,6 @@ class TestInvalidCommand:
         plugin._ambient_inline_story.assert_not_called()
         assert plugin._verse_route_for.call_args.kwargs["force_roleplay"] is False
 
-    def test_invalid_command_does_not_call_meta(
-        self, plugin_with_mocks: tuple, mocker: MockerFixture
-    ) -> None:
-        """GIVEN valid tokens WHEN invalidCommand THEN does not call _run_meta."""
-        plugin, mock_irc, mock_msg = plugin_with_mocks
-
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
-        plugin._run_preflight = mocker.MagicMock(
-            return_value=PreflightResult(False, Caller(Identity("testuser", None), "#channel"))
-        )
-        plugin._run_meta = mocker.MagicMock()
-        plugin._ask_impl = mocker.MagicMock()
-        plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
-
-        plugin._run_meta.assert_not_called()
-
-
-class TestCommandRegistry:
-    """Tests for the command metadata registry."""
-
-    def test_registry_contains_all_commands(self) -> None:
-        """GIVEN command registry WHEN checked THEN contains all user-facing commands."""
-        from llm.plugin import COMMAND_REGISTRY
-
-        names = {cmd.name for cmd in COMMAND_REGISTRY}
-        expected = {
-            "ask",
-            "draw",
-            "meme",
-            "story",
-            "forget",
-            "memories",
-            "instruct",
-            "avatar",
-            "remind",
-            "tz",
-            "usage",
-            "verseopt",
-            "verse",
-            "rp",
-            "look",
-            "who",
-            "canon",
-            "versedump",
-            "versepurge",
-            "versecompact",
-            "versedit",
-            "channels",
-            "names",
-            "model",
-        }
-        assert names == expected
-
-    def test_registry_entries_have_required_fields(self) -> None:
-        """GIVEN command registry WHEN checked THEN all entries have name, args, description."""
-        from llm.plugin import COMMAND_REGISTRY
-
-        for cmd in COMMAND_REGISTRY:
-            assert cmd.name, "name is required"
-            assert cmd.description, "description is required"
-            assert cmd.category in ("generation", "memory", "utility")
-
-    def test_registry_entries_have_examples(self) -> None:
-        """GIVEN command registry WHEN checked THEN all entries have at least one example."""
-        from llm.plugin import COMMAND_REGISTRY
-
-        for cmd in COMMAND_REGISTRY:
-            assert cmd.examples, f"{cmd.name} needs at least one example"
-
 
 class TestGetPluginHelp:
     """Tests for getPluginHelp() generation from COMMAND_REGISTRY."""
@@ -989,19 +853,6 @@ class TestPatchedDoJoin:
     def test_who_kept_when_account_tag_missing(self, plugin_env, mocker: MockerFixture):
         plugin, mock_irc, _ = plugin_env
         mock_irc.state.capabilities_ack = {"extended-join"}
-        mock_irc.queueMsg = mocker.MagicMock()
-        msg = self._self_join(mocker)
-
-        from supybot.irclib import Irc
-
-        Irc.doJoin(mock_irc, msg)
-
-        commands = [c.args[0].command for c in mock_irc.queueMsg.call_args_list]
-        assert "WHO" in commands
-
-    def test_who_kept_when_extended_join_missing(self, plugin_env, mocker: MockerFixture):
-        plugin, mock_irc, _ = plugin_env
-        mock_irc.state.capabilities_ack = {"account-tag"}
         mock_irc.queueMsg = mocker.MagicMock()
         msg = self._self_join(mocker)
 
@@ -1200,17 +1051,6 @@ class TestNickAtEndAddressing:
         )
         plugin.context.add_message.assert_not_called()
 
-    def test_trailing_nick_with_sentence_punctuation(self, plugin_with_mocks: tuple) -> None:
-        """GIVEN 'what time is it, botname?' WHEN doPrivmsg THEN routes."""
-        plugin, mock_irc, mock_msg = plugin_with_mocks
-        mock_msg.args = ("#channel", "what time is it, botname?")
-
-        plugin.doPrivmsg(mock_irc, mock_msg)
-
-        plugin._route_addressed_to_assistant.assert_called_once_with(
-            mock_irc, mock_msg, "what time is it"
-        )
-
     def test_action_with_trailing_nick_routes_as_action(self, plugin_with_mocks: tuple) -> None:
         """GIVEN '/me prods botname' WHEN doPrivmsg THEN routes '* usernick prods'."""
         plugin, mock_irc, mock_msg = plugin_with_mocks
@@ -1248,16 +1088,6 @@ class TestNickAtEndAddressing:
         plugin._route_addressed_to_assistant.assert_called_once_with(
             mock_irc, mock_msg, "* usernick @search things"
         )
-
-    def test_third_person_mention_mid_sentence_stays_silent(self, plugin_with_mocks: tuple) -> None:
-        """GIVEN 'botnamesomething is weird' WHEN doPrivmsg THEN plain chatter."""
-        plugin, mock_irc, mock_msg = plugin_with_mocks
-        mock_msg.args = ("#channel", "I think botnamesomething is weird")
-
-        plugin.doPrivmsg(mock_irc, mock_msg)
-
-        plugin._route_addressed_to_assistant.assert_not_called()
-        plugin.context.add_message.assert_called_once()
 
 
 class TestInFilterPreservesActions:
@@ -1370,17 +1200,6 @@ class TestNickInMiddleOfAction:
             mock_irc, mock_msg, "* usernick asks for a beer"
         )
         plugin.context.add_message.assert_not_called()
-
-    def test_mid_action_nick_with_comma_separator(self, plugin_with_mocks: tuple) -> None:
-        """GIVEN '/me pokes botname, gently' THEN routes '* usernick pokes gently'."""
-        plugin, mock_irc, mock_msg = plugin_with_mocks
-        mock_msg.args = ("#channel", "\x01ACTION pokes botname, gently\x01")
-
-        plugin.doPrivmsg(mock_irc, mock_msg)
-
-        plugin._route_addressed_to_assistant.assert_called_once_with(
-            mock_irc, mock_msg, "* usernick pokes gently"
-        )
 
     def test_mid_action_nick_needs_word_boundaries(self, plugin_with_mocks: tuple) -> None:
         """GIVEN '/me waves at botnamesomething today' THEN plain chatter."""

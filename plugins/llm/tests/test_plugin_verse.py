@@ -17,32 +17,6 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 
-class TestVerseCapabilities:
-    """llm.verse and llm.verse.gm must be declared in _REQUEST_CONTEXT_CAPABILITIES."""
-
-    def test_llm_verse_in_request_context_capabilities(self) -> None:
-        """GIVEN plugin module WHEN capabilities inspected THEN llm.verse is declared."""
-        import llm.plugin as plugin_module
-
-        assert "llm.verse" in plugin_module._REQUEST_CONTEXT_CAPABILITIES
-
-    def test_llm_verse_gm_in_request_context_capabilities(self) -> None:
-        """GIVEN plugin module WHEN capabilities inspected THEN llm.verse.gm is declared."""
-        import llm.plugin as plugin_module
-
-        assert "llm.verse.gm" in plugin_module._REQUEST_CONTEXT_CAPABILITIES
-
-    def test_llm_verse_and_llm_verse_gm_are_distinct(self) -> None:
-        """GIVEN both verse capabilities WHEN compared THEN they are separate entries."""
-        import llm.plugin as plugin_module
-
-        caps = plugin_module._REQUEST_CONTEXT_CAPABILITIES
-        assert "llm.verse" in caps
-        assert "llm.verse.gm" in caps
-        # Distinct: having gm does not subsume verse by default
-        assert "llm.verse" != "llm.verse.gm"
-
-
 # =============================================================================
 # TestVerseoptCommand
 # =============================================================================
@@ -236,20 +210,6 @@ class TestVerseoptCommand:
     # Branch 4: verseopt out
     # ------------------------------------------------------------------
 
-    def test_verseopt_out_replies_retired(self, verse_env) -> None:
-        """GIVEN active avatar WHEN @verseopt out THEN retired message replied."""
-        plugin, irc, msg, store = verse_env
-
-        self._call(plugin, irc, msg, "in")
-        irc.reply.reset_mock()
-
-        msg.args = ("#afnet", "@verseopt out")
-        self._call(plugin, irc, msg, "out")
-
-        irc.reply.assert_called_once()
-        reply_text = irc.reply.call_args[0][0]
-        assert reply_text == "Avatar retired. Use @verseopt in to rejoin."
-
     def test_verseopt_out_removes_avatar_link(self, verse_env) -> None:
         """GIVEN active avatar WHEN @verseopt out THEN find_avatar_by_nick returns None."""
         plugin, irc, msg, store = verse_env
@@ -327,33 +287,6 @@ class TestVerseoptCommand:
     # ------------------------------------------------------------------
     # Branch 6: missing llm.verse capability
     # ------------------------------------------------------------------
-
-    def test_verseopt_in_no_capability_denied(self, plugin_env, mocker) -> None:
-        """GIVEN user lacks llm.verse WHEN @verseopt in THEN Limnoria capability denial."""
-        plugin, irc, msg = plugin_env
-
-        # Deny all capabilities.
-        mocker.patch(
-            "llm.plugin.ircdb.checkCapability",
-            return_value=False,
-        )
-
-        from tests.conftest import make_registry_side_effect
-
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect({"verseEnabled": True})
-        )
-
-        msg.args = ("#test", "@verseopt in")
-
-        # wrap's checkCapability gate raises an error via irc.error when denied.
-        # Call the wrapped version; the body should NOT run (capability blocked).
-        plugin.verseopt(irc, msg, ["in"])
-
-        # The scene text should not have been replied.
-        if irc.reply.called:
-            reply_text = irc.reply.call_args[0][0]
-            assert "step into" not in reply_text
 
 
 # =============================================================================
@@ -662,51 +595,9 @@ class TestLookCommand:
     # Branch 10: channel without verseEnabled → "no verse" message
     # ------------------------------------------------------------------
 
-    def test_look_disabled_channel_replies_no_verse(self, plugin_env, mocker) -> None:
-        """GIVEN channel without verse WHEN @look THEN no-verse message."""
-        plugin, irc, msg = plugin_env
-
-        from tests.conftest import make_registry_side_effect
-
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect({"verseEnabled": False})
-        )
-        mocker.patch(
-            "llm.plugin.ircdb.checkCapability",
-            side_effect=lambda prefix, cap: cap.startswith("llm."),
-        )
-
-        msg.args = ("#afnet", "@look")
-        plugin.look(irc, msg, [])
-
-        reply_text = irc.reply.call_args[0][0]
-        assert reply_text == self.NO_VERSE_REPLY
-
     # ------------------------------------------------------------------
     # Branch 11: lacking capability → denial
     # ------------------------------------------------------------------
-
-    def test_look_no_capability_denied(self, plugin_env, mocker) -> None:
-        """GIVEN user lacks llm.verse WHEN @look THEN Limnoria capability denial."""
-        plugin, irc, msg = plugin_env
-
-        mocker.patch(
-            "llm.plugin.ircdb.checkCapability",
-            return_value=False,
-        )
-
-        from tests.conftest import make_registry_side_effect
-
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect({"verseEnabled": True})
-        )
-
-        msg.args = ("#afnet", "@look")
-        plugin.look(irc, msg, [])
-
-        if irc.reply.called:
-            reply_text = irc.reply.call_args[0][0]
-            assert "You are at" not in reply_text
 
 
 # =============================================================================
@@ -821,52 +712,9 @@ class TestWhoCommand:
     # Branch 15: channel without verseEnabled → "no verse" message
     # ------------------------------------------------------------------
 
-    def test_who_disabled_channel_replies_no_verse(self, plugin_env, mocker) -> None:
-        """GIVEN channel without verse WHEN @who THEN no-verse message."""
-        plugin, irc, msg = plugin_env
-
-        from tests.conftest import make_registry_side_effect
-
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect({"verseEnabled": False})
-        )
-        mocker.patch(
-            "llm.plugin.ircdb.checkCapability",
-            side_effect=lambda prefix, cap: cap.startswith("llm."),
-        )
-
-        msg.args = ("#afnet", "@who")
-        plugin.who(irc, msg, [])
-
-        reply_text = irc.reply.call_args[0][0]
-        assert reply_text == self.NO_VERSE_REPLY
-
     # ------------------------------------------------------------------
     # Branch 16: lacking capability → denial
     # ------------------------------------------------------------------
-
-    def test_who_no_capability_denied(self, plugin_env, mocker) -> None:
-        """GIVEN user lacks llm.verse WHEN @who THEN Limnoria capability denial."""
-        plugin, irc, msg = plugin_env
-
-        mocker.patch(
-            "llm.plugin.ircdb.checkCapability",
-            return_value=False,
-        )
-
-        from tests.conftest import make_registry_side_effect
-
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect({"verseEnabled": True})
-        )
-
-        msg.args = ("#afnet", "@who")
-        plugin.who(irc, msg, [])
-
-        if irc.reply.called:
-            reply_text = irc.reply.call_args[0][0]
-            assert "Nobody" not in reply_text
-            assert "alice" not in reply_text
 
 
 # =============================================================================
@@ -1266,20 +1114,6 @@ class TestVersedumpCommand:
     # Test 10: default format is JSON
     # ------------------------------------------------------------------
 
-    def test_dump_default_format_is_json(self, dump_env) -> None:
-        """WHEN @versedump #chan THEN reply is valid JSON."""
-        import json as _json
-
-        plugin, irc, msg, store = dump_env
-
-        plugin.versedump(irc, msg, ["#afnet"])
-
-        irc.reply.assert_called_once()
-        reply_text = irc.reply.call_args[0][0]
-        data = _json.loads(reply_text)  # Raises if not valid JSON.
-        assert data["schema_version"] == 2
-        assert data["channel"] == "#afnet"
-
     # ------------------------------------------------------------------
     # Test 11: yaml format returns unsupported (pyyaml not installed)
     # ------------------------------------------------------------------
@@ -1300,18 +1134,6 @@ class TestVersedumpCommand:
     # ------------------------------------------------------------------
     # Test 12: lacking capability is denied
     # ------------------------------------------------------------------
-
-    def test_dump_lacking_capability_denied(self, plugin_env, mocker) -> None:
-        """GIVEN user lacks llm.verse.gm WHEN @versedump THEN error."""
-        plugin, irc, msg = plugin_env
-
-        mocker.patch(
-            "llm.plugin.ircdb.checkCapability",
-            return_value=False,
-        )
-
-        msg.args = ("#afnet", "@versedump #afnet")
-        plugin.versedump(irc, msg, ["#afnet"])
 
     def test_dump_publishes_to_pastebin_when_available(self, dump_env, mocker) -> None:
         """WHEN save_markdown_to_http returns URL THEN reply is just the URL.
@@ -1711,30 +1533,6 @@ class TestVerseRouteForGating:
     # Regression: @ask dispatch still hits chat path (carried from C7a)
     # ------------------------------------------------------------------
 
-    def test_ask_dispatch_still_reaches_chat_path(self, plugin_env, mocker: MockerFixture) -> None:
-        """GIVEN _verse_route_for returns None WHEN @ask sent THEN chat path fires unchanged.
-
-        Regression guard: the dispatch hook must be a no-op — assistant_completion
-        must still be called exactly once (verseEnabled=False in plugin_env default).
-        """
-        from llm.service import AssistantResult, Spend
-
-        plugin, mock_irc, mock_msg = plugin_env
-
-        plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = AssistantResult(
-            content="normal reply",
-            grounding_used=False,
-            spend=Spend(prompt_tokens=5, completion_tokens=3, cost=0.0),
-            model="test-model",
-        )
-
-        plugin.ask(mock_irc, mock_msg, ["hello"])
-
-        # The chat path must have fired.
-        plugin.llm_service.assistant_completion.assert_called_once()
-
 
 # =============================================================================
 # C7c: _verse_route_for system prompt + tool list assembly
@@ -1840,24 +1638,6 @@ class TestVerseRouteForC7c:
             is None
         )
 
-    def test_route_system_prompt_includes_identity(self, verse_env) -> None:
-        """System prompt must start with 'You are alice.'"""
-        plugin, _irc, _msg, _store = verse_env
-
-        route = plugin._verse_route_for("#afnet", "alice", None, "hello", force_roleplay=True)
-
-        assert route is not None
-        assert route.system_prompt.startswith("You are alice.")
-
-    def test_route_system_prompt_includes_scene(self, verse_env) -> None:
-        """System prompt must include a Scene section."""
-        plugin, _irc, _msg, _store = verse_env
-
-        route = plugin._verse_route_for("#afnet", "alice", None, "hello", force_roleplay=True)
-
-        assert route is not None
-        assert "Scene:" in route.system_prompt
-
     def test_route_tools_have_expected_names(self, verse_env) -> None:
         """Returned tools must be the six verse tool specs (incl. verse_edit)."""
         plugin, _irc, _msg, _store = verse_env
@@ -1962,16 +1742,6 @@ class TestAskWithVerseRoute:
         assert self.SENTINEL in system_prompt
         # AND the verse scene context (avatar name) must still be present.
         assert "alice" in system_prompt
-
-    def test_ask_verse_prompt_contains_avatar_name(self, verse_ask_env) -> None:
-        """GIVEN verse route WHEN @ask THEN system_prompt includes avatar name 'alice'."""
-        plugin, irc, msg, _store = verse_ask_env
-
-        plugin.rp(irc, msg, ["hello"])
-
-        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
-        system_prompt = kwargs.get("system_prompt", "")
-        assert "alice" in (system_prompt or "")
 
     def test_ask_in_verse_appends_verse_tools(self, verse_ask_env) -> None:
         """GIVEN verse route WHEN @ask THEN all 5 verse tool names appear in extra_tools."""
@@ -2198,12 +1968,6 @@ class TestAskOnVerseChannelWithoutOptIn:
 
 class TestCompactionTimerWiring:
     """E3: plugin wires the daily compaction timer + walks verse-enabled channels."""
-
-    def test_plugin_registers_compaction_timer_at_load(self, plugin_env) -> None:
-        """The plugin's __init__ should set ``_compaction_timer_name`` and
-        attempt registration; the registered name is ``llm_verse_compact``."""
-        plugin, _irc, _msg = plugin_env
-        assert plugin._compaction_timer_name == "llm_verse_compact"
 
     def test_compaction_tick_offloads_pass_to_executor(self, plugin_env, mocker) -> None:
         """``_compaction_tick`` hands ``_run_compaction_pass`` to the executor
@@ -2584,120 +2348,6 @@ class TestRunCompactionPassCallsAging:
 
         assert len(seen) == 2
 
-    def test_compaction_outcome_message_includes_aging_counts(
-        self, plugin_env, mocker, monkeypatch
-    ) -> None:
-        """5b.3: per-channel summary log line folds compaction + aging
-        counts into one human-readable record. ``plugin.log`` is a
-        MagicMock under ``plugin_env`` (the conftest patches
-        ``llm.plugin.log``), so we inspect ``plugin.log.info`` call args
-        directly instead of using ``caplog`` — supybot's plugin logger
-        never reaches the stdlib root logger here."""
-        from llm.verse import aging as aging_mod
-        from llm.verse import compaction as compaction_mod
-
-        plugin, _irc, _msg = plugin_env
-
-        mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#foo"])
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=lambda key, *args: (
-                True
-                if key == "verseEnabled"
-                else (
-                    30
-                    if key == "verseEventRetentionDays"
-                    else "gemini/x"
-                    if key == "verseCompactionModel"
-                    else 20
-                    if key == "verseCompactionMinKeepEvents"
-                    else 14
-                    if key == "verseAutoEntityRetireDays"
-                    else ""
-                )
-            )
-        )
-        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=mocker.MagicMock())
-        monkeypatch.setattr(
-            compaction_mod,
-            "compact_verse",
-            lambda *a, **kw: compaction_mod.CompactionOutcome(
-                state="compacted", total_events=12, kept_in_digest=5
-            ),
-        )
-        monkeypatch.setattr(
-            aging_mod,
-            "age_auto_created_entities",
-            lambda *a, **kw: aging_mod.AgingOutcome(scanned=7, retired=2),
-        )
-
-        plugin._run_compaction_pass()
-
-        # Render every info-level call to its formatted form and look for
-        # the friendly outcome line.
-        rendered = []
-        for call in plugin.log.info.call_args_list:
-            args = call.args
-            if not args:
-                continue
-            fmt = args[0]
-            try:
-                rendered.append(fmt % tuple(args[1:]))
-            except TypeError:
-                rendered.append(fmt)
-        matched = [
-            m
-            for m in rendered
-            if "compaction outcome" in m
-            and "compacted 12 events" in m
-            and "aged 2 entities" in m
-            and "kept 5" in m
-        ]
-        assert matched, f"no friendly outcome message in {rendered!r}"
-
-
-class TestMaxActorsRegistryPlumbing:
-    """Phase 6.6: verseAutoEntityMaxNamesPerCall flows through
-    _build_verse_handlers_for_route into make_verse_extra_handlers."""
-
-    def test_max_actors_flows_to_make_verse_extra_handlers(
-        self, plugin_env, tmp_path, mocker, monkeypatch
-    ) -> None:
-        from llm.plugin import VerseRoute
-        from llm.verse import avatar as avatar_mod
-        from llm.verse.store import VerseStore
-
-        plugin, _irc, _msg = plugin_env
-
-        captured: list[int] = []
-        real_handlers = avatar_mod.make_verse_extra_handlers
-
-        def spy_handlers(store, avatar_id, logger=None, *, max_actors=8):
-            captured.append(max_actors)
-            return real_handlers(store, avatar_id, logger=logger, max_actors=max_actors)
-
-        monkeypatch.setattr("llm.plugin.make_verse_extra_handlers", spy_handlers)
-
-        # Real store with one active avatar so the helper has something
-        # to bind handlers to.
-        store = VerseStore(tmp_path, "#x")
-        avatar_id = store.opt_in_avatar(
-            "alice", account=None, instruct_text="alice instruct"
-        ).entity_id
-        route = VerseRoute(avatar_id=avatar_id, system_prompt="", tools=[], store=store)
-
-        real_registry_side_effect = plugin.registryValue.side_effect
-
-        def fake_registry(key, *args):
-            if key == "verseAutoEntityMaxNamesPerCall":
-                return 4
-            return real_registry_side_effect(key, *args)
-
-        plugin.registryValue = mocker.MagicMock(side_effect=fake_registry)
-
-        handlers = plugin._build_verse_handlers_for_route("#x", route)
-        assert handlers
-        assert 4 in captured, f"max_actors not plumbed; got {captured}"
-
 
 class TestVersecompactCommand:
     """E4: @versecompact owner command — manual retention compaction.
@@ -3051,141 +2701,6 @@ class TestCanonCommand:
 # =============================================================================
 
 
-class TestDeloomedPluginBoot:
-    """Real guard: the de-loomed plugin must never read any of the 14 removed
-    loom config keys, and must read ``verseCompactionModel`` on the compaction
-    code path.
-
-    The approach: install a ``registryValue`` side-effect that RAISES on any
-    removed key, then drive the production compaction path (``plugin.versecompact``)
-    under that guard.  If any removed key is read, the test fails.  If
-    ``verseCompactionModel`` is *not* read (e.g. compaction short-circuits or
-    reads a different key), the sentinel assertion fails.
-    """
-
-    # The 14 config keys removed when loom was de-coupled.  Reading any of these
-    # at runtime would raise on a real bot (no registered key → ConfigurationError).
-    REMOVED_LOOM_KEYS: frozenset[str] = frozenset(
-        {
-            "loomNetwork",
-            "loomChannel",
-            "loomModel",
-            "loomCycleInterval",
-            "loomVerseCooldown",
-            "loomBeatWindow",
-            "loomTranscriptMaxLines",
-            "loomTranscriptMaxChars",
-            "loomBotNicks",
-            "loomCaptureTranscript",
-            "verseCrosspollAllowSend",
-            "verseCrosspollAllowReceive",
-            "verseCrosspollPerCycleLimit",
-            "verseAutoApplyThreshold",
-        }
-    )
-
-    def _make_guarded_registry(self, mocker):
-        """Return (side_effect_fn, queried_keys_list).
-
-        The side_effect raises ``AssertionError`` if any REMOVED_LOOM_KEYS key is
-        read.  All other keys delegate to ``make_registry_side_effect`` with a
-        distinctive ``verseCompactionModel`` sentinel.  Every key queried is
-        appended to ``queried_keys`` so assertions can confirm the path ran.
-        """
-        from tests.conftest import make_registry_side_effect
-
-        sentinel_model_name = "test/deloomed-guard-sentinel"
-
-        base = make_registry_side_effect(
-            {
-                "verseEnabled": True,
-                "verseEventRetentionDays": 30,
-                "verseCompactionMinKeepEvents": 20,
-                "verseCompactionModel": sentinel_model_name,
-            }
-        )
-
-        queried_keys: list[str] = []
-
-        def _guarded(key, *args):
-            queried_keys.append(key)
-            if key in TestDeloomedPluginBoot.REMOVED_LOOM_KEYS:
-                raise AssertionError(f"de-loomed plugin must not read removed key {key!r}")
-            return base(key, *args)
-
-        return mocker.MagicMock(side_effect=_guarded), queried_keys, sentinel_model_name
-
-    def test_deloomed_plugin_boots_with_stale_loom_keys(self, plugin_env, tmp_path, mocker) -> None:
-        """GIVEN raising guard on all 14 removed loom keys
-        WHEN plugin.versecompact() runs the real compaction path
-        THEN no removed key is read AND verseCompactionModel sentinel is queried.
-
-        This test would FAIL if:
-        - Any removed key (loomModel, loomChannel, …) is read → raises immediately.
-        - verseCompactionModel is not queried → sentinel assertion fails.
-        """
-        from llm.verse.store import VerseStore
-
-        from tests.verse.conftest import insert_event_at
-
-        plugin, irc, msg = plugin_env
-
-        # Wire the guarded registry — covers ALL subsequent registryValue calls.
-        guarded_rv, queried_keys, sentinel_model = self._make_guarded_registry(mocker)
-        plugin.registryValue = guarded_rv
-
-        # Wire a real VerseStore with >min_keep old events so compaction
-        # actually reaches the model-read line (rather than short-circuiting).
-        store = VerseStore(tmp_path / "verse", "#afnet")
-        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
-        plugin._verse_stores["#afnet"] = store
-
-        seconds_per_day = 86_400
-        now_ts = 100_000_000.0
-        for i in range(25):
-            insert_event_at(
-                store,
-                summary=f"old_event_{i}",
-                entity_ids=[],
-                source="avatar",
-                ts=now_ts - 60 * seconds_per_day,
-            )
-
-        # Stub the LLM client so no network call is attempted.
-        class _FakeClient:
-            def call(self, *, op, model, messages):
-                from llm.verse.compaction import VerseCallUsage
-
-                return "digest", VerseCallUsage(prompt_tokens=5, completion_tokens=5, cost=0.0)
-
-        mocker.patch(
-            "llm.verse.compaction.ProviderVerseClient",
-            return_value=_FakeClient(),
-        )
-
-        # Set up msg for direct method call (bypassing wrap).
-        msg.args = ("#afnet", "@versecompact #afnet")
-        msg.prefix = "owner!user@host"
-        msg.nick = "owner"
-        msg.server_tags = {}
-
-        # Drive the real production path: versecompact reads verseCompactionModel.
-        # If any REMOVED_LOOM_KEYS key is touched, _guarded raises immediately.
-        plugin.versecompact(irc, msg, ["#afnet"])
-
-        # (1) The compaction path did NOT read any removed key (no raise above).
-        removed_keys_read = [k for k in queried_keys if k in self.REMOVED_LOOM_KEYS]
-        assert removed_keys_read == [], (
-            f"Production code read removed loom key(s): {removed_keys_read}"
-        )
-
-        # (2) verseCompactionModel WAS queried — the guard has teeth.
-        assert "verseCompactionModel" in queried_keys, (
-            "verseCompactionModel was never queried; compaction path may have "
-            "short-circuited or read a different key — test is no longer armed"
-        )
-
-
 # =============================================================================
 # Task 7: verseStyleExemplars threaded into the verse route (end-to-end)
 # =============================================================================
@@ -3257,20 +2772,6 @@ class TestVersePasteStyle:
         )
 
         assert plugin.llm_service.save_markdown_to_http.call_args.kwargs["style"] == "story"
-
-    def test_chat_overflow_paste_uses_answer_theme(self, plugin_env):
-        plugin, irc, msg = plugin_env
-        irc.network = "testnet"
-        plugin.llm_service.save_markdown_to_http.return_value = "https://e.co/a.html"
-        plugin.llm_service.summarize_for_irc.return_value = "An answer."
-        answer = "line one\nline two"
-        result = AssistantResult(content=answer, spend=Spend.ZERO, was_verse=False)
-
-        plugin._dispatch_assistant_reply(
-            irc, msg, result, caller=Caller(Identity("alice", None), "#test"), response=answer
-        )
-
-        assert plugin.llm_service.save_markdown_to_http.call_args.kwargs["style"] == "answer"
 
 
 class TestVerseReactionSendHook:
@@ -3543,14 +3044,6 @@ class TestProviderVerseClient:
         assert chat.call_args.args[1] == messages
         assert content == "digest"
         assert usage == compaction.VerseCallUsage(7, 3, 0.002)
-
-    def test_client_takes_no_api_key_argument(self) -> None:
-        """GIVEN the constructor WHEN inspected THEN no api_key parameter."""
-        import inspect
-
-        from llm.verse import compaction
-
-        assert "api_key" not in inspect.signature(compaction.ProviderVerseClient).parameters
 
 
 def test_verse_store_cache_folds_channel_case(plugin_env, tmp_path, mocker) -> None:

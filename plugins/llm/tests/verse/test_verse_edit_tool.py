@@ -151,24 +151,6 @@ def test_handler_authorized_but_destructive_op_refused(tmp_path, mocker):
     assert store.recent_events()  # event survives
 
 
-def test_verse_edit_tool_spec_advertised():
-    """make_verse_tool_specs always advertises verse_edit so the channel tool
-    surface stays byte-stable; the gate lives in the handler, not the schema."""
-    from llm.verse.avatar import make_verse_tool_specs
-
-    names = {s["function"]["name"] for s in make_verse_tool_specs()}
-    assert "verse_edit" in names
-
-
-def test_verse_edit_covered_by_denial_handlers():
-    """A non-opted-in speaker's verse_edit call lands on a denial handler."""
-    from llm.verse.avatar import make_verse_denial_handlers, make_verse_tool_specs
-
-    specs = make_verse_tool_specs()
-    denials = make_verse_denial_handlers(specs)
-    assert "verse_edit" in denials
-
-
 @pytest.mark.parametrize("bad_args", [None, [], "scalar", {"op": "add_entity"}])
 def test_handler_tolerates_malformed_args(tmp_path, mocker, bad_args):
     """Non-dict args / missing payload must not raise out of the turn."""

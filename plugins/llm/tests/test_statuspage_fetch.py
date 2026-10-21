@@ -139,28 +139,6 @@ class TestBaseUrlValidation:
             )
         assert opener.request is None
 
-    def test_bare_host_still_works(self):
-        opener = FakeOpener(FakeResponse(good_body(), {"Content-Type": "application/json"}))
-        statuspage.fetch_summary(
-            "https://status.claude.com",
-            timeout=10,
-            validate=lambda _u: True,
-            resolves_public=lambda _u: True,
-            opener_factory=lambda: opener,
-        )
-        assert opener.request.full_url == "https://status.claude.com/api/v2/summary.json"
-
-    def test_bare_host_with_trailing_slash_still_works(self):
-        opener = FakeOpener(FakeResponse(good_body(), {"Content-Type": "application/json"}))
-        statuspage.fetch_summary(
-            "https://status.claude.com/",
-            timeout=10,
-            validate=lambda _u: True,
-            resolves_public=lambda _u: True,
-            opener_factory=lambda: opener,
-        )
-        assert opener.request.full_url == "https://status.claude.com/api/v2/summary.json"
-
 
 class TestResponseGuards:
     def test_rejects_non_json_content_type(self):

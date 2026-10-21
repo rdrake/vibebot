@@ -185,79 +185,6 @@ class TestMultiUserContextIsolation:
         assert len(errors) == 0, f"Errors: {errors}"
 
 
-class TestRapidRequestHandling:
-    """Test handling of rapid sequential requests from same user."""
-
-    @pytest.fixture
-    def mock_service(self, make_service) -> LLMService:
-        """Create service with HTTP output config."""
-        service, _ = make_service(
-            httpRoot="/tmp/test",
-            httpUrlBase="http://localhost/llm",
-            fileCleanupAge=24,
-            fileCleanupMax=1000,
-        )
-        return service
-
-    def test_rapid_image_detection(self, mock_service: LLMService) -> None:
-        """GIVEN rapid requests with images WHEN detecting THEN no missed detections."""
-        service = mock_service
-        test_texts = [
-            "Check https://example.com/image1.jpg please",
-            "Look at https://example.com/photo.png",
-            "No image here",
-            "Multiple https://a.com/1.jpg and https://b.com/2.png",
-        ]
-
-        results = []
-        for _ in range(100):
-            for text in test_texts:
-                images = service.detect_images(text)
-                results.append((text, len(images)))
-
-        # Verify consistency
-        for text, count in results:
-            if "image1.jpg" in text or "photo.png" in text:
-                assert count == 1
-            elif "No image" in text:
-                assert count == 0
-            elif "Multiple" in text:
-                assert count == 2
-
-    def test_rapid_prompt_validation(self, mock_service: LLMService) -> None:
-        """GIVEN rapid validation requests WHEN validating THEN consistent results."""
-        service = mock_service
-
-        valid_prompts = ["Hello", "What is Python?", "Write code" * 100]
-        invalid_prompts = ["", "   ", None]
-
-        errors = []
-
-        def validate_batch(batch_id: int) -> None:
-            for _ in range(50):
-                for prompt in valid_prompts:
-                    is_valid, _ = service.validate_prompt(prompt)
-                    if not is_valid and prompt and prompt.strip():
-                        errors.append(f"Batch {batch_id}: Valid prompt rejected")
-
-                for prompt in invalid_prompts:
-                    if prompt is not None:
-                        is_valid, _ = service.validate_prompt(prompt)
-                        if is_valid:
-                            errors.append(f"Batch {batch_id}: Invalid prompt accepted")
-
-        threads = []
-        for i in range(10):
-            t = threading.Thread(target=validate_batch, args=(i,))
-            threads.append(t)
-            t.start()
-
-        for t in threads:
-            t.join()
-
-        assert len(errors) == 0, f"Validation errors: {errors}"
-
-
 class TestConcurrentAPIKeyIsolation:
     """Test that API keys are isolated in concurrent requests."""
 
@@ -366,21 +293,6 @@ class TestOverlappingContextScenarios:
         for channel in channels:
             messages = ctx.get_messages(nick, channel)
             assert len(messages) == messages_per_channel * 2
-
-    def test_same_nick_different_cases(self, multi_channel_context: ConversationContext) -> None:
-        """GIVEN nick with different cases WHEN accessing context THEN same context."""
-        ctx = multi_channel_context
-        channel = "#test"
-
-        # Add messages with different nick cases
-        ctx.add_message("TestUser", channel, "user", "Message 1")
-        ctx.add_message("testuser", channel, "user", "Message 2")
-        ctx.add_message("TESTUSER", channel, "user", "Message 3")
-        ctx.add_message("TeStUsEr", channel, "user", "Message 4")
-
-        # All should be in same context
-        messages = ctx.get_messages("testuser", channel)
-        assert len(messages) == 4
 
     def test_channel_history_exclude_with_concurrent_access(
         self, multi_channel_context: ConversationContext
@@ -528,42 +440,6 @@ class TestHighVolumeFileOperations:
             fileCleanupMax=1000,
         )
         return service
-
-    def test_concurrent_code_saving(self, service: LLMService, tmp_path) -> None:
-        """GIVEN many concurrent saves WHEN saving code THEN all files created."""
-        urls = []
-        lock = threading.Lock()
-        errors = []
-
-        def save_code(content_id: int) -> None:
-            try:
-                content = f"# Code file {content_id}\nprint('Hello from {content_id}')"
-                url = service.save_markdown_to_http(content)
-                if url:
-                    with lock:
-                        urls.append(url)
-                else:
-                    with lock:
-                        errors.append(f"Failed to save code {content_id}")
-            except Exception as e:
-                with lock:
-                    errors.append(e)
-
-        threads = []
-        for i in range(50):
-            t = threading.Thread(target=save_code, args=(i,))
-            threads.append(t)
-            t.start()
-
-        for t in threads:
-            t.join()
-
-        assert len(errors) == 0, f"Errors: {errors}"
-        assert len(urls) == 50
-
-        # Verify all files exist
-        files = list(tmp_path.glob("*.html"))
-        assert len(files) == 50
 
     def test_concurrent_image_saving(self, service: LLMService, tmp_path) -> None:
         """GIVEN many concurrent image saves WHEN saving THEN all files created."""

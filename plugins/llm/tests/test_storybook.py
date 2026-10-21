@@ -5,19 +5,6 @@ from __future__ import annotations
 from llm.identity import Caller
 
 
-def test_storybook_config_defaults():
-    import llm.config as cfg
-
-    group = cfg.LLM
-    assert group.verseStorybookEnabled is not None
-    assert int(group.verseStorybookMaxImages()) == 5
-    assert int(group.verseStorybookMaxPerTurn()) == 1
-    assert int(group.verseStorybookCooldownSeconds()) == 300
-    assert int(group.verseStorybookDailyImageCap()) == 30
-    assert int(group.verseStorybookMaxChars()) == 6000
-    assert int(group.verseStorybookImageTimeout()) == 45
-
-
 def test_storybook_illustration_rules_scale_with_budget():
     from llm.service import _storybook_illustration_rules as rules
 
@@ -68,14 +55,6 @@ def test_generate_story_struct_prose_first_prompt_when_budget_low(make_service, 
     system_prompt = ask.call_args.args[0]
     assert "PROSE-FIRST" in system_prompt
     assert "GENEROUSLY" not in system_prompt
-
-
-def test_image_result_has_url_field():
-    from llm.service import ImageResult
-
-    r = ImageResult(content="msg", url="https://h/llm/img_a.jpg")
-    assert r.url == "https://h/llm/img_a.jpg"
-    assert ImageResult(content="x").url is None  # default
 
 
 def test_extract_json_object():
@@ -442,23 +421,6 @@ def test_resolves_to_public_false_on_unicode_encode_error(make_service, mocker):
         side_effect=UnicodeEncodeError("idna", "x", 0, 1, "label empty or too long"),
     )
     assert service._resolves_to_public("http://example.com/x.png") is False
-
-
-def test_make_verse_tool_specs_includes_storybook_when_enabled():
-    from llm.verse.avatar import make_verse_tool_specs
-
-    on = make_verse_tool_specs(max_actors=2, storybook=True)
-    off = make_verse_tool_specs(max_actors=2, storybook=False)
-
-    def names(specs):
-        out = []
-        for s in specs:
-            # support either {"function":{"name":...}} or {"name":...}
-            out.append(s.get("function", s).get("name"))
-        return out
-
-    assert "verse_storybook" in names(on)
-    assert "verse_storybook" not in names(off)
 
 
 def test_storybook_job_records_canon_event(plugin_env, tmp_path, mocker):

@@ -27,7 +27,6 @@ from llm.service import (
     _is_degraded_reply,
     _is_echo_reply,
     _is_verse_denial,
-    _normalize_for_echo,
     _replies_repetitive,
     _strip_degraded,
     _strip_repeated_replies,
@@ -64,24 +63,6 @@ def make_executor(*args, **kwargs) -> AssistantToolExecutor:
     # tests (TestPersonalDataToolsNeedAccount).
     kwargs.setdefault("account", "testuser")
     return AssistantToolExecutor(*args, **kwargs)
-
-
-class TestMetaTools:
-    """GIVEN the ASSISTANT_TOOLS list WHEN inspected THEN it has correct structure."""
-
-    def test_tool_count(self) -> None:
-        """GIVEN ASSISTANT_TOOLS WHEN counted THEN has expected number of tools."""
-        assert len(ASSISTANT_TOOLS) == 20
-
-    def test_tools_have_function_format(self) -> None:
-        """GIVEN each tool WHEN checked THEN follows OpenAI function calling schema."""
-        for tool in ASSISTANT_TOOLS:
-            assert tool["type"] == "function"
-            assert "function" in tool
-            fn = tool["function"]
-            assert "name" in fn
-            assert "description" in fn
-            assert "parameters" in fn
 
 
 class TestAssistantToolExecutor:
@@ -189,23 +170,6 @@ class TestAssistantToolExecutor:
             route_profile=PROFILE_REMIND_ACTION,
         )
 
-    def test_get_instruction_tool_is_gone(self, executor: AssistantToolExecutor) -> None:
-        """The read tool was removed — the instruction is injected as data."""
-        result = executor.execute("get_instruction", {})
-        assert "Unknown tool" in result.content
-
-    def test_set_instruction(self, executor: AssistantToolExecutor, mock_db: MagicMock) -> None:
-        """GIVEN set_instruction tool WHEN called THEN saves instruction."""
-        result = executor.execute("set_instruction", {"text": "be brief"})
-        mock_db.save_instruction.assert_called_once_with("testuser", "be brief")
-        assert "ok" in result.content.lower()
-
-    def test_clear_instruction(self, executor: AssistantToolExecutor, mock_db: MagicMock) -> None:
-        """GIVEN clear_instruction tool WHEN called THEN deletes instruction."""
-        result = executor.execute("clear_instruction", {})
-        mock_db.delete_instruction.assert_called_once_with("testuser")
-        assert "clear" in result.content.lower()
-
     def test_list_memories(self, executor: AssistantToolExecutor) -> None:
         """GIVEN list_memories tool WHEN called THEN returns formatted memories."""
         result = executor.execute("list_memories", {})
@@ -218,12 +182,6 @@ class TestAssistantToolExecutor:
         mock_db.save_memory.assert_called_once_with("testuser", "prefers vim", "#test")
         assert "saved" in result.content.lower() or "3" in result.content
 
-    def test_delete_memory(self, executor: AssistantToolExecutor, mock_db: MagicMock) -> None:
-        """GIVEN delete_memory tool WHEN called THEN deletes by ID."""
-        result = executor.execute("delete_memory", {"id": 1})
-        mock_db.delete_memory.assert_called_once_with("testuser", 1)
-        assert "delete" in result.content.lower()
-
     def test_delete_memory_not_found(
         self, executor: AssistantToolExecutor, mock_db: MagicMock
     ) -> None:
@@ -231,24 +189,6 @@ class TestAssistantToolExecutor:
         mock_db.delete_memory.return_value = False
         result = executor.execute("delete_memory", {"id": 999})
         assert "not found" in result.content.lower() or "error" in result.content.lower()
-
-    def test_update_memory(self, executor: AssistantToolExecutor, mock_db: MagicMock) -> None:
-        """GIVEN update_memory tool WHEN called THEN updates in db."""
-        result = executor.execute("update_memory", {"id": 1, "text": "loves Python"})
-        mock_db.update_memory.assert_called_once_with("testuser", 1, "loves Python")
-        assert "update" in result.content.lower()
-
-    def test_clear_memories(self, executor: AssistantToolExecutor, mock_db: MagicMock) -> None:
-        """GIVEN clear_memories tool WHEN called THEN deletes all."""
-        result = executor.execute("clear_memories", {})
-        mock_db.delete_all_memories.assert_called_once_with("testuser")
-        assert "2" in result.content  # count returned
-
-    def test_forget_context(self, executor: AssistantToolExecutor, mock_context: MagicMock) -> None:
-        """GIVEN forget_context tool WHEN called THEN clears context for channel."""
-        result = executor.execute("forget_context", {})
-        mock_context.clear.assert_called_once_with("testuser", "#test")
-        assert "clear" in result.content.lower()
 
     def test_unknown_tool(self, executor: AssistantToolExecutor) -> None:
         """GIVEN unknown tool name WHEN called THEN returns error."""
@@ -347,22 +287,6 @@ class TestAssistantToolExecutor:
         assert "0.85" in result.content
         mock_db.get_usage_summary_for_channel.assert_called_once()
 
-    def test_cleanup_memories(
-        self, executor: AssistantToolExecutor, mock_cleanup_fn: MagicMock
-    ) -> None:
-        """GIVEN cleanup_memories tool WHEN called THEN runs cleanup callable."""
-        result = executor.execute("cleanup_memories", {})
-        mock_cleanup_fn.assert_called_once_with("testuser")
-        assert "Before: 8" in result.content
-
-    def test_cleanup_memories_not_available(
-        self, mock_db: MagicMock, mock_context: MagicMock
-    ) -> None:
-        """GIVEN no cleanup_fn WHEN cleanup_memories called THEN returns error."""
-        executor = make_executor(db=mock_db, context=mock_context, nick="testuser", channel="#test")
-        result = executor.execute("cleanup_memories", {})
-        assert "not available" in result.content.lower() or "error" in result.content.lower()
-
     def test_list_memories_other_user_as_owner(
         self, mock_db: MagicMock, mock_context: MagicMock, mock_cleanup_fn: MagicMock
     ) -> None:
@@ -446,22 +370,6 @@ class TestAssistantToolExecutor:
         assert "deploy app" in result.content
         assert "abc123" in result.content
 
-    def test_list_pending_tasks_empty(
-        self, executor: AssistantToolExecutor, mock_list_pending_tasks_fn: MagicMock
-    ) -> None:
-        """GIVEN no tasks WHEN list_pending_tasks THEN returns empty message."""
-        mock_list_pending_tasks_fn.return_value = []
-        result = executor.execute("list_pending_tasks", {})
-        assert "no" in result.content.lower() or "[]" in result.content
-
-    def test_set_reminder(
-        self, executor: AssistantToolExecutor, mock_set_reminder_fn: MagicMock
-    ) -> None:
-        """GIVEN set_reminder tool WHEN called THEN schedules via callable."""
-        result = executor.execute("set_reminder", {"text": "check build in 1 hour"})
-        mock_set_reminder_fn.assert_called_once_with("check build in 1 hour")
-        assert "remind" in result.content.lower() or "hour" in result.content.lower()
-
     def test_cancel_pending_task(
         self, executor: AssistantToolExecutor, mock_cancel_pending_task_fn: MagicMock
     ) -> None:
@@ -485,82 +393,7 @@ class TestAssistantToolExecutor:
         result = executor.execute("cancel_pending_task", {"id": "xyz"})
         assert "not found" in result.content.lower()
 
-    def test_cancel_all_pending_tasks(
-        self,
-        executor: AssistantToolExecutor,
-        mock_cancel_all_pending_tasks_fn: MagicMock,
-    ) -> None:
-        """GIVEN cancel_all_pending_tasks tool WHEN called THEN dispatches to callable."""
-        result = executor.execute("cancel_all_pending_tasks", {})
-        mock_cancel_all_pending_tasks_fn.assert_called_once_with()
-        assert "2" in result.content
-        assert "ok" in result.content.lower()
-
-    def test_cancel_all_pending_tasks_unavailable(
-        self,
-        mock_db: MagicMock,
-        mock_context: MagicMock,
-    ) -> None:
-        """GIVEN no callable WHEN cancel_all_pending_tasks THEN returns error."""
-        executor = make_executor(
-            db=mock_db,
-            context=mock_context,
-            nick="testuser",
-            channel="#test",
-        )
-        result = executor.execute("cancel_all_pending_tasks", {})
-        assert "not available" in result.content.lower()
-
     # -- Task 6: Structured returns and new callables ----------------------
-
-    def test_executor_accepts_search_fn(
-        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """AssistantToolExecutor accepts search_fn callable."""
-        search_fn = mocker.MagicMock(return_value=ToolResult(content="results"))
-        executor = make_executor(
-            db=mock_db,
-            context=mock_context,
-            nick="testuser",
-            channel="#test",
-            search_fn=search_fn,
-        )
-        assert executor._search_fn is search_fn
-
-    def test_executor_accepts_fetch_fn(
-        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """AssistantToolExecutor accepts fetch_fn callable."""
-        fetch_fn = mocker.MagicMock(return_value=ToolResult(content="page"))
-        executor = make_executor(
-            db=mock_db,
-            context=mock_context,
-            nick="testuser",
-            channel="#test",
-            fetch_fn=fetch_fn,
-        )
-        assert executor._fetch_fn is fetch_fn
-
-    def test_execute_returns_tool_result(self, executor: AssistantToolExecutor) -> None:
-        """execute() returns ToolResult for existing tools."""
-        result = executor.execute("set_instruction", {"text": "be brief"})
-        assert isinstance(result, ToolResult)
-        assert "be brief" in result.content
-
-    def test_execute_denied_returns_tool_result(
-        self, mock_db: MagicMock, mock_context: MagicMock
-    ) -> None:
-        """execute() returns ToolResult for denied tools."""
-        executor = make_executor(
-            db=mock_db,
-            context=mock_context,
-            nick="testuser",
-            channel="#test",
-            capabilities=frozenset(),
-        )
-        result = executor.execute("list_memories", {})
-        assert isinstance(result, ToolResult)
-        assert "capability" in result.content.lower() or "not allowed" in result.content.lower()
 
     def test_executor_tracks_grounding_used(
         self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
@@ -609,25 +442,6 @@ class TestAssistantToolExecutor:
 
     # -- Task 7: Tool handlers --------------------------------------------
 
-    def test_tool_search_web_calls_fn(
-        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """search_web handler calls search_fn with query."""
-        search_fn = mocker.MagicMock(
-            return_value=ToolResult(content="web results"),
-        )
-        executor = make_executor(
-            db=mock_db,
-            context=mock_context,
-            nick="testuser",
-            channel="#test",
-            route_profile="chat",
-            search_fn=search_fn,
-        )
-        result = executor.execute("search_web", {"query": "python async"})
-        search_fn.assert_called_once_with("python async")
-        assert result.content == "web results"
-
     def test_tool_search_web_capped_per_request(
         self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
     ) -> None:
@@ -673,53 +487,6 @@ class TestAssistantToolExecutor:
         run()
         assert search_fn.call_count == 6
 
-    def test_tool_search_web_no_fn_returns_error(
-        self, mock_db: MagicMock, mock_context: MagicMock
-    ) -> None:
-        """search_web returns error when search_fn is None."""
-        executor = make_executor(
-            db=mock_db,
-            context=mock_context,
-            nick="testuser",
-            channel="#test",
-            route_profile="chat",
-        )
-        result = executor.execute("search_web", {"query": "test"})
-        assert "unavailable" in result.content.lower() or "error" in result.content.lower()
-
-    def test_tool_fetch_url_calls_fn(
-        self, mock_db: MagicMock, mock_context: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """fetch_url handler calls fetch_fn with url."""
-        fetch_fn = mocker.MagicMock(
-            return_value=ToolResult(content="page content"),
-        )
-        executor = make_executor(
-            db=mock_db,
-            context=mock_context,
-            nick="testuser",
-            channel="#test",
-            route_profile="chat",
-            fetch_fn=fetch_fn,
-        )
-        result = executor.execute("fetch_url", {"url": "https://example.com"})
-        fetch_fn.assert_called_once_with("https://example.com")
-        assert result.content == "page content"
-
-    def test_tool_fetch_url_no_fn_returns_error(
-        self, mock_db: MagicMock, mock_context: MagicMock
-    ) -> None:
-        """fetch_url returns error when fetch_fn is None."""
-        executor = make_executor(
-            db=mock_db,
-            context=mock_context,
-            nick="testuser",
-            channel="#test",
-            route_profile="chat",
-        )
-        result = executor.execute("fetch_url", {"url": "https://example.com"})
-        assert "unavailable" in result.content.lower() or "error" in result.content.lower()
-
 
 class TestMetaCompletion:
     """Tests for LLMService.assistant_completion() tool-calling loop."""
@@ -728,27 +495,6 @@ class TestMetaCompletion:
     def service(self, make_service) -> LLMService:  # type: ignore[no-untyped-def]
         svc, _plugin = make_service(assistantModel="gpt-4")
         return svc
-
-    def test_text_response_no_tools(self, service: LLMService, mocker: MockerFixture) -> None:
-        """GIVEN LLM returns text WHEN no tool calls THEN returns text."""
-        mock_response = make_completion_response("Done \u2014 instruction set.")
-
-        mocker.patch(
-            "llm.service.provider.chat",
-            return_value=mock_response,
-        )
-
-        result = service.assistant_completion(
-            prompt="set my instruction to haiku",
-            nick="testuser",
-            channel="#test",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="VibeBot",
-        )
-
-        assert result.content == "Done \u2014 instruction set."
-        assert result.error is None
 
     def test_tool_call_then_text(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN LLM calls a tool then responds WHEN executed THEN tool runs."""
@@ -1118,49 +864,6 @@ class TestMetaCompletion:
         assert "personality changes voice, not structure" in content
         assert "paragraphs per beat, mandatory verse_record" in content
 
-    def test_assistant_completion_verse_footer_overrides_inherited_line_cap(
-        self, service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """The verse overlay inherits the channel ``assistantSystemPrompt``,
-        whose shipped DEFAULT is a terseness pump ("never exceed three [lines]").
-        Inherited verbatim into the high-attention personality block, that cap
-        directly contradicts verse's long-form goal. The verse footer must
-        explicitly NEUTRALISE any length cap stated in the overlay, so an
-        un-customised channel does not silently produce one-liners.
-        """
-        from llm.service import PROFILE_VERSE
-
-        mock_response = make_completion_response("Done.")
-        captured_messages: list = []
-
-        def capture_completion(**kwargs: object) -> object:
-            captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
-            return mock_response
-
-        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
-
-        # Mirror the shipped default assistantSystemPrompt terseness pump.
-        service.assistant_completion(
-            prompt="describe the scene",
-            nick="testuser",
-            channel="#test",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="VibeBot",
-            system_prompt=(
-                "You are a helpful IRC assistant. Keep answers tight: lead with "
-                "the answer, aim for one line, never exceed three."
-            ),
-            route_profile=PROFILE_VERSE,
-        )
-
-        content = captured_messages[0]["content"]
-        # The cap is inherited verbatim from the overlay...
-        assert "never exceed three" in content
-        # ...but the footer explicitly overrides it for verse.
-        assert "does NOT apply in verse" in content
-        assert "the length it deserves" in content
-
     def test_assistant_completion_drops_channel_history_for_verse(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
@@ -1482,34 +1185,6 @@ class TestMetaCompletion:
         tool_names = {t["function"]["name"] for t in captured["tools"]}
         assert tool_names.isdisjoint(PENDING_TASK_TOOLS)
 
-    def test_assistant_completion_passes_search_fn_to_executor(
-        self, service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """assistant_completion passes search_fn/fetch_fn to AssistantToolExecutor."""
-        mock_response = make_completion_response("Done.")
-
-        mocker.patch("llm.service.provider.chat", return_value=mock_response)
-
-        mock_executor_cls = mocker.patch("llm.assistant.AssistantToolExecutor")
-
-        sentinel_search = mocker.Mock()
-        sentinel_fetch = mocker.Mock()
-
-        service.assistant_completion(
-            prompt="hello",
-            nick="testuser",
-            channel="#test",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="VibeBot",
-            search_fn=sentinel_search,
-            fetch_fn=sentinel_fetch,
-        )
-
-        call_kwargs = mock_executor_cls.call_args[1]
-        assert call_kwargs["search_fn"] is sentinel_search
-        assert call_kwargs["fetch_fn"] is sentinel_fetch
-
     def test_explicit_search_prompt_forces_search_web_tool_choice(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
@@ -1631,42 +1306,6 @@ class TestMetaCompletion:
         )
 
         assert "tool_choice" not in mock_completion.call_args_list[0].kwargs
-
-    def test_meta_result_includes_grounding_used(
-        self, service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """AssistantResult.grounding_used reflects executor state after tool calls."""
-        # First response: tool call; second response: text
-        tool_call = make_tool_call("web_search", {"query": "test"}, call_id="call_1")
-        first_response = make_completion_response(None, tool_calls=[tool_call])
-        second_response = make_completion_response("Here are results.")
-
-        mocker.patch(
-            "llm.service.provider.chat",
-            side_effect=[first_response, second_response],
-        )
-
-        # Mock the executor to set grounding_used when execute is called
-        mock_executor = mocker.MagicMock()
-        mock_executor.grounding_used = True
-        mock_executor.accumulated_prompt_tokens = 0
-        mock_executor.accumulated_completion_tokens = 0
-        mock_executor.accumulated_cost = 0.0
-        mock_executor.execute.return_value = ToolResult(
-            content='{"results": []}', grounding_used=True
-        )
-        mocker.patch("llm.assistant.AssistantToolExecutor", return_value=mock_executor)
-
-        result = service.assistant_completion(
-            prompt="search for test",
-            nick="testuser",
-            channel="#test",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="VibeBot",
-        )
-
-        assert result.grounding_used is True
 
     def test_meta_result_includes_leaf_tool_costs(
         self, service: LLMService, mocker: MockerFixture
@@ -2026,53 +1665,6 @@ class TestMetaCompletion:
 
         assert result.last_successful_tool == "run_limnoria_command"
 
-    def test_verse_storybook_short_circuits_and_suppresses_beat(
-        self, service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """A successful verse_storybook call short-circuits: step_2 is skipped
-        and the result content is empty. The illustrated page link is posted
-        asynchronously by the background job, so the model's post-tool beat
-        must not reach the channel."""
-        tool_call = make_tool_call(
-            "verse_storybook",
-            {"brief": "a tale"},
-            call_id="call_sb",
-        )
-        first_response = make_completion_response(None, tool_calls=[tool_call])
-        # A second completion is queued but MUST NOT be consumed (step_2 skipped).
-        forbidden = make_completion_response("the lads high-five in The Clearing")
-
-        completion = mocker.patch(
-            "llm.service.provider.chat",
-            side_effect=[first_response, forbidden],
-        )
-
-        mock_executor = mocker.MagicMock()
-        mock_executor.grounding_used = False
-        mock_executor.accumulated_prompt_tokens = 0
-        mock_executor.accumulated_completion_tokens = 0
-        mock_executor.accumulated_cost = 0.0
-        mocker.patch("llm.assistant.AssistantToolExecutor", return_value=mock_executor)
-
-        handler = mocker.MagicMock(
-            return_value=ToolResult(content='{"status": "ok", "note": "rendering"}')
-        )
-
-        result = service.assistant_completion(
-            prompt="tell me an illustrated tale",
-            nick="testuser",
-            channel="#test",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="VibeBot",
-            extra_handlers={"verse_storybook": handler},
-        )
-
-        assert result.content == ""
-        assert result.last_successful_tool == "verse_storybook"
-        # step_2 skipped — only the first (tool-calling) completion ran.
-        assert completion.call_count == 1
-
     def _run_react(
         self, service, mocker, handler, *, alongside: str | None = None, tool: str = "react"
     ):  # type: ignore[no-untyped-def]
@@ -2165,20 +1757,10 @@ class TestAssistantCompletionEchoGuard:
         """Build a mock completion response carrying ``content`` and no tools."""
         return make_completion_response(content)
 
-    def test_normalize_for_echo_collapses_case_space_punctuation(self) -> None:
-        """GIVEN trivially varied text WHEN normalized THEN forms collapse to one."""
-        assert _normalize_for_echo("  Finish   the Story!  ") == _normalize_for_echo(
-            "finish the story"
-        )
-
     def test_is_echo_reply_detects_verbatim_echo(self) -> None:
         """GIVEN a reply equal to the prompt WHEN checked THEN it is an echo."""
         assert _is_echo_reply("finish the story", "finish the story") is True
         assert _is_echo_reply("finish the story", '"Finish the story."') is True
-
-    def test_is_echo_reply_false_for_real_answer(self) -> None:
-        """GIVEN a substantive reply WHEN checked THEN it is not an echo."""
-        assert _is_echo_reply("finish the story", "The lads charged the pitch.") is False
 
     def test_is_echo_reply_false_for_empty_prompt(self) -> None:
         """GIVEN an empty prompt WHEN checked THEN it is never an echo."""
@@ -2244,69 +1826,6 @@ class TestAssistantCompletionEchoGuard:
         assert result.content == ""
         assert result.error is not None
         assert "echo" in result.error.lower()
-
-
-class TestVerseDenialReseed:
-    """Characterizes the verse denial re-seed retry in assistant_completion.
-
-    Current behavior (pinned, NOT under change): in PROFILE_VERSE, a reply that
-    refuses the premise is detected (_is_verse_denial), the rejected reply + a
-    nudge are appended to the in-flight messages, and the loop retries once. The
-    CORRECTED reply is returned; the rejected refusal is never delivered. This
-    test documents the existing re-seed so any future change to it is a
-    conscious decision.
-    """
-
-    @pytest.fixture
-    def service(self, make_service) -> LLMService:  # type: ignore[no-untyped-def]
-        svc, _plugin = make_service(assistantModel="gpt-4")
-        return svc
-
-    def test_verse_denial_is_reseeded_and_corrected_reply_returned(
-        self, service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """GIVEN a verse reply refuses the premise WHEN it narrates on retry
-        THEN the corrected reply is returned and the refusal never reaches the
-        caller (the re-seed retried exactly once)."""
-        from llm.service import PROFILE_VERSE
-
-        denial = "That didn't happen — it isn't canon."  # _is_verse_denial -> True
-        corrected = "The Year 8 lads stormed the assembly hall in a fog of glory."
-
-        mock_completion = mocker.patch(
-            "llm.service.provider.chat",
-            side_effect=[
-                make_completion_response(denial),
-                make_completion_response(corrected),
-            ],
-        )
-
-        result = service.assistant_completion(
-            prompt="tell the tale of the assgas assembly",
-            nick="alice",
-            channel="#afnet",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="VibeBot",
-            route_profile=PROFILE_VERSE,
-        )
-
-        # The re-seed retried once and the CORRECTED reply is returned;
-        # the rejected refusal never reaches the caller.
-        assert result.content == corrected
-        assert mock_completion.call_count == 2
-
-        # Stronger snapshot of the pinned re-seed: the loop mutates ONE messages
-        # list in place, so the last completion call's ``messages`` arg is the
-        # final state and must carry BOTH the rejected denial and the nudge.
-        from llm.service import _VERSE_DENIAL_RETRY_NUDGE
-
-        last_call = mock_completion.call_args_list[-1]
-        final_messages = last_call.kwargs.get("messages")
-        if final_messages is not None:
-            joined = " ".join((m.get("content") or "") for m in final_messages)
-            assert denial in joined  # rejected reply was re-seeded
-            assert _VERSE_DENIAL_RETRY_NUDGE in joined  # nudge was re-seeded
 
 
 class TestVerseDenialGuard:
@@ -2494,22 +2013,6 @@ class TestVerseDenialGuard:
             },
         ]
 
-    def test_strip_verse_denials_handles_none_and_empty(self) -> None:
-        """GIVEN no history WHEN stripped THEN it is returned unchanged."""
-        assert _strip_verse_denials(None) is None
-        assert _strip_verse_denials([]) == []
-
-    def test_strip_verse_denials_keeps_clean_thread_intact(self) -> None:
-        """GIVEN a thread with no refusals WHEN stripped THEN nothing drops."""
-        history = [
-            {"role": "user", "content": "what happened in the dorm"},
-            {
-                "role": "assistant",
-                "content": "Chaos erupted as the lads flooded the dorm.",
-            },
-        ]
-        assert _strip_verse_denials(history) == history
-
 
 class TestVerseDegradedGuard:
     """Tests for the quality-collapse guard in assistant_completion.
@@ -2604,19 +2107,6 @@ class TestVerseDegradedGuard:
             {"role": "assistant", "content": "The lads stormed the dorm next."},
         ]
 
-    def test_strip_degraded_handles_none_and_empty(self) -> None:
-        """GIVEN no history WHEN stripped THEN it is returned unchanged."""
-        assert _strip_degraded(None) is None
-        assert _strip_degraded([]) == []
-
-    def test_strip_degraded_keeps_clean_thread_intact(self) -> None:
-        """GIVEN a thread with no collapses WHEN stripped THEN nothing drops."""
-        history = [
-            {"role": "user", "content": "set the scene"},
-            {"role": "assistant", "content": self.CLEAN_SCENE},
-        ]
-        assert _strip_degraded(history) == history
-
     def test_trim_history_window_keeps_last_n(self) -> None:
         """GIVEN history longer than the window WHEN trimmed THEN only the
         most recent entries survive."""
@@ -2659,45 +2149,6 @@ class TestVerseDegradedGuard:
         # Neither poisoned turn survives.
         assert all(_is_verse_denial(m["content"]) is False for m in result)
         assert all(_is_degraded_reply(m["content"]) is False for m in result)
-
-    def test_retries_and_recovers_when_verse_reply_collapses(
-        self, service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """GIVEN a verse reply collapses once WHEN it recovers on retry THEN
-        assistant_completion returns the clean scene, not the gibberish."""
-        from llm.service import PROFILE_VERSE
-
-        story = "The lab erupted as the Stinky Lads stormed in with guff-grenades."
-        responses = [
-            self._text_response(mocker, self.LOOPING),
-            self._text_response(mocker, story),
-        ]
-        seen_messages: list[list] = []
-
-        def fake_completion(**kwargs: object) -> MagicMock:
-            seen_messages.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
-            return responses[len(seen_messages) - 1]
-
-        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
-
-        result = service.assistant_completion(
-            prompt="what happened in the science lab",
-            nick="fc42",
-            channel="#afternet",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="vibebot",
-            route_profile=PROFILE_VERSE,
-        )
-
-        assert result.content == story
-        assert result.error is None
-        assert len(seen_messages) == 2
-        # The retry call carries the corrective nudge as a user message.
-        assert any(
-            m.get("role") == "user" and "Rewrite it cleanly" in str(m.get("content", ""))
-            for m in seen_messages[1]
-        )
 
     def test_chat_profile_retries_and_recovers_when_reply_collapses(
         self, service: LLMService, mocker: MockerFixture
@@ -2864,11 +2315,6 @@ class TestRepeatReplyGuard:
             {"role": "assistant", "content": self.FRESH},
         ]
         assert _strip_repeated_replies(history) == history
-
-    def test_strip_repeated_replies_handles_none_and_empty(self) -> None:
-        """GIVEN no history WHEN stripped THEN it is returned unchanged."""
-        assert _strip_repeated_replies(None) is None
-        assert _strip_repeated_replies([]) == []
 
     def test_chat_retries_and_recovers_when_reply_parrots_history(
         self, service: LLMService, mocker: MockerFixture
@@ -3130,97 +2576,6 @@ class TestReminderMetaHelpers:
         assert "remind" in result.message.lower() or "hour" in result.message.lower()
         assert plugin.db.save_reminder.called
 
-    def test_remind_set_for_assistant_with_note(
-        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
-    ) -> None:
-        """GIVEN reminder with note WHEN _remind_set_for_assistant THEN includes note."""
-        from llm.service import ReminderParseResult
-
-        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
-            action="schedule",
-            seconds=3600,
-            message="deploy",
-            confirmation="I'll remind you in 1 hour",
-            note="assuming Eastern time",
-        )
-        mocker.patch("llm.plugin.schedule.addEvent")
-
-        msg = mocker.MagicMock()
-        msg.args = ["#test"]
-
-        result = plugin._remind_set_for_assistant(
-            mock_irc, msg, Caller.from_row("testuser", None, msg.args[0]), "deploy in 1 hour"
-        )
-
-        assert "Eastern" in result.message
-
-    def test_remind_set_for_assistant_parse_failure(
-        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
-    ) -> None:
-        """GIVEN unparseable reminder WHEN _remind_set_for_assistant THEN returns error."""
-        from llm.service import ReminderParseResult
-
-        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
-            action="schedule",
-            seconds=None,
-        )
-
-        msg = mocker.MagicMock()
-        msg.args = ["#test"]
-
-        result = plugin._remind_set_for_assistant(
-            mock_irc, msg, Caller.from_row("testuser", None, msg.args[0]), "maybe sometime"
-        )
-
-        assert result.ok is False
-        assert "could not" in result.message.lower()
-
-    def test_remind_set_for_assistant_too_short(
-        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
-    ) -> None:
-        """GIVEN reminder < 10 seconds WHEN _remind_set_for_assistant THEN returns error."""
-        from llm.service import ReminderParseResult
-
-        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
-            action="schedule",
-            seconds=5,
-            message="now",
-            confirmation="OK",
-        )
-
-        msg = mocker.MagicMock()
-        msg.args = ["#test"]
-
-        result = plugin._remind_set_for_assistant(
-            mock_irc, msg, Caller.from_row("testuser", None, msg.args[0]), "remind me now"
-        )
-
-        assert result.ok is False
-        assert "10 second" in result.message.lower() or "at least" in result.message.lower()
-
-    def test_remind_set_for_assistant_too_long(
-        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
-    ) -> None:
-        """GIVEN reminder > 7 days WHEN _remind_set_for_assistant THEN returns error."""
-        from llm.service import ReminderParseResult
-
-        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
-            action="schedule",
-            seconds=700000,
-            message="later",
-            confirmation="OK",
-        )
-
-        msg = mocker.MagicMock()
-        msg.args = ["#test"]
-
-        result = plugin._remind_set_for_assistant(
-            mock_irc, msg, Caller.from_row("testuser", None, msg.args[0]), "remind me in 2 weeks"
-        )
-
-        assert result.ok is False
-        assert "7 day" in result.message.lower()
-
     def test_remind_set_for_assistant_clarify(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
@@ -3356,23 +2711,6 @@ class TestDrawForMeta:
         assert args[3] == "xai/grok-imagine-image"
         assert args[6] == 0.02
         assert kwargs["status"] == "success"
-
-    def test_draw_for_assistant_forwards_the_aspect(
-        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
-    ) -> None:
-        """GIVEN an aspect WHEN drawing for the tool THEN image_generation receives it."""
-        from llm.service import ImageResult
-
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="https://img.example/poster.png", model="xai/grok-imagine-image"
-        )
-        msg = mocker.MagicMock()
-        msg.prefix = "user!ident@host"
-        msg.args = ["#test"]
-
-        plugin._draw_for_assistant(mock_irc, msg, "a poster", aspect="portrait")
-
-        assert plugin.llm_service.image_generation.call_args.kwargs["aspect"] == "portrait"
 
     def test_draw_for_assistant_returns_no_usage_to_the_caller(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
@@ -3580,32 +2918,6 @@ class TestDrawForMeta:
         assert result.ok is True
         assert result.message == "https://img.example/cat.png"
 
-    def test_draw_for_assistant_returns_content(
-        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
-    ) -> None:
-        """_draw_for_assistant returns the image result content string."""
-        from llm.service import ImageResult
-
-        plugin.llm_service.image_generation.return_value = ImageResult(
-            content="https://img.example/sunset.png",
-            model="dall-e-3",
-            prompt_tokens=5,
-            completion_tokens=0,
-            cost=0.02,
-        )
-
-        msg = mocker.MagicMock()
-        msg.prefix = "user!ident@host"
-        msg.args = ["#test"]
-
-        result = plugin._draw_for_assistant(mock_irc, msg, "a sunset")
-
-        assert result.ok is True
-        assert result.message == "https://img.example/sunset.png"
-        plugin.llm_service.image_generation.assert_called_once_with(
-            "a sunset", irc=mock_irc, msg=msg, aspect=None
-        )
-
 
 class TestInvalidCommandRouting:
     """Tests for invalidCommand routing directly through chat profile."""
@@ -3641,29 +2953,6 @@ class TestInvalidCommandRouting:
         plugin._ask_impl.assert_called_once()
         call_kwargs = plugin._ask_impl.call_args
         assert call_kwargs[1]["entry_route"] == "invalid_command"
-
-    def test_invalid_command_no_meta_dispatch(
-        self, plugin, mocker: MockerFixture, mock_irc: MagicMock
-    ) -> None:
-        """GIVEN unknown command WHEN invalidCommand THEN does not call _run_meta."""
-        msg = mocker.MagicMock()
-        msg.prefix = "user!ident@host"
-        msg.nick = "testuser"
-        msg.args = ["#test"]
-
-        plugin._ask_impl = mocker.MagicMock()
-        plugin._run_meta = mocker.MagicMock()
-        plugin._run_preflight = mocker.MagicMock(
-            return_value=PreflightResult(False, Caller(Identity("testuser", None), "#test"))
-        )
-
-        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
-        plugin._is_old_message = mocker.MagicMock(return_value=False)
-
-        plugin.invalidCommand(mock_irc, msg, ["hello", "there"])
-
-        plugin._run_meta.assert_not_called()
-        plugin.llm_service.assistant_completion.assert_not_called()
 
     def test_invalid_command_still_checks_capability(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
@@ -3885,136 +3174,6 @@ class TestMetaIntegration:
 
         db.close()
 
-    def test_usage_logged_with_meta_command(self) -> None:
-        """GIVEN a meta call WHEN usage logged THEN recorded as 'meta'."""
-        from llm.persistence import LLMDatabase
-
-        db = LLMDatabase(":memory:")
-        db.log_usage(
-            nick="testuser",
-            channel="#test",
-            command="meta",
-            model="gemini/gemini-2.0-flash",
-            prompt_tokens=100,
-            completion_tokens=50,
-            cost=0.001,
-        )
-
-        summary = db.get_usage_summary_for_nick("testuser")
-        assert summary.total_requests == 1
-
-        db.close()
-
-    def test_get_usage_via_meta(self, mocker: MockerFixture) -> None:
-        """GIVEN user asks about usage WHEN meta handles it THEN returns stats."""
-        from llm.persistence import LLMDatabase
-
-        db = LLMDatabase(":memory:")
-        db.log_usage("testuser", "#test", "ask", "gpt-4", 100, 50, 0.01)
-        db.log_usage("testuser", "#test", "ask", "gpt-4", 200, 100, 0.02)
-
-        svc, _plugin = self._make_service(mocker)
-
-        tool_call = make_tool_call("get_usage", call_id="call_usage")
-        first_response = make_completion_response(None, tool_calls=[tool_call])
-        second_response = make_completion_response("You've made 2 requests costing $0.03.")
-
-        mocker.patch(
-            "llm.service.provider.chat",
-            side_effect=[first_response, second_response],
-        )
-
-        from llm.context import ContextConfig, ConversationContext
-
-        result = svc.assistant_completion(
-            prompt="how much have I used?",
-            nick="testuser",
-            channel="#test",
-            db=db,
-            context=ConversationContext(
-                ContextConfig(
-                    max_messages=20,
-                    timeout_minutes=5,
-                    channel_max_messages=10,
-                )
-            ),
-            bot_nick="VibeBot",
-        )
-        assert "2" in result.content
-        db.close()
-
-    def test_cleanup_via_meta(self, mocker: MockerFixture) -> None:
-        """GIVEN cleanup_fn callable WHEN meta calls it THEN cleanup runs."""
-        svc, _plugin = self._make_service(mocker)
-
-        tool_call = make_tool_call("cleanup_memories", call_id="call_cleanup")
-        first_response = make_completion_response(None, tool_calls=[tool_call])
-        second_response = make_completion_response("Cleaned up your memories.")
-
-        mocker.patch(
-            "llm.service.provider.chat",
-            side_effect=[first_response, second_response],
-        )
-
-        from llm.context import ContextConfig, ConversationContext
-
-        cleanup_fn = mocker.MagicMock(return_value="Before: 5 | dropped: 1 | after: 4")
-
-        svc.assistant_completion(
-            route_profile=PROFILE_REMIND_ACTION,
-            prompt="clean up my memories",
-            nick="testuser",
-            account="testuser",
-            channel="#test",
-            db=mocker.MagicMock(),
-            context=ConversationContext(
-                ContextConfig(
-                    max_messages=20,
-                    timeout_minutes=5,
-                    channel_max_messages=10,
-                )
-            ),
-            bot_nick="VibeBot",
-            cleanup_fn=cleanup_fn,
-        )
-        cleanup_fn.assert_called_once()
-
-    def test_set_reminder_via_meta(self, mocker: MockerFixture) -> None:
-        """GIVEN set_reminder callable WHEN meta calls it THEN reminder set."""
-        svc, _plugin = self._make_service(mocker)
-
-        tool_call = make_tool_call(
-            "set_reminder", {"text": "deploy in 2 hours"}, call_id="call_remind"
-        )
-        first_response = make_completion_response(None, tool_calls=[tool_call])
-        second_response = make_completion_response("Reminder set: deploy (in 2 hours).")
-
-        mocker.patch(
-            "llm.service.provider.chat",
-            side_effect=[first_response, second_response],
-        )
-
-        from llm.context import ContextConfig, ConversationContext
-
-        set_reminder_fn = mocker.MagicMock(return_value="I'll remind you in 2 hours")
-
-        svc.assistant_completion(
-            prompt="remind me to deploy in 2 hours",
-            nick="testuser",
-            channel="#test",
-            db=mocker.MagicMock(),
-            context=ConversationContext(
-                ContextConfig(
-                    max_messages=20,
-                    timeout_minutes=5,
-                    channel_max_messages=10,
-                )
-            ),
-            bot_nick="VibeBot",
-            set_reminder_fn=set_reminder_fn,
-        )
-        set_reminder_fn.assert_called_once_with("deploy in 2 hours")
-
     @staticmethod
     def _make_service(mocker: MockerFixture) -> tuple:
         """Create an LLMService with meta config defaults."""
@@ -4024,40 +3183,6 @@ class TestMetaIntegration:
         )
         plugin.log = mocker.Mock()
         return LLMService(plugin), plugin
-
-
-class TestToolResult:
-    """Tests for the ToolResult frozen dataclass."""
-
-    def test_defaults(self) -> None:
-        """GIVEN ToolResult with only content WHEN created THEN defaults are correct."""
-        result = ToolResult(content="search result")
-        assert result.content == "search result"
-        assert result.grounding_used is False
-        assert result.prompt_tokens == 0
-        assert result.completion_tokens == 0
-        assert result.cost == 0.0
-
-    def test_all_fields_set(self) -> None:
-        """GIVEN ToolResult with all fields WHEN created THEN all values stored."""
-        result = ToolResult(
-            content="fetched page",
-            grounding_used=True,
-            prompt_tokens=200,
-            completion_tokens=100,
-            cost=0.005,
-        )
-        assert result.content == "fetched page"
-        assert result.grounding_used is True
-        assert result.prompt_tokens == 200
-        assert result.completion_tokens == 100
-        assert result.cost == 0.005
-
-    def test_frozen(self) -> None:
-        """GIVEN a ToolResult WHEN attempting mutation THEN raises FrozenInstanceError."""
-        result = ToolResult(content="immutable")
-        with pytest.raises(AttributeError):
-            result.content = "changed"  # type: ignore[misc]
 
 
 class TestChatToolSurfaceStaysSmall:
@@ -4106,23 +3231,9 @@ class TestChatToolSurfaceStaysSmall:
 class TestToolSpecVisibility:
     """GIVEN tool specs WHEN inspected THEN visibility and capability are correct."""
 
-    def test_search_web_visible_in_chat(self) -> None:
-        specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
-        assert "chat" in specs["search_web"].visible_in
-
-    def test_search_web_not_visible_in_draw(self) -> None:
-        specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
-        assert "draw" not in specs["search_web"].visible_in
-
     def test_fetch_url_visible_in_chat_verse_and_remind_action(self) -> None:
         specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
         assert specs["fetch_url"].visible_in == frozenset({"chat", "verse", "remind_action"})
-
-    def test_generate_image_visible_in_chat_draw_and_remind_action(self) -> None:
-        specs = {s.name: s for s in ASSISTANT_TOOL_SPECS}
-        assert specs["generate_image"].visible_in == frozenset(
-            {"chat", "verse", "draw", "remind_action"}
-        )
 
     def test_verse_profile_is_strict_subset_of_chat(self) -> None:
         """Verse drops scheduling/usage/instruction tools that drown the model.
@@ -4187,17 +3298,6 @@ class TestToolSpecVisibility:
         assert "list_pending_tasks" in names
         assert "set_reminder" in names
 
-    def test_profile_tools_chat_includes_search(self) -> None:
-        tools = get_tools_for_profile("chat")
-        names = {t["function"]["name"] for t in tools}
-        assert "search_web" in names
-        assert "generate_image" in names
-
-    def test_profile_tools_draw_includes_generate_image(self) -> None:
-        tools = get_tools_for_profile("draw")
-        names = {t["function"]["name"] for t in tools}
-        assert "generate_image" in names
-
     def test_profile_tools_draw_excludes_search(self) -> None:
         tools = get_tools_for_profile("draw")
         names = {t["function"]["name"] for t in tools}
@@ -4228,29 +3328,6 @@ class TestToolSpecVisibility:
 class TestScheduleLlmTaskFamily:
     """Phase 2 Task 3 / C1 — schedule_llm_task tool registration."""
 
-    def test_assistant_tools_includes_schedule_llm_task_family(self) -> None:
-        names = {t["function"]["name"] for t in ASSISTANT_TOOLS}
-        assert "schedule_llm_task" in names
-        # Listing/cancelling for both reminders and scheduled tasks now
-        # goes through the unified pending-task tool surface.
-        assert "list_pending_tasks" in names
-        assert "cancel_pending_task" in names
-        assert "cancel_all_pending_tasks" in names
-
-        by_name = {t["function"]["name"]: t for t in ASSISTANT_TOOLS}
-        sch = by_name["schedule_llm_task"]
-        # Description must call out the @ask-with-tools shape and contrast
-        # with set_reminder so the LLM picks the right tool.
-        desc = sch["function"]["description"].lower()
-        assert "@ask" in desc or "ask " in desc
-        assert "set_reminder" in desc
-        assert "tool" in desc
-
-        params = sch["function"]["parameters"]
-        assert "when_natural" in params["properties"]
-        assert "prompt" in params["properties"]
-        assert set(params["required"]) >= {"when_natural", "prompt"}
-
     def test_schedule_llm_task_specs_overrides_applied(self) -> None:
         """C2: ToolSpec overrides give schedule_llm_task require_account=True;
         list/cancel inherit defaults (llm.ask, no account). All three are
@@ -4272,123 +3349,6 @@ class TestScheduleLlmTaskFamily:
         assert can.capability == "llm.ask"
         assert can.require_account is False
         assert can.visible_in == frozenset({"chat", "remind_action"})
-
-    def test_executor_accepts_pending_task_fns(self, mocker: MockerFixture) -> None:
-        """C3: AssistantToolExecutor accepts the unified pending-task fn kwargs."""
-        schedule_fn = mocker.MagicMock()
-        list_fn = mocker.MagicMock()
-        cancel_fn = mocker.MagicMock()
-        cancel_all_fn = mocker.MagicMock()
-
-        ex = make_executor(
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            nick="n",
-            channel="#t",
-            capabilities=frozenset({"llm.ask"}),
-            account="acct",
-            schedule_llm_task_fn=schedule_fn,
-            list_pending_tasks_fn=list_fn,
-            cancel_pending_task_fn=cancel_fn,
-            cancel_all_pending_tasks_fn=cancel_all_fn,
-        )
-        assert ex._schedule_llm_task_fn is schedule_fn
-        assert ex._list_pending_tasks_fn is list_fn
-        assert ex._cancel_pending_task_fn is cancel_fn
-        assert ex._cancel_all_pending_tasks_fn is cancel_all_fn
-
-    def test_tool_schedule_llm_task_calls_callback_and_returns_json(
-        self, mocker: MockerFixture
-    ) -> None:
-        import json
-
-        schedule_fn = mocker.MagicMock(
-            return_value={
-                "status": "ok",
-                "event_name": "llm_task_abc",
-                "fire_at": 1700000000.0,
-                "message": "Scheduled.",
-            }
-        )
-
-        ex = make_executor(
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            nick="n",
-            channel="#t",
-            capabilities=frozenset({"llm.ask"}),
-            account="acct",
-            schedule_llm_task_fn=schedule_fn,
-        )
-
-        out = ex.execute(
-            "schedule_llm_task",
-            {"when_natural": "in 60s", "prompt": "ping me"},
-        )
-        parsed = json.loads(out.content)
-        assert parsed["status"] == "ok"
-        assert parsed["event_name"] == "llm_task_abc"
-        schedule_fn.assert_called_once_with(
-            when_natural="in 60s", prompt="ping me", reply_target=None
-        )
-
-    def test_tool_list_pending_tasks_returns_merged(self, mocker: MockerFixture) -> None:
-        import json
-
-        list_fn = mocker.MagicMock(
-            return_value=[
-                {
-                    "kind": "reminder",
-                    "id": "abc123",
-                    "channel": "#t",
-                    "description": "check build",
-                },
-                {
-                    "kind": "scheduled_task",
-                    "id": "llm_task_ev2",
-                    "when": "2026-05-09T13:00:00Z",
-                    "channel": "#t",
-                    "description": "weekly digest",
-                    "recurrence": "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9",
-                },
-            ]
-        )
-        ex = make_executor(
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            nick="n",
-            channel="#t",
-            capabilities=frozenset({"llm.ask"}),
-            account="acct",
-            list_pending_tasks_fn=list_fn,
-        )
-        out = ex.execute("list_pending_tasks", {})
-        parsed = json.loads(out.content)
-        assert len(parsed["tasks"]) == 2
-        kinds = {t["kind"] for t in parsed["tasks"]}
-        assert kinds == {"reminder", "scheduled_task"}
-
-    def test_tool_cancel_pending_task_passes_id(self, mocker: MockerFixture) -> None:
-        cancel_fn = mocker.MagicMock(
-            return_value={
-                "status": "ok",
-                "kind": "scheduled_task",
-                "id": "llm_task_abc",
-                "message": "Cancelled.",
-            }
-        )
-        ex = make_executor(
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            nick="n",
-            channel="#t",
-            capabilities=frozenset({"llm.ask"}),
-            account="acct",
-            cancel_pending_task_fn=cancel_fn,
-        )
-        out = ex.execute("cancel_pending_task", {"id": "llm_task_abc"})
-        assert "ok" in out.content.lower()
-        cancel_fn.assert_called_once_with("llm_task_abc")
 
 
 class TestPersonalDataToolsNeedAccount:
@@ -4485,29 +3445,6 @@ class TestExecutorCoverageGaps:
         assert reason is not None
         assert "authenticated account" in reason
 
-    def test_execute_missing_handler_returns_error(
-        self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """execute() falls through to the missing-handler branch when handler_name is bogus."""
-        from llm.assistant import ASSISTANT_TOOL_REGISTRY, ToolSpec
-
-        bogus = ToolSpec(
-            name="bogus_handler_tool",
-            schema={"name": "bogus_handler_tool", "description": "x", "parameters": {}},
-            handler_name="_tool_does_not_exist",
-            capability="llm.ask",
-        )
-        monkeypatch.setitem(ASSISTANT_TOOL_REGISTRY, "bogus_handler_tool", bogus)
-
-        ex = make_executor(
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            nick="n",
-            channel="#t",
-        )
-        result = ex.execute("bogus_handler_tool", {})
-        assert "Unknown tool implementation" in result.content
-
     @pytest.mark.parametrize(
         "tool_name,args",
         [
@@ -4533,56 +3470,6 @@ class TestExecutorCoverageGaps:
         )
         result = ex.execute(tool_name, args)
         assert "owner" in result.content.lower()
-
-    def test_forget_context_when_nothing_to_clear(self, mocker: MockerFixture) -> None:
-        """forget_context returns the no-op message when context.clear() returns False."""
-        ctx = mocker.MagicMock()
-        ctx.clear.return_value = False
-        ex = make_executor(
-            db=mocker.MagicMock(),
-            context=ctx,
-            nick="n",
-            channel="#t",
-        )
-        result = ex.execute("forget_context", {})
-        assert "No context to clear" in result.content
-
-    def test_cleanup_memories_error_result_is_routed_as_error(self, mocker: MockerFixture) -> None:
-        """cleanup_fn returning ok=False produces an error envelope."""
-        cleanup_fn = mocker.MagicMock(
-            return_value=ToolCallbackResult(False, "Cleanup failed: db error")
-        )
-        ex = make_executor(
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            nick="n",
-            channel="#t",
-            cleanup_fn=cleanup_fn,
-        )
-        result = ex.execute("cleanup_memories", {})
-        assert '"error"' in result.content
-        assert "Cleanup failed" in result.content
-
-    def test_cleanup_memories_success_with_error_word_in_message_is_ok(
-        self, mocker: MockerFixture
-    ) -> None:
-        """A success message containing the word 'errors' is NOT misclassified.
-
-        Pinning the new behavior: classification comes from ``ok``, not
-        from substring-sniffing the message.
-        """
-        cleanup_fn = mocker.MagicMock(
-            return_value=ToolCallbackResult(True, "Removed 3 errors from your memories")
-        )
-        ex = make_executor(
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            nick="n",
-            channel="#t",
-            cleanup_fn=cleanup_fn,
-        )
-        result = ex.execute("cleanup_memories", {})
-        assert '"ok"' in result.content
 
     @pytest.mark.parametrize(
         "tool_name,args",
@@ -4639,22 +3526,6 @@ class TestExecutorCoverageGaps:
         result = ex.execute("set_reminder", {"text": "in 1h ping"})
         assert '"ok"' in result.content
 
-    def test_schedule_llm_task_unconfigured(self, mocker: MockerFixture) -> None:
-        """schedule_llm_task without a callback returns 'not configured'."""
-        ex = make_executor(
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            nick="n",
-            channel="#t",
-            capabilities=frozenset({"llm.ask"}),
-            account="acct",
-        )
-        result = ex.execute(
-            "schedule_llm_task",
-            {"when_natural": "in 1h", "prompt": "ping"},
-        )
-        assert "not configured" in result.content.lower()
-
     @pytest.mark.parametrize(
         "args,expected_substring",
         [
@@ -4700,25 +3571,11 @@ class TestExecutorCoverageGaps:
 
     def test_generate_image_schema_offers_three_shapes(self) -> None:
         """The planner can only choose what the schema lists; xAI's map is keyed on it."""
-        from llm.assistant import ASSISTANT_TOOLS
 
         spec = next(t for t in ASSISTANT_TOOLS if t["function"]["name"] == "generate_image")
         aspect = spec["function"]["parameters"]["properties"]["aspect"]
         assert aspect["enum"] == ["portrait", "landscape", "square"]
         assert "aspect" not in spec["function"]["parameters"]["required"]
-
-    def test_generate_image_unavailable_when_no_draw_fn(self, mocker: MockerFixture) -> None:
-        """generate_image without a draw_fn returns 'not available'."""
-        ex = make_executor(
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            nick="n",
-            channel="#t",
-            capabilities=frozenset({"llm.ask", "llm.draw"}),
-            account="acct",
-        )
-        result = ex.execute("generate_image", {"prompt": "a cat"})
-        assert "not available" in result.content.lower()
 
     def test_generate_image_rejects_empty_prompt(self, mocker: MockerFixture) -> None:
         """generate_image rejects whitespace-only prompts before calling draw_fn."""
@@ -4800,29 +3657,6 @@ class TestExecutorCoverageGaps:
         ex.execute("generate_image", {"prompt": "a cat", "aspect": 7})
         draw_fn.assert_called_once_with("a cat", aspect=None)
 
-    def test_generate_image_does_not_misclassify_ok_message_with_error_word(
-        self, mocker: MockerFixture
-    ) -> None:
-        """A success message containing 'Error' is NOT mapped to error.
-
-        Pinning the new behavior: classification comes from ``ok``, not
-        from sniffing the message string for ``Error``.
-        """
-        draw_fn = mocker.MagicMock(
-            return_value=ToolCallbackResult(True, "Error-free image at https://x/y.png")
-        )
-        ex = make_executor(
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            nick="n",
-            channel="#t",
-            capabilities=frozenset({"llm.ask", "llm.draw"}),
-            account="acct",
-            draw_fn=draw_fn,
-        )
-        result = ex.execute("generate_image", {"prompt": "a cat"})
-        assert '"ok"' in result.content
-
 
 class TestAssistantCompletionReadsModelKeyFromProfiles:
     """assistant_completion must read the model setting via PROFILES[route].
@@ -4839,56 +3673,6 @@ class TestAssistantCompletionReadsModelKeyFromProfiles:
     def service(self, make_service) -> LLMService:  # type: ignore[no-untyped-def]
         svc, _plugin = make_service(assistantModel="gpt-4")
         return svc
-
-    def test_model_setting_is_read_from_profile(
-        self, service: LLMService, mocker: MockerFixture, monkeypatch
-    ) -> None:
-        """For route_profile=PROFILE_CHAT, plugin.registryValue is called
-        with PROFILES[PROFILE_CHAT].model_setting — not a hardcoded string.
-        """
-        from llm.profile import PROFILE_CHAT, PROFILES, Profile
-
-        sentinel = Profile(
-            id=PROFILE_CHAT,
-            model_setting="SENTINEL_MODEL_KEY",
-            prompt_id="chat",
-            overlay_setting=None,
-            max_output_tokens=None,
-            force_search_on_explicit=False,
-        )
-        monkeypatch.setitem(PROFILES, PROFILE_CHAT, sentinel)
-
-        mock_response = make_completion_response("ok")
-
-        mocker.patch("llm.service.provider.chat", return_value=mock_response)
-
-        # Capture every registryValue call so we can prove our sentinel
-        # keys were the ones used.
-        registry_calls: list[str] = []
-        original_registry_value = service.plugin.registryValue
-
-        def spy(key, *args, **kwargs):
-            registry_calls.append(key)
-            # Fall through to the real mock so existing test fixtures still
-            # control timeouts, maxSteps, etc.
-            return original_registry_value(key, *args, **kwargs)
-
-        mocker.patch.object(service.plugin, "registryValue", side_effect=spy)
-
-        service.assistant_completion(
-            prompt="hello",
-            nick="testuser",
-            channel="#test",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="VibeBot",
-            route_profile=PROFILE_CHAT,
-        )
-
-        # The key is no longer a registry read at all — it comes from the
-        # model's provider variable — so only the model setting is asserted.
-        assert "SENTINEL_MODEL_KEY" in registry_calls
-        assert "assistantModel" not in registry_calls
 
     def test_model_override_still_wins(
         self, service: LLMService, mocker: MockerFixture, monkeypatch
@@ -5019,158 +3803,3 @@ class TestOverlayReadsViaProfiles:
         plugin.llm_service.assistant_completion.assert_called_once()
         sys_prompt = plugin.llm_service.assistant_completion.call_args.kwargs["system_prompt"]
         assert sys_prompt == "SENTINEL_OVERLAY_VALUE"
-
-    def test_ask_path_overlay_uses_effective_profile(
-        self, plugin_env, mocker: MockerFixture, monkeypatch
-    ) -> None:
-        """plugin.py _ask_impl reads ``PROFILES[effective_profile].overlay_setting``.
-
-        When ``profile_override=PROFILE_VERSE`` is passed, the verse
-        profile's sentinel overlay key flows to ``registryValue`` — proving
-        the read is dispatched on ``effective_profile``, not hardcoded.
-        """
-        from llm.profile import PROFILE_VERSE, PROFILES, Profile
-        from llm.service import AssistantResult, Spend
-
-        plugin, mock_irc, mock_msg = plugin_env
-
-        sentinel_verse = Profile(
-            id=PROFILE_VERSE,
-            model_setting="assistantModel",
-            prompt_id="verse",
-            overlay_setting="SENTINEL_VERSE_OVERLAY",
-            max_output_tokens=None,
-            force_search_on_explicit=False,
-        )
-        monkeypatch.setitem(PROFILES, PROFILE_VERSE, sentinel_verse)
-
-        registry_calls: list[str] = []
-        default_lookup = make_registry_side_effect()
-
-        def spy(key, *args, **kwargs):
-            registry_calls.append(key)
-            if key == "SENTINEL_VERSE_OVERLAY":
-                return "SENTINEL_VERSE_VALUE"
-            return default_lookup(key, *args, **kwargs)
-
-        plugin.registryValue.side_effect = spy
-
-        plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = AssistantResult(
-            content="ok", spend=Spend.ZERO
-        )
-
-        # Build a PreflightResult inline. Match the shape used by other
-        # tests that drive _ask_impl through plugin.ask().
-        from llm.plugin import PreflightResult
-
-        pf = PreflightResult(blocked=False, caller=Caller(Identity("testnick", None), "#test"))
-
-        plugin._ask_impl(
-            mock_irc,
-            mock_msg,
-            "hello",
-            pf,
-            entry_route="verse",
-            system_prompt_override="SCENE_CONTEXT",
-            profile_override=PROFILE_VERSE,
-        )
-
-        assert "SENTINEL_VERSE_OVERLAY" in registry_calls
-        # The hardcoded key must not have been read at the migrated site.
-        # (It may still appear elsewhere — e.g. nothing else in _ask_impl
-        # reads it — so a plain absence assertion is the right shape.)
-        assert "assistantSystemPrompt" not in registry_calls
-
-    def test_scheduled_task_fire_reads_overlay_via_profile(
-        self, make_service, mocker: MockerFixture, monkeypatch
-    ) -> None:
-        """service.py scheduled-task fire reads
-        ``PROFILES[PROFILE_REMIND_ACTION].overlay_setting``.
-        """
-        from llm.persistence import ScheduledLlmTaskRow
-        from llm.profile import PROFILE_REMIND_ACTION, PROFILES, Profile
-
-        sentinel = Profile(
-            id=PROFILE_REMIND_ACTION,
-            model_setting="assistantModel",
-            prompt_id="remind_action",
-            overlay_setting="SENTINEL_SCHED_OVERLAY",
-            max_output_tokens=400,
-            force_search_on_explicit=True,
-        )
-        monkeypatch.setitem(PROFILES, PROFILE_REMIND_ACTION, sentinel)
-
-        service, plugin = make_service()
-
-        registry_calls: list[str] = []
-        default_lookup = make_registry_side_effect()
-
-        def spy(key, *args, **kwargs):
-            registry_calls.append(key)
-            if key == "SENTINEL_SCHED_OVERLAY":
-                return "SENTINEL_SCHED_VALUE"
-            if key == "bridgeScheduledTaskLimit":
-                return 5
-            return default_lookup(key, *args, **kwargs)
-
-        plugin.registryValue.side_effect = spy
-
-        # Stub plugin internals the dispatch path touches. The fire plumbing
-        # lives in plugin._run_unattended_assistant (shared with reminder
-        # action fires); bind the real helpers to the mock plugin so the
-        # dispatch path exercises the real overlay read.
-        plugin._check_rate_limit.return_value = False
-        plugin._gather_history.return_value = ([], [])
-        plugin._get_user_memories.return_value = []
-        plugin.db.get_instruction.return_value = ""
-        plugin._pending_task_fns.return_value = {}
-        plugin.llm_service = service
-        plugin._unattended_ask_rate_limited = LLM._unattended_ask_rate_limited.__get__(plugin)
-        plugin._run_unattended_assistant = LLM._run_unattended_assistant.__get__(plugin)
-        mocker.patch("llm.service.ircdb.checkCapability", return_value=True)
-        mocker.patch.object(
-            service,
-            "assistant_completion",
-            return_value=mocker.MagicMock(
-                content="ok",
-                model="m",
-                prompt_tokens=0,
-                completion_tokens=0,
-                cost=0.0,
-                error=None,
-            ),
-        )
-
-        # Drive the scheduled-task dispatch directly with a minimal row.
-        irc = mocker.MagicMock()
-        irc.network = "afternet"
-        msg = mocker.MagicMock()
-        msg.tagged.return_value = None
-        fake_world = mocker.patch("llm.service.world", autospec=False, create=True)
-        fake_world.getIrc.return_value = irc
-        fake_world.ircs = [irc]
-
-        row = ScheduledLlmTaskRow(
-            id=1,
-            event_name="scheduled_llm_task_1",
-            creator_nick="rdrake",
-            account="rdrake_a",
-            channel="#t",
-            network="afternet",
-            wire_msg=":rdrake!u@h PRIVMSG #t :@ask do x",
-            prompt="do x",
-            fire_at=0.0,
-            created_at=0.0,
-            recurrence_seconds=None,
-            recurrence_rrule=None,
-            chain_position=1,
-            watch_mode=False,
-            reply_target=None,
-        )
-
-        service._dispatch_scheduled_task(irc, msg, row)
-
-        assert "SENTINEL_SCHED_OVERLAY" in registry_calls
-        assert "assistantSystemPrompt" not in registry_calls

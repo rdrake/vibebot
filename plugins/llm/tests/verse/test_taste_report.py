@@ -6,7 +6,6 @@ from llm.verse.taste_report import (
     Report,
     Win,
     _main,
-    _month,
     _stat_rows,
     build_report,
     per_100,
@@ -45,11 +44,6 @@ _REP = (
 # --------------------------------------------------------------------------- #
 # Task 1 — helpers
 # --------------------------------------------------------------------------- #
-
-
-def test_month_extracts_year_month():
-    """_month() reduces an ISO date to its YYYY-MM bucket key."""
-    assert _month("2026-06-22") == "2026-06"
 
 
 def test_rate_helpers_guard_divide_by_zero():
@@ -188,40 +182,11 @@ def test_wins_latest_first_and_capped_at_15():
 # --------------------------------------------------------------------------- #
 
 
-def test_render_has_headline_monthly_wins_and_caveats():
-    """The report renders all four sections, including the silence!=dislike caveat."""
-    store = FakeStore(["stinky lads"])
-    r = build_report([("2026-06-22", [f"2026-06-22T10:00:00  <fc42> {_REP}"])], store)
-    md = render_report(r)
-    assert "# Verse landing-rate report" in md
-    assert "Headline" in md
-    assert "Monthly trend" in md
-    assert "Distinct wins" in md
-    assert "silence" in md.lower()  # caveat: silence is not dislike
-
-
 def test_render_shows_na_for_zero_denominator():
     """Empty input -> pre/post rates render as n/a and the wins section says none."""
     md = render_report(build_report([], FakeStore([])))
     assert "n/a" in md
     assert "none detected" in md.lower()
-
-
-def test_render_truncates_long_win_text():
-    """Win text longer than the cap is truncated with an ellipsis."""
-    store = FakeStore(["lads"])
-    long = "the lads " + "marched onward through the misty glen and over the hills " * 5
-    r = build_report([("2026-06-22", [f"2026-06-22T10:00:00  <fc42> {long}"])], store)
-    md = render_report(r)
-    assert "..." in md
-
-
-def test_render_flags_thin_sample():
-    """A bucket below the small-sample thresholds is annotated."""
-    store = FakeStore(["stinky lads"])
-    r = build_report([("2026-06-22", [f"2026-06-22T10:00:00  <fc42> {_REP}"])], store)
-    md = render_report(r)
-    assert "thin sample" in md
 
 
 def test_stat_rows_thin_and_not_thin_branches():

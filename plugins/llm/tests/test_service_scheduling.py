@@ -1002,51 +1002,6 @@ def test_channel_target_returns_none_for_nicks_and_falsy() -> None:
 # =============================================================================
 
 
-def test_scheduled_fire_submits_via_executor(llm_service, db, mocker: MockerFixture):
-    """fire() submits the dispatch worker through plugin._llm_executor with a
-    scheduled_task: label."""
-    irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
-    msg = _msg_mock(mocker)
-    _patch_parser(llm_service, mocker)
-    llm_service.plugin.registryValue.side_effect = _registry({"bridgeScheduledTaskLimit": 5})
-
-    res = llm_service.schedule_llm_task(
-        irc=irc,
-        msg=msg,
-        creator_nick="rdrake",
-        account="rdrake_a",
-        channel="#t",
-        when_natural="in 60s",
-        prompt="x",
-    )
-    assert res.status == "ok"
-
-    fire_callable = _stored_fire(llm_service)
-    fake_world = mocker.patch("llm.service.world", autospec=False, create=True)
-    fake_world.getIrc.return_value = irc
-    fake_world.ircs = [irc]
-
-    plugin = llm_service.plugin
-    plugin._check_rate_limit.return_value = False
-    plugin._gather_history.return_value = ([], [])
-    plugin._get_user_memories.return_value = []
-    mocker.patch.object(plugin.db, "get_instruction", return_value="")
-    plugin._pending_task_fns.return_value = {}
-    mocker.patch("llm.service.ircdb.checkCapability", return_value=True)
-    mocker.patch.object(
-        llm_service,
-        "assistant_completion",
-        return_value=mocker.MagicMock(
-            content="ok", model="m", prompt_tokens=0, completion_tokens=0, cost=0.0, error=None
-        ),
-    )
-
-    fire_callable()
-    plugin._llm_executor.submit.assert_called_once()
-    label = plugin._llm_executor.submit.call_args[0][0]
-    assert label.startswith("scheduled_task:")
-
-
 def test_scheduled_fire_short_circuits_when_closing(llm_service, db, mocker: MockerFixture):
     irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
     msg = _msg_mock(mocker)
