@@ -1,8 +1,7 @@
-"""LiteLLM service layer for LLM plugin."""
+"""Service layer for the LLM plugin: everything between IRC and the providers."""
 
 from __future__ import annotations
 
-import base64
 import contextlib
 import functools
 import hashlib
@@ -21,10 +20,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 from urllib.parse import urlparse
 
-import litellm
 import markdown
 import nh3
-import openai
 import supybot.conf as conf
 import supybot.ircdb as ircdb
 import supybot.ircmsgs as ircmsgs
@@ -35,7 +32,7 @@ from pygments.formatters import HtmlFormatter
 from supybot.i18n import PluginInternationalization
 from supybot.utils.file import AtomicFile
 
-from . import agenda, apikeys, github, meme_render
+from . import agenda, apikeys, github, meme_render, provider
 from .context import Role
 from .identity import Caller
 from .persistence import ScheduledLlmTaskRow, lease_until
@@ -59,43 +56,9 @@ from .prompts import (
     REACT_GUIDANCE,
     REDACT_GUIDANCE,
 )
-from .tracing import TraceFilter, extract_server_headers, request_id
+from .tracing import TraceFilter, request_id
 from .typing_holds import TypingHolds
 from .usertz import SOURCE_CTCP, SOURCE_SET, UTC_DEFAULT, UserTz
-
-# MUST be set before any LiteLLM calls create HTTPHandler
-# Workaround for LiteLLM bug #14635: timeout not passed to HTTP handler for Gemini
-# See: https://github.com/BerriAI/litellm/issues/14635
-litellm.request_timeout = 120  # 2 minutes
-
-# Per-image cost for models not in LiteLLM's built-in cost map.
-# Used as fallback when litellm.completion_cost() returns 0.
-#
-# Checked against upstream on 2026-08-16 and this is not going away: neither
-# litellm 1.93.0 (what we pin) nor 1.97.0 (released that day) carries a single
-# grok-imagine entry. Both ship the same 40 xai models and none of them is an
-# image or video model, so `completion_cost` has no price to return and the
-# model does not even validate — startup logs "not in litellm's known model
-# list". Upgrading does not fix accounting here; this table is the price.
-IMAGE_COST_PER_IMAGE: dict[str, float] = {
-    "xai/grok-imagine-image-quality": 0.05,
-    "xai/grok-imagine-image": 0.02,
-}
-
-# Providers report a billed refusal differently, but they all report SOMETHING
-# in the usage block. xAI moderation refusals carry
-# `'usage': {'cost_in_usd_ticks': 200000000}` — the generation ran, the output
-# filter rejected it, and the call is charged anyway. With draws refused better
-# than half the time (measured 2026-08-15: 10 of 18), silently costing those at
-# zero understates image spend by more than the successes do.
-#
-# The AMOUNT comes from IMAGE_COST_PER_IMAGE rather than from the reported
-# ticks: the tick unit is undocumented, and 200000000 only resolves to the
-# table's $0.02 if a tick is 1e-10 USD. That inference is probably right, but a
-# wrong guess here misprices every failure by orders of magnitude, whereas the
-# table is a number we already trust. So the provider's usage block is read as
-# a yes/no signal that it billed, and the price comes from the table.
-_BILLED_FAILURE_MARKERS = ("cost_in_usd_ticks", "'usage'", '"usage"')
 
 # When a safety rewrite has grown enough to be worth a log line. Not a limit --
 # the rewrite is allowed to say the thing another way, and another way is
@@ -1447,18 +1410,6 @@ def _msg_stash_context(msg: IrcMsg | None) -> tuple[str, str, bool, str | None]:
     return nick, reply_target, is_channel, account_from_server_tags(msg)
 
 
-# Pre-computed Gemini safety settings (all categories BLOCK_NONE)
-_GEMINI_SAFETY_SETTINGS: list[dict[str, str]] = [
-    {"category": cat, "threshold": "BLOCK_NONE"}
-    for cat in (
-        "HARM_CATEGORY_HARASSMENT",
-        "HARM_CATEGORY_HATE_SPEECH",
-        "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "HARM_CATEGORY_CIVIC_INTEGRITY",
-    )
-]
-
 # Pre-generated Pygments CSS for a light syntax theme (constant across calls).
 # Light to match the reading-friendly page background; "friendly" is soft on the
 # eyes while keeping good token contrast on an off-white code block.
@@ -2148,13 +2099,13 @@ def _storybook_illustration_rules(max_images: int) -> str:
 
 
 class LLMService:
-    """Service layer for LiteLLM interactions.
+    """Service layer between IRC and the model providers.
 
     This class handles all AI API calls and business logic,
     separated from IRC protocol handling (which is in plugin.py).
 
     Critical Security Patterns:
-    - API keys passed directly to litellm (never mutate env vars)
+    - API keys resolved per call from the environment (never cached)
     - All error messages sanitized to remove API keys
     - Image URLs validated to block malicious schemes
     - Path traversal attempts blocked
@@ -2182,19 +2133,12 @@ class LLMService:
         # for the gap_s field on completion_timing. See _cache_gap_seconds.
         self._cache_gap_last: dict[tuple[str, str], float] = {}
         self._cache_gap_lock = threading.Lock()
-        # Image models already warned about for having no price. See _image_price.
-        self._unpriced_models: set[str] = set()
 
         # Pattern to detect image URLs
         self.image_pattern = re.compile(
             r"https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp|bmp)(?:[?#][^\s]*)?",
             re.IGNORECASE,
         )
-
-    def _get_litellm_metadata(self) -> dict[str, str]:
-        """Get metadata dict to pass to LiteLLM calls for request tracing."""
-        rid = request_id.get()
-        return {"trace_id": rid} if rid else {}
 
     def _sanitize(self, text: str | None) -> str:
         """Remove API keys from text for safe logging.
@@ -2218,9 +2162,8 @@ class LLMService:
     def _missing_key_error(self, model: str) -> str | None:
         """Message for a managed provider whose variable is unset, else None.
 
-        None means the provider is not one we supply credentials for, so the key
-        is LiteLLM's problem (ADC, IAM, its own environment variables) and there
-        is nothing to report.
+        None also means the model names no provider we call; the call itself
+        reports that.
         """
         if not apikeys.is_managed(model) or apikeys.api_key_for(model):
             return None
@@ -2228,12 +2171,6 @@ class LLMService:
             apikeys.provider_of(model),
             apikeys.env_var_for(model),
         )
-
-    def _log_server_headers(self, source: object | None) -> None:
-        """Log server-identifying headers from a response or exception at DEBUG level."""
-        headers = extract_server_headers(source)
-        if headers:
-            self.log.debug("server headers: %s", headers)
 
     @staticmethod
     def _channel_target(channel: str | None) -> str | None:
@@ -2813,7 +2750,7 @@ class LLMService:
           same policy as provider-URL downloads, replacing an older weaker
           single-A-record check.
 
-        Note: still a TOCTOU check — DNS may resolve differently when LiteLLM
+        Note: still a TOCTOU check — DNS may resolve differently when the provider
         later fetches the URL — but resolving all records and requiring
         is_global narrows the rebinding window.
 
@@ -2839,181 +2776,6 @@ class LLMService:
 
         # Cheap static policy first (scheme, literal private IPs), DNS last.
         return validate_external_url(url) and self._resolves_to_public(url)
-
-    def _completion_with_tool_fallback(
-        self,
-        model: str,
-        messages: list[dict[str, Any]],
-        timeout: int,
-        optional_kwargs: dict[str, Any],
-        op: str = "completion",
-        channel: str | None = None,
-    ) -> Any:
-        """Call litellm.completion with automatic fallback on tool errors.
-
-        Gemini preview models can fail with INVALID_ARGUMENT when using
-        tools (googleSearch, urlContext). If we detect this, retry without
-        tools so the user still gets a response.
-
-        Args:
-            model: Model identifier
-            messages: Messages array
-            timeout: Timeout in seconds
-            optional_kwargs: Additional kwargs (tools, safety_settings, etc.)
-            channel: IRC channel/target — drives xAI prompt-cache sticky
-                routing via ``x-grok-conv-id``.
-
-        Returns:
-            LiteLLM completion response
-
-        Raises:
-            Exception: If completion fails even without tools
-        """
-        try:
-            return self._timed_completion(
-                op,
-                model=model,
-                messages=messages,
-                channel=channel,
-                timeout=timeout,
-                **optional_kwargs,
-            )
-        except litellm.BadRequestError as e:
-            self._log_server_headers(e)
-            # If we have tools and got INVALID_ARGUMENT, retry without tools
-            if "tools" in optional_kwargs and "invalid" in str(e).lower():
-                self.log.warning(
-                    "Completion failed with tools, retrying without: %s",
-                    self._sanitize(str(e)),
-                )
-                fallback_kwargs = {k: v for k, v in optional_kwargs.items() if k != "tools"}
-                return self._timed_completion(
-                    f"{op}_no_tools",
-                    model=model,
-                    messages=messages,
-                    channel=channel,
-                    timeout=timeout,
-                    **fallback_kwargs,
-                )
-            raise
-
-    def _get_provider_kwargs(self, model: str, *, include_tools: bool = True) -> dict[str, Any]:
-        """Build provider-specific kwargs for a LiteLLM call.
-
-        Centralizes Gemini-specific logic (safety settings, grounding tools)
-        so callers don't need inline ``if "gemini" in model`` checks.
-
-        Args:
-            model: Model identifier string
-            include_tools: Whether to include grounding tools (disable for
-                summarization where grounding adds unnecessary overhead)
-
-        Returns:
-            Dict of extra kwargs to spread into litellm.completion()
-        """
-        kwargs: dict[str, Any] = {"metadata": self._get_litellm_metadata()}
-
-        if include_tools:
-            gemini_tools = self._get_gemini_tools(model)
-            if gemini_tools:
-                kwargs["tools"] = gemini_tools
-
-        if "gemini" in model.lower():
-            kwargs["safety_settings"] = self._get_safety_settings()
-
-        return kwargs
-
-    def _get_safety_settings(self) -> list[dict[str, str]]:
-        """Get Gemini safety settings (all categories set to BLOCK_NONE).
-
-        Returns the pre-computed module-level constant to avoid
-        rebuilding the list on every call.
-
-        Returns:
-            List of safety setting dictionaries
-        """
-        return _GEMINI_SAFETY_SETTINGS
-
-    def _get_gemini_tools(self, model: str) -> list[dict[str, dict]] | None:
-        """Get Gemini-specific tools if supported by the model.
-
-        Enables Google Search grounding and URL Context for Gemini 2.0+ text models.
-        These tools allow the model to search the web and fetch URL content.
-
-        Uses provider-prefix matching instead of substring matching to avoid
-        false positives (e.g. a model name containing "gemini" as a substring).
-
-        Args:
-            model: Model identifier string
-
-        Returns:
-            List of tool dictionaries or None if not supported
-        """
-        # Extract provider from "provider/model-name" format
-        gemini_providers = {"gemini", "vertex_ai", "vertex_ai_beta"}
-        if "/" in model:
-            provider, model_name = model.split("/", 1)
-            if provider.lower() not in gemini_providers:
-                return None
-        else:
-            model_name = model
-
-        model_name_lower = model_name.lower()
-
-        # Supported Gemini text model families for grounding tools (prefix match)
-        supported_families = (
-            "gemini-2.0-flash",
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
-            "gemini-3-flash",
-            "gemini-3-flash-preview",
-            "gemini-flash-latest",
-        )
-
-        if model_name_lower.startswith(supported_families):
-            return [{"googleSearch": {}}, {"urlContext": {}}]
-
-        # Default: no tools
-        return None
-
-    def _resolve_grounding_kwargs(self, model: str, kind: str) -> dict[str, Any]:
-        """Provider-aware grounding kwargs for ``search_completion`` /
-        ``url_completion`` on the Chat Completions API.
-
-        ``kind`` is ``"search"`` (web search grounding) or ``"url"`` (URL
-        context fetching). Returns a dict to ``update()`` into the
-        ``optional_kwargs`` passed to LiteLLM.
-
-        - Gemini / Vertex AI: register both native grounding tools
-          (``googleSearch`` + ``urlContext``) regardless of ``kind``.
-          Gemini decides at runtime which to invoke, so a request that
-          starts as "search" can pivot to "fetch this URL the search
-          surfaced" without a second tool round-trip — and vice versa.
-        - xAI (Grok): returns ``{"tools": []}``. xAI Live Search on
-          ``/v1/chat/completions`` is deprecated; web search is only
-          available on ``/v1/responses`` via ``{"type": "web_search"}``.
-          Callers detect the xAI provider with ``_is_xai_model`` and
-          dispatch to ``_xai_responses_call`` instead of this path.
-        - Anything else: ``{"tools": []}`` — plain completion.
-
-        Returns the kwargs *plus* an explicit ``"tools": []`` to clobber
-        anything ``_get_provider_kwargs`` may have already added — callers
-        should ``update()`` (not merge) so the override takes effect.
-        """
-        if kind not in ("search", "url"):
-            raise ValueError(f"Unknown grounding kind: {kind}")
-
-        provider = ""
-        if "/" in model:
-            provider = model.split("/", 1)[0].lower()
-
-        if provider in ("gemini", "vertex_ai", "vertex_ai_beta"):
-            return {"tools": [{"googleSearch": {}}, {"urlContext": {}}]}
-
-        # xAI and any other provider: no chat-completions grounding.
-        # xAI search/URL routes through the Responses API (see
-        # ``_xai_responses_call``); other providers run plain completion.
-        return {"tools": []}
 
     @staticmethod
     def _is_xai_model(model: str) -> bool:
@@ -3044,32 +2806,6 @@ class LLMService:
                 tool = {**tool, "function": {**function, "description": description.strip()}}
             out.append(tool)
         return out
-
-    @staticmethod
-    def _with_system_cache_marker(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """A copy of ``messages`` with an Anthropic cache breakpoint on the system prompt.
-
-        Anthropic caches only up to a marked block. Marking the first system
-        message caches the tool schemas plus that prompt, which is identical
-        for every call in a channel; the top-level ``cache_control`` set beside
-        this caches the growing tail, which is what a tool loop's later steps
-        reuse. Measured on claude-haiku-5-5: a 4.3K-token prefix read back
-        4,225 tokens on the second call, $0.00054 → $0.000055. The caller's
-        list is not touched; it is reused across tool-loop steps and stored.
-        """
-        marker = {"type": "ephemeral"}
-        for index, message in enumerate(messages):
-            if message.get("role") != Role.SYSTEM:
-                continue
-            content = message.get("content")
-            if isinstance(content, list) and content and isinstance(content[-1], dict):
-                # LiteLLM reads the marker per block when content is a list.
-                content = [*content[:-1], {**content[-1], "cache_control": marker}]
-                marked = {**message, "content": content}
-            else:
-                marked = {**message, "cache_control": marker}
-            return [*messages[:index], marked, *messages[index + 1 :]]
-        return messages
 
     # Op label → cache lane. Each lane pins to a (potentially) distinct
     # backend, so the bot's short-prompt ops (memory, helper) stop evicting
@@ -3129,152 +2865,15 @@ class LLMService:
             return None
         return f"chan:{channel}:{cls._xai_lane(op)}"
 
-    def _check_grounding_used(self, response: Any) -> bool:
-        """Check if Google grounding/search was used in the response.
+    @staticmethod
+    def _billed_failure_cost(error: Exception, model: str) -> float:
+        """Price of an image the provider refused but still charged, else 0.0.
 
-        Examines the LiteLLM response for evidence that the Google Search
-        grounding tool was invoked. This can be indicated by:
-        - vertex_ai_grounding_metadata in _hidden_params (LiteLLM's key)
-        - search_entry_point in response metadata
-        - tool_calls containing googleSearch
-
-        Args:
-            response: LiteLLM completion response object
-
-        Returns:
-            True if grounding was used, False otherwise
+        xAI bills a draw its output filter rejected and says so with usage in
+        the error body (``ProviderError.billed``). The amount is the list price,
+        not the reported ticks: a tick of 1e-10 USD is an inference.
         """
-        try:
-            # LiteLLM stores grounding/citation metadata in `_hidden_params`.
-            # IMPORTANT: check for a truthy value, not just key existence — LiteLLM
-            # may set the key to None/empty when the tool was offered but unused.
-            hidden = getattr(response, "_hidden_params", None) or {}
-            if hidden.get("vertex_ai_grounding_metadata"):
-                return True
-
-            # xAI live_search emits citation evidence at the response top-level
-            # (`citations` list) or under `_hidden_params["citations"]`. Either
-            # form indicates Grok actually invoked live_search and grounded on
-            # web sources. Empty list = tool offered but unused.
-            if getattr(response, "citations", None):
-                return True
-            if hidden.get("citations"):
-                return True
-
-            # Check choices for grounding chunks/metadata
-            if response.choices:
-                choice = response.choices[0]
-
-                # Check message for grounding metadata
-                if hasattr(choice, "message"):
-                    msg = choice.message
-
-                    # Check for tool calls (googleSearch invocation)
-                    if hasattr(msg, "tool_calls") and msg.tool_calls:
-                        for tool_call in msg.tool_calls:
-                            func_name = getattr(getattr(tool_call, "function", None), "name", "")
-                            if "google" in func_name.lower() or "search" in func_name.lower():
-                                return True
-
-                # Check for grounding_metadata in choice (varies by LiteLLM version)
-                if hasattr(choice, "grounding_metadata") and choice.grounding_metadata:
-                    return True
-
-            # Check model_extra for grounding info (newer LiteLLM versions)
-            # Same truthy check - key existence alone doesn't mean grounding was used
-            if hasattr(response, "model_extra"):
-                extra = response.model_extra or {}
-                if extra.get("grounding_metadata") or extra.get("search_entry_point"):
-                    return True
-
-        except (AttributeError, TypeError, KeyError):
-            # Graceful degradation if response structure is unexpected
-            pass
-
-        return False
-
-    def _extract_usage(self, response: Any, model: str) -> tuple[int, int, float]:
-        """Extract token usage and cost from a LiteLLM response.
-
-        Args:
-            response: LiteLLM completion response
-            model: Model identifier string
-
-        Returns:
-            Tuple of (prompt_tokens, completion_tokens, cost)
-        """
-        prompt_tokens = 0
-        completion_tokens = 0
-        cost = 0.0
-
-        try:
-            usage = getattr(response, "usage", None)
-            if usage:
-                prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-                completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-        except (AttributeError, TypeError):
-            pass
-
-        # Known image models aren't in LiteLLM's cost map: completion_cost
-        # would raise on every call and spam a full traceback. The image
-        # caller supplies the price from IMAGE_COST_PER_IMAGE, so skip the
-        # always-failing call and leave cost at 0.0 for it to fill in.
-        if model in IMAGE_COST_PER_IMAGE:
-            return prompt_tokens, completion_tokens, cost
-
-        # completion_cost can fail for unsupported models — graceful degradation.
-        # model= must be passed explicitly: ImageResponse has no .model attr,
-        # and text completion responses may omit the provider prefix.
-        try:
-            cost = litellm.completion_cost(completion_response=response, model=model) or 0.0
-        except Exception:
-            self.log.warning("completion_cost failed for model=%s", model, exc_info=True)
-
-        return prompt_tokens, completion_tokens, cost
-
-    def _image_price(self, model: str, *, self_hosted: bool = False) -> float:
-        """Per-image price for ``model``, or 0.0 with a warning if unpriced.
-
-        Every image model in use is invisible to LiteLLM's cost map, so a miss
-        here is not a rounding error — it books the call at zero and the spend
-        vanishes from the usage table entirely. That is what made draw cost
-        unreadable for four months, and it happened silently, so this says so
-        out loud. Warned once per model rather than per call: the whole point is
-        that it fires on a model swap, and a per-call warning on a busy channel
-        would be scrolled past.
-
-        ``self_hosted`` is the one case where zero is the true price rather than
-        a missing one — the box is our own hardware and bills nothing. Warning
-        about it would put a permanent WARNING in the prod log (which keeps
-        WARNING and above) and teach everyone to scroll past the one warning
-        that means real money is going unrecorded.
-        """
-        if self_hosted:
-            return 0.0
-        price = IMAGE_COST_PER_IMAGE.get(model)
-        if price is not None:
-            return price
-        if model not in self._unpriced_models:
-            self._unpriced_models.add(model)
-            self.log.warning(
-                "image model %s has no price in IMAGE_COST_PER_IMAGE and LiteLLM "
-                "cannot cost it; its spend is being recorded as $0.00. Add it to "
-                "IMAGE_COST_PER_IMAGE in service.py.",
-                model,
-            )
-        return 0.0
-
-    def _billed_failure_cost(self, error: Exception, model: str) -> float:
-        """Price of a generation attempt the provider refused but still charged.
-
-        See ``_BILLED_FAILURE_MARKERS``. Returns 0.0 when the provider gave no
-        sign that it billed, so a refusal that genuinely cost nothing stays free
-        in the books.
-        """
-        text = str(error)
-        if not any(marker in text for marker in _BILLED_FAILURE_MARKERS):
-            return 0.0
-        return self._image_price(model)
+        return provider.image_price(model) if getattr(error, "billed", False) else 0.0
 
     @staticmethod
     def _msg_chars(messages: list[dict[str, Any]]) -> int:
@@ -3302,7 +2901,7 @@ class LLMService:
         n_tools: int,
         prefix_hash: str = "-",
         gap_s: float = -1.0,
-        response: Any | None = None,
+        reply: provider.Reply | None = None,
         error: Exception | None = None,
     ) -> None:
         """One-line structured profiling record for any model call.
@@ -3312,7 +2911,7 @@ class LLMService:
           model          — provider/model id
           msgs/msg_chars — input shape (message count + total content chars)
           tools          — tool schemas attached on the request
-          elapsed_ms     — wall-clock for the litellm call only
+          elapsed_ms     — wall-clock for the provider call only
           *_tokens       — usage from the response
           cached_tokens  — provider-reported prompt cache reads (0 = no cache)
           gap_s          — seconds since the last call on this model+cache lane
@@ -3330,34 +2929,9 @@ class LLMService:
             )
             return
 
-        pt = ct = cached = n_tool_calls = 0
-        try:
-            usage = getattr(response, "usage", None)
-            if usage is not None:
-                pt = int(
-                    getattr(usage, "prompt_tokens", 0) or getattr(usage, "input_tokens", 0) or 0
-                )
-                ct = int(
-                    getattr(usage, "completion_tokens", 0)
-                    or getattr(usage, "output_tokens", 0)
-                    or 0
-                )
-                details = getattr(usage, "prompt_tokens_details", None) or getattr(
-                    usage, "input_tokens_details", None
-                )
-                if details is not None:
-                    cached = int(getattr(details, "cached_tokens", 0) or 0)
-                if not cached:
-                    cached = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
-        except (AttributeError, TypeError, ValueError):
-            pass
-
-        try:
-            choice = response.choices[0]
-            tool_calls = getattr(choice.message, "tool_calls", None) or []
-            n_tool_calls = len(tool_calls)
-        except (AttributeError, IndexError, TypeError):
-            pass
+        usage = reply.usage if reply is not None else provider.Usage()
+        pt, ct, cached = usage.input_tokens, usage.output_tokens, usage.cached_tokens
+        n_tool_calls = len(reply.tool_calls) if reply is not None else 0
 
         self.log.warning(
             f"completion_timing op={op} model={model} msgs={n_messages} "
@@ -3424,31 +2998,17 @@ class LLMService:
         messages: list[dict[str, Any]],
         channel: str | None = None,
         **kwargs: Any,
-    ) -> Any:
-        """Run litellm.completion and emit a completion_timing log line."""
-        # The key is a property of the model being called, resolved here rather
-        # than threaded in, so no caller can pair one provider's model with
-        # another's credential. None means "unmanaged" — LiteLLM resolves it
-        # from its own environment (ADC for vertex_ai, and so on).
-        kwargs["api_key"] = apikeys.api_key_for(model)
+    ) -> provider.Reply:
+        """Run provider.chat and emit a completion_timing log line.
+
+        ``kwargs`` are :func:`provider.chat`'s keyword arguments.
+        """
         cache_key = self._xai_cache_key(model, channel, op)
-        if cache_key:
-            existing = kwargs.get("extra_headers") or {}
-            kwargs["extra_headers"] = {**existing, "x-grok-conv-id": cache_key}
-            # Also send the documented OpenAI-compatible routing field — the
-            # header above is folklore and the Responses path already uses
-            # prompt_cache_key; without a body key the load balancer can
-            # scatter chat requests and cached_tokens stays at 0.
-            existing_body = kwargs.get("extra_body") or {}
-            kwargs["extra_body"] = {"prompt_cache_key": cache_key, **existing_body}
-        if self._is_anthropic_model(model):
+        if self._is_anthropic_model(model) and kwargs.get("tools"):
             # Before the prefix hash, so it fingerprints what was sent.
-            if kwargs.get("tools"):
-                kwargs["tools"] = self._with_search_date(
-                    kwargs["tools"], time.strftime("%Y-%m-%d", time.gmtime())
-                )
-            messages = self._with_system_cache_marker(messages)
-            kwargs.setdefault("cache_control", {"type": "ephemeral"})
+            kwargs["tools"] = self._with_search_date(
+                kwargs["tools"], time.strftime("%Y-%m-%d", time.gmtime())
+            )
         n_tools = len(kwargs.get("tools") or [])
         msg_chars = self._msg_chars(messages)
         n_messages = len(messages)
@@ -3456,7 +3016,7 @@ class LLMService:
         gap_s = self._cache_gap_seconds(model, op)
         t0 = time.monotonic()
         try:
-            response = litellm.completion(model=model, messages=messages, **kwargs)
+            reply = provider.chat(model=model, messages=messages, cache_key=cache_key, **kwargs)
         except Exception as exc:
             elapsed_ms = (time.monotonic() - t0) * 1000.0
             self._log_completion_timing(
@@ -3481,12 +3041,12 @@ class LLMService:
             n_tools=n_tools,
             prefix_hash=prefix_hash,
             gap_s=gap_s,
-            response=response,
+            reply=reply,
         )
-        return response
+        return reply
 
     def _handle_llm_error(self, error: Exception, operation: str) -> str:
-        """Handle LiteLLM errors with consistent messaging and logging.
+        """Handle provider errors with consistent messaging and logging.
 
         Args:
             error: The exception that was raised
@@ -3495,18 +3055,18 @@ class LLMService:
         Returns:
             User-friendly error message
         """
-        if isinstance(error, litellm.Timeout):
+        if isinstance(error, provider.RequestTimeoutError):
             return (
                 _("Error: %s timed out. Try again or simplify your request.")
                 % operation.capitalize()
             )
-        if isinstance(error, litellm.RateLimitError):
+        if isinstance(error, provider.RateLimitError):
             return _("Error: API rate limit reached. Please wait a few minutes and try again.")
-        if isinstance(error, litellm.AuthenticationError):
+        if isinstance(error, provider.AuthenticationError):
             return _("Error: Invalid API key for %s. Please check your configuration.") % operation
-        if isinstance(error, litellm.ContentPolicyViolationError):
+        if isinstance(error, provider.ContentPolicyViolationError):
             return _("Error: Content violates AI safety policies. Please rephrase your request.")
-        if self._is_provider_refusal(error):
+        if isinstance(error, provider.RefusalError):
             # Logged in full for the operator; the channel gets none of it. The
             # provider's category is an accusation aimed at whoever happened to
             # be talking, and this filter has false positives.
@@ -3516,7 +3076,7 @@ class LLMService:
                 self._sanitize(str(error))[:1000],
             )
             return _(random.choice(_CHAT_REFUSED_LINES))
-        if isinstance(error, openai.APIError):
+        if isinstance(error, provider.ProviderError):
             sanitized = self._sanitize(str(error))[:1000]
             self.log.error("LLM API error (%s): %s", operation, sanitized)
             return _("Error: API returned an error. Check logs for details.")
@@ -3598,7 +3158,7 @@ class LLMService:
         first_attempt_at = submitted_at + PENDING_INITIAL_BACKOFF_SECONDS
 
         # A DB write failure here must not escape the caller's
-        # ``except litellm.Timeout`` handler — that would leave the user with no
+        # ``except provider.RequestTimeoutError`` handler — that would leave the user with no
         # reply AND no stashed retry. Degrade to "not stashed" so the caller
         # falls through to a normal timeout error message instead.
         try:
@@ -3670,14 +3230,10 @@ class LLMService:
         Returns:
             True if the error is terminal and should not be retried.
         """
+        # BadRequestError covers ContentPolicyViolationError and RefusalError.
         return isinstance(
             error,
-            (
-                litellm.AuthenticationError,
-                litellm.ContentPolicyViolationError,
-                litellm.BadRequestError,
-                litellm.NotFoundError,
-            ),
+            (provider.AuthenticationError, provider.BadRequestError, provider.NotFoundError),
         )
 
     @staticmethod
@@ -3735,9 +3291,8 @@ class LLMService:
             )
 
         # ``task.model`` is a persisted column: a row queued before a deploy can
-        # carry an empty or unknown model, which resolves to unmanaged and lets
-        # the call proceed so LiteLLM reports the real problem. Failing hard here
-        # would silently kill in-flight @ask/@code/@draw recoveries.
+        # carry an empty or unknown model, which has no key to be missing; the
+        # call then fails with the provider module's own terminal error.
         key_error = self._missing_key_error(task.model)
         if key_error:
             return PendingTaskResult(
@@ -3752,33 +3307,24 @@ class LLMService:
             )
 
         timeout = self.plugin.registryValue("timeout")
-        optional_kwargs = self._get_provider_kwargs(task.model)
         # Re-apply the profile generation caps stashed at timeout so the retry
         # matches the foreground call (unbounded output otherwise collapses into
         # run-on gibberish on the long-form verse/ask profiles).
         max_tokens = request_data.get("max_tokens")
-        if isinstance(max_tokens, int):
-            optional_kwargs["max_tokens"] = max_tokens
         temperature = request_data.get("temperature")
-        frequency_penalty = request_data.get("frequency_penalty")
-        if isinstance(temperature, (int, float)):
-            optional_kwargs.setdefault("temperature", temperature)
-        if isinstance(frequency_penalty, (int, float)):
-            optional_kwargs.setdefault("frequency_penalty", frequency_penalty)
-        if temperature is not None or frequency_penalty is not None:
-            optional_kwargs.setdefault("drop_params", True)
-
-        response = self._completion_with_tool_fallback(
+        reply = self._timed_completion(
+            "pending_retry",
             model=task.model,
             messages=messages,
-            timeout=timeout,
-            optional_kwargs=optional_kwargs,
-            op="pending_retry",
             channel=task.reply_target,
+            timeout=timeout,
+            max_tokens=max_tokens if isinstance(max_tokens, int) else None,
+            temperature=temperature if isinstance(temperature, (int, float)) else None,
         )
 
-        content = response.choices[0].message.content or ""
-        prompt_tokens, completion_tokens, cost = self._extract_usage(response, task.model)
+        content = reply.text
+        prompt_tokens, completion_tokens = reply.usage.input_tokens, reply.usage.output_tokens
+        cost = reply.cost
         # Empty text (thinking can eat the whole budget) would post a bare "nick: ".
         empty = not content.strip()
 
@@ -3824,8 +3370,7 @@ class LLMService:
         # to no error and the call proceeds. The channel comes off the row so a
         # recovered draw is redrawn against the same endpoint the original was
         # aimed at, not whatever the global default happens to be.
-        retry_channel = task.reply_target if task.is_channel else None
-        key_error = self._missing_image_key_error(task.model, retry_channel)
+        key_error = self._missing_key_error(task.model)
         if key_error:
             return PendingTaskResult(
                 status="failed_terminal",
@@ -3841,11 +3386,7 @@ class LLMService:
         timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
         aspect = request_data.get("aspect")
         result = self._attempt_image_generation(
-            prompt,
-            task.model,
-            timeout,
-            retry_channel,
-            aspect=aspect if isinstance(aspect, str) else None,
+            prompt, task.model, timeout, aspect=aspect if isinstance(aspect, str) else None
         )
         if result is None:
             return PendingTaskResult(
@@ -4204,49 +3745,30 @@ class LLMService:
             # Get timeout
             timeout = self.plugin.registryValue("timeout")
 
-            # No API key is threaded through here: _completion_with_tool_fallback
-            # calls _timed_completion, which resolves the key from `model` via
-            # apikeys.api_key_for() on every call, reading os.environ directly
-            # rather than a value captured earlier.
+            # No API key is threaded through here: provider.chat resolves it
+            # from `model` on every call, reading os.environ directly rather
+            # than a value captured earlier.
 
-            # Build provider-specific kwargs (Gemini tools, safety settings, etc.)
-            optional_kwargs = self._get_provider_kwargs(model)
-
-            # Log request details for debugging
-            tool_names = [list(t.keys())[0] for t in optional_kwargs.get("tools", [])]
-            self.log.info(
-                "completion request: model=%s messages=%s tools=%s",
-                model,
-                len(messages),
-                tool_names or "none",
-            )
-
-            response = self._completion_with_tool_fallback(
+            self.log.info("completion request: model=%s messages=%s", model, len(messages))
+            reply = self._timed_completion(
+                f"run_completion_{command}",
                 model=model,
                 messages=messages,
-                timeout=timeout,
-                optional_kwargs=optional_kwargs,
-                op=f"run_completion_{command}",
                 channel=channel,
+                timeout=timeout,
             )
-            self.log.info("completion response: id=%s", getattr(response, "id", "n/a"))
-            self._log_server_headers(response)
-
-            content = response.choices[0].message.content or ""
-            grounding_used = self._check_grounding_used(response)
-            prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
+            self.log.info("completion response: id=%s", reply.id or "n/a")
 
             return CompletionResult(
-                content=content,
-                grounding_used=grounding_used,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cost=cost,
+                content=reply.text,
+                grounding_used=False,
+                prompt_tokens=reply.usage.input_tokens,
+                completion_tokens=reply.usage.output_tokens,
+                cost=reply.cost,
                 model=model,
             )
 
-        except litellm.Timeout as e:
-            self._log_server_headers(e)
+        except provider.RequestTimeoutError as e:
             self.log.warning("Completion timed out: %s", self._sanitize(str(e)))
             nick, reply_target, is_channel, account = _msg_stash_context(msg)
             stashed = self._stash_timeout(
@@ -4273,14 +3795,8 @@ class LLMService:
             )
 
         except Exception as e:
-            self._log_server_headers(e)
             self.log.exception("Completion failed: %s", self._sanitize(str(e)))
-            if self._is_content_safety_error(e):
-                error_content = _(
-                    "Error: Content violates AI safety policies. Please rephrase your request."
-                )
-            else:
-                error_content = self._handle_llm_error(e, "completion")
+            error_content = self._handle_llm_error(e, "completion")
             return CompletionResult(
                 content=error_content,
                 grounding_used=False,
@@ -4301,101 +3817,76 @@ class LLMService:
     ) -> ToolResult:
         """Shared implementation for search_completion and url_completion.
 
-        Dispatches by provider:
-        - xAI: Responses API with ``{"type": "web_search"}`` (Live Search on
-          Chat Completions is deprecated upstream; no native urlContext on xAI).
-        - Gemini / Vertex AI: Chat Completions with ``googleSearch`` /
-          ``urlContext`` tool (both ride the same call so the model can pivot
-          between searching and fetching within one turn).
-        - Other providers: plain Chat Completions (no grounding).
+        Runs :func:`provider.search`, xAI's Responses API with its
+        ``web_search`` tool, which also reads a URL named in the prompt. Any
+        failure comes back as a ToolResult carrying ``error_message``.
 
         Args:
             user_content: The user message to send (query text or URL prompt).
-            kind: ``"search"`` or ``"url"`` — controls which grounding kwargs
-                are resolved and which Responses API kind is used for xAI.
+            kind: ``"search"`` or ``"url"``, for log labels and the cache lane.
             channel: IRC channel name used to look up per-channel config.
             log_label: Prefix for start/ok log lines (``"search_completion"``
                 or ``"url_completion"``).
             error_message: Human-readable error string placed in the returned
                 ``ToolResult`` when an exception is caught.
             model: Model to call. ``None`` (the default, and what
-                search_completion and url_completion pass) resolves
-                ``searchModel`` then ``assistantModel``. The subject-research
+                search_completion and url_completion pass) means
+                ``searchModel``. The subject-research
                 pre-stage resolves its own key first and passes the result,
                 so the chain lives in one place per caller rather than being
                 re-derived here.
         """
         from .assistant import ToolResult
 
+        op = f"xai_responses_{kind}"
         try:
             target = self._channel_target(channel)
-            model = model or (
-                self.plugin.registryValue("searchModel", target)
-                or self.plugin.registryValue("assistantModel", target)
-            )
-            timeout = self.plugin.registryValue("timeout")
-
-            if self._is_xai_model(model):
-                return self._xai_responses_call(
-                    user_content,
-                    model=model,
-                    timeout=timeout,
-                    kind=kind,
-                    channel=channel,
-                )
-
-            messages: list[dict[str, object]] = [{"role": "user", "content": user_content}]
-            optional_kwargs = self._get_provider_kwargs(model)
-            optional_kwargs.update(self._resolve_grounding_kwargs(model, kind))
-
+            model = model or self.plugin.registryValue("searchModel", target)
             self.log.info("%s start model=%s content_len=%i", log_label, model, len(user_content))
-            response = self._completion_with_tool_fallback(
-                model=model,
-                messages=messages,
-                timeout=timeout,
-                optional_kwargs=optional_kwargs,
-                op=f"grounded_{kind}",
-                channel=channel,
+            t0 = time.monotonic()
+            try:
+                reply = provider.search(
+                    model,
+                    user_content,
+                    timeout=self.plugin.registryValue("timeout"),
+                    cache_key=self._xai_cache_key(model, channel, op),
+                )
+            except Exception as exc:
+                self.log.warning(
+                    f"completion_timing op={op} model={model} msgs=1 "
+                    f"msg_chars={len(user_content)} tools=1 "
+                    f"elapsed_ms={(time.monotonic() - t0) * 1000.0:.0f} "
+                    f"result=error error_type={type(exc).__name__}"
+                )
+                raise
+            usage = reply.usage
+            self.log.warning(
+                f"completion_timing op={op} model={model} msgs=1 "
+                f"msg_chars={len(user_content)} tools=1 "
+                f"elapsed_ms={(time.monotonic() - t0) * 1000.0:.0f} "
+                f"prompt_tokens={usage.input_tokens} cached_tokens={usage.cached_tokens} "
+                f"completion_tokens={usage.output_tokens} tool_calls=0"
             )
-            content = response.choices[0].message.content
-            grounding_used = self._check_grounding_used(response)
-            prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
             self.log.info(
-                "%s ok model=%s grounding_used=%s content_len=%i "
-                "prompt_tokens=%i completion_tokens=%i",
+                "%s ok model=%s grounding_used=%s content_len=%i",
                 log_label,
                 model,
-                grounding_used,
-                len(content or ""),
-                prompt_tokens,
-                completion_tokens,
+                reply.grounded,
+                len(reply.text),
             )
             return ToolResult(
-                # Grounding models (notably Gemini urlContext) can return
-                # content=None when they run the fetch but emit no summary
-                # text. None propagates into the tool-result message and
-                # xAI's strict deserializer rejects {"content": null} with
-                # "missing field `content`" — coerce to "" so the follow-up
-                # completion survives on every provider.
-                content=content or "",
-                grounding_used=grounding_used,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cost=cost,
+                content=reply.text,
+                grounding_used=reply.grounded,
+                prompt_tokens=usage.input_tokens,
+                completion_tokens=usage.output_tokens,
+                cost=reply.cost,
             )
         except Exception as e:
             self.log.exception("%s failed: %s", log_label, self._sanitize(str(e)))
             return ToolResult(content=json.dumps({"error": error_message}))
 
     def search_completion(self, query: str, *, channel: str) -> ToolResult:
-        """Run a grounded web-search completion and return a ToolResult.
-
-        Dispatches by provider:
-        - xAI: Responses API with ``{"type": "web_search"}`` (Live Search on
-          Chat Completions is deprecated upstream).
-        - Gemini / Vertex AI: Chat Completions with ``googleSearch`` tool.
-        - Other providers: plain Chat Completions (no grounding).
-        """
+        """Run a grounded web-search completion and return a ToolResult."""
         return self._grounded_completion(
             query,
             kind="search",
@@ -4405,14 +3896,7 @@ class LLMService:
         )
 
     def url_completion(self, url: str, *, channel: str) -> ToolResult:
-        """Fetch and summarize a URL.
-
-        Dispatches by provider:
-        - xAI: Responses API with ``{"type": "web_search"}`` (no native
-          urlContext on xAI; web_search reads URLs).
-        - Gemini / Vertex AI: Chat Completions with ``urlContext`` tool.
-        - Other providers: plain Chat Completions (no grounding).
-        """
+        """Fetch and summarize a URL (xAI's web_search reads it)."""
         from .assistant import ToolResult
 
         if not validate_external_url(url):
@@ -4456,11 +3940,9 @@ class LLMService:
         from .prompts import SUBJECT_DOSSIER_PROMPT
 
         target = self._channel_target(channel)
-        model = (
-            self.plugin.registryValue("subjectResearchModel", target)
-            or self.plugin.registryValue("searchModel", target)
-            or self.plugin.registryValue("assistantModel", target)
-        )
+        model = self.plugin.registryValue(
+            "subjectResearchModel", target
+        ) or self.plugin.registryValue("searchModel", target)
         result = self._grounded_completion(
             SUBJECT_DOSSIER_PROMPT + request_text,
             kind="search",
@@ -4563,15 +4045,15 @@ class LLMService:
         total_prompt, total_completion, total_cost = 0, 0, 0.0
         searches = 0
         while True:
-            kwargs: dict[str, Any] = dict(self._get_provider_kwargs(model, include_tools=False))
+            kwargs: dict[str, Any] = {}
             if search:
                 kwargs["tools"] = [self._MEME_SEARCH_TOOL]
                 if searches >= self.MEME_MAX_SEARCHES:
                     kwargs["tool_choice"] = "none"
             else:
-                kwargs["response_format"] = {"type": "json_object"}
+                kwargs["json_reply"] = True
             try:
-                response = self._timed_completion(
+                reply = self._timed_completion(
                     "meme_pick",
                     model=model,
                     messages=messages,
@@ -4589,36 +4071,19 @@ class LLMService:
                     total_cost,
                     error="The meme picker is not answering.",
                 )
-            prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
-            total_prompt += prompt_tokens
-            total_completion += completion_tokens
-            total_cost += cost
-            message = response.choices[0].message if response.choices else None
-            calls = getattr(message, "tool_calls", None) if message is not None else None
+            total_prompt += reply.usage.input_tokens
+            total_completion += reply.usage.output_tokens
+            total_cost += reply.cost
+            calls = reply.tool_calls
             if not (search and calls and searches < self.MEME_MAX_SEARCHES):
-                content = message.content if message is not None else None
-                return MemePick(content, model, total_prompt, total_completion, total_cost)
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": message.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments,
-                            },
-                        }
-                        for tc in calls
-                    ],
-                }
-            )
+                return MemePick(
+                    reply.text or None, model, total_prompt, total_completion, total_cost
+                )
+            messages.append(reply.turn())
             for tc in calls:
                 searches += 1
                 try:
-                    args = json.loads(tc.function.arguments or "{}")
+                    args = json.loads(tc.arguments or "{}")
                 except (json.JSONDecodeError, TypeError):
                     args = {}
                 query = str(args.get("query") or "") if isinstance(args, dict) else ""
@@ -4650,9 +4115,7 @@ class LLMService:
         in the caller's hands: the picture is an extra, not the meme.
         """
         prompt = self._MEME_EDIT_FRAME.format(draw=draw.strip())
-        data, cost, model, error = self._xai_image(
-            "edits", {"prompt": prompt, "image": {"url": image_url}}, op="image_edit"
-        )
+        data, cost, model, error = self._xai_image(prompt, op="image_edit", edit_url=image_url)
         if data is None:
             return ImageResult(content="", cost=cost, model=model, error=error)
         try:
@@ -4683,43 +4146,31 @@ class LLMService:
         """
         prompt = self._MEME_PICTURE_FRAME.format(draw=draw.strip().rstrip("."))
         data, cost, model, error = self._xai_image(
-            "generations", {"prompt": prompt, "aspect_ratio": aspect_ratio}, op="image_generate"
+            prompt, op="image_generate", aspect_ratio=aspect_ratio
         )
         return MemePicture(data, cost, model, error)
 
     def _xai_image(
-        self, endpoint: str, fields: dict[str, Any], *, op: str
+        self,
+        prompt: str,
+        *,
+        op: str,
+        aspect_ratio: str | None = None,
+        edit_url: str | None = None,
     ) -> tuple[bytes | None, float, str, str | None]:
-        """POST to xAI ``/v1/images/<endpoint>`` with ``memeEditModel``.
+        """Draw, or edit the image at ``edit_url``, with ``memeEditModel``.
 
         ``(png bytes, cost, model, error)``; bytes is None when there is an
         error. A billed refusal is still costed.
         """
-        import base64
-        import urllib.error
-        import urllib.request
-
         model = (self.plugin.registryValue("memeEditModel") or "").strip()
-        if not model.startswith("xai/"):
-            return None, 0.0, model, "memeEditModel must be an xai/ model."
-        api_key = apikeys.api_key_for(model)
-        if not api_key:
-            return None, 0.0, model, "The image model has no API key."
-        body = json.dumps(
-            {"model": model.removeprefix("xai/"), "response_format": "b64_json", **fields}
-        ).encode()
-        request = urllib.request.Request(
-            f"https://api.x.ai/v1/images/{endpoint}",
-            data=body,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        )
         timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
         t0 = time.monotonic()
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                payload = json.loads(response.read())
-        except urllib.error.HTTPError as exc:
-            detail = exc.read()[:400].decode("utf-8", "replace")
+            picture = provider.draw(
+                model, prompt, timeout=timeout, aspect_ratio=aspect_ratio, edit_url=edit_url
+            )
+        except provider.ProviderError as exc:
             # The body is the only thing that tells a moderation refusal from
             # a rejected parameter (an aspect ratio xAI does not take); a
             # WARNING reaches docker logs, INFO does not.
@@ -4728,14 +4179,13 @@ class LLMService:
                 op,
                 model,
                 (time.monotonic() - t0) * 1000.0,
-                exc.code,
-                self._sanitize(detail)[:200],
+                exc.status_code,
+                self._sanitize(exc.message)[:200],
             )
-            cost = self._billed_failure_cost(Exception(detail), model)
-            refused = exc.code in (400, 403, 422)
+            refused = exc.status_code in (400, 403, 422)
             return (
                 None,
-                cost,
+                self._billed_failure_cost(exc, model),
                 model,
                 "The image model refused that picture." if refused else "The image model failed.",
             )
@@ -4748,229 +4198,9 @@ class LLMService:
             model,
             (time.monotonic() - t0) * 1000.0,
         )
-        ticks = (
-            (payload.get("usage") or {}).get("cost_in_usd_ticks")
-            if isinstance(payload, dict)
-            else None
-        )
-        cost = (
-            ticks * 1e-10
-            if isinstance(ticks, (int, float)) and ticks > 0
-            else self._image_price(model)
-        )
-        data = payload.get("data") if isinstance(payload, dict) else None
-        b64 = (
-            data[0].get("b64_json")
-            if isinstance(data, list) and data and isinstance(data[0], dict)
-            else None
-        )
-        if not isinstance(b64, str) or not b64:
-            return None, cost, model, "The image model returned no picture."
-        try:
-            return base64.b64decode(b64), cost, model, None
-        except ValueError:
-            return None, cost, model, "The image model returned no picture."
-
-    def _xai_responses_call(
-        self,
-        input_text: str,
-        *,
-        model: str,
-        timeout: int,
-        kind: str,
-        channel: str | None = None,
-    ) -> ToolResult:
-        """Run an xAI Responses-API call with the ``web_search`` tool.
-
-        xAI's Live Search on ``/v1/chat/completions`` is deprecated; web
-        search is only available on the Responses API endpoint with
-        ``tools=[{"type": "web_search"}]``. Citations land as
-        ``annotations`` on ``output_text`` content parts; usage uses
-        ``input_tokens`` / ``output_tokens`` (not the chat-style
-        ``prompt_tokens`` / ``completion_tokens``).
-
-        Args:
-            input_text: The user-facing prompt (search query or
-                ``"Summarize the content at this URL: ..."``).
-            model: xAI model identifier (e.g. ``xai/grok-4.3``).
-            timeout: Per-request timeout in seconds.
-            kind: ``"search"`` or ``"url"`` — only used for log labelling
-                and the failure message.
-        """
-        from .assistant import ToolResult
-
-        try:
-            self.log.info(
-                "xai_responses_%s start model=%s input_len=%i",
-                kind,
-                model,
-                len(input_text),
-            )
-            t0 = time.monotonic()
-            cache_key = self._xai_cache_key(model, channel, f"xai_responses_{kind}")
-            extra_body = {"prompt_cache_key": cache_key} if cache_key else None
-            try:
-                response = litellm.responses(
-                    model=model,
-                    input=input_text,
-                    tools=[{"type": "web_search"}],
-                    api_key=apikeys.api_key_for(model),
-                    timeout=timeout,
-                    metadata=self._get_litellm_metadata(),
-                    **({"extra_body": extra_body} if extra_body else {}),
-                )
-            except Exception as exc:
-                err_elapsed = (time.monotonic() - t0) * 1000.0
-                self.log.warning(
-                    f"completion_timing op=xai_responses_{kind} model={model} msgs=1 "
-                    f"msg_chars={len(input_text)} tools=1 elapsed_ms={err_elapsed:.0f} "
-                    f"result=error error_type={type(exc).__name__}"
-                )
-                raise
-            elapsed_ms = (time.monotonic() - t0) * 1000.0
-
-            content = self._responses_text(response)
-            grounding_used = self._check_responses_grounding(response)
-            prompt_tokens, completion_tokens, cached_tokens, cost = self._extract_responses_usage(
-                response, model
-            )
-
-            self.log.warning(
-                f"completion_timing op=xai_responses_{kind} model={model} msgs=1 "
-                f"msg_chars={len(input_text)} tools=1 elapsed_ms={elapsed_ms:.0f} "
-                f"prompt_tokens={prompt_tokens} cached_tokens={cached_tokens} "
-                f"completion_tokens={completion_tokens} tool_calls=0"
-            )
-
-            self.log.info(
-                "xai_responses_%s ok model=%s grounding_used=%s content_len=%i "
-                "input_tokens=%i output_tokens=%i",
-                kind,
-                model,
-                grounding_used,
-                len(content or ""),
-                prompt_tokens,
-                completion_tokens,
-            )
-
-            return ToolResult(
-                # Coerce None → "" for the same reason as the chat-completions
-                # path above: a null tool-result content is rejected by xAI.
-                content=content or "",
-                grounding_used=grounding_used,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cost=cost,
-            )
-        except Exception as e:
-            self.log.exception("xai_responses_%s failed: %s", kind, self._sanitize(str(e)))
-            err = "Search failed." if kind == "search" else "URL fetch failed."
-            return ToolResult(content=json.dumps({"error": err}))
-
-    @staticmethod
-    def _responses_text(response: Any) -> str:
-        """Extract concatenated text from a Responses API response."""
-        # LiteLLM's ResponsesAPIResponse exposes an ``output_text`` property
-        # that aggregates every ``output_text`` content part — prefer it
-        # when present and fall back to walking ``output`` for safety
-        # against future shape drift.
-        text = getattr(response, "output_text", None)
-        if text:
-            return text
-
-        parts: list[str] = []
-        output = getattr(response, "output", None) or []
-        for item in output:
-            item_type = item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
-            if item_type != "message":
-                continue
-            content = (
-                item.get("content") if isinstance(item, dict) else getattr(item, "content", None)
-            ) or []
-            for part in content:
-                if isinstance(part, dict):
-                    if part.get("type") == "output_text":
-                        parts.append(part.get("text") or "")
-                else:
-                    if getattr(part, "type", None) == "output_text":
-                        parts.append(getattr(part, "text", "") or "")
-        return "".join(parts)
-
-    def _check_responses_grounding(self, response: Any) -> bool:
-        """True if the Responses API response shows the web_search tool ran.
-
-        Two signals — either is sufficient:
-        - An output item whose ``type`` contains ``"search"`` (e.g.
-          ``web_search_call``) means xAI invoked the tool.
-        - An ``output_text`` content part with non-empty ``annotations``
-          means the model cited at least one search result.
-        """
-        try:
-            output = getattr(response, "output", None) or []
-            for item in output:
-                item_type = (
-                    item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
-                )
-                if isinstance(item_type, str) and "search" in item_type.lower():
-                    return True
-                if item_type != "message":
-                    continue
-                content = (
-                    item.get("content")
-                    if isinstance(item, dict)
-                    else getattr(item, "content", None)
-                ) or []
-                for part in content:
-                    annotations = (
-                        part.get("annotations")
-                        if isinstance(part, dict)
-                        else getattr(part, "annotations", None)
-                    )
-                    if annotations:
-                        return True
-        except (AttributeError, TypeError):
-            return False
-        return False
-
-    def _extract_responses_usage(self, response: Any, model: str) -> tuple[int, int, int, float]:
-        """Extract token usage and cost from a Responses API response.
-
-        Responses API uses ``input_tokens`` / ``output_tokens`` (not the
-        chat-style ``prompt_tokens`` / ``completion_tokens``), so the
-        regular ``_extract_usage`` returns zeros. Prompt-cache reads land
-        on ``usage.input_tokens_details.cached_tokens`` (note the
-        ``input_tokens_details`` shape — Chat Completions uses
-        ``prompt_tokens_details`` instead). Cost falls back to
-        ``litellm.completion_cost`` when the response doesn't carry one.
-        """
-        prompt_tokens = 0
-        completion_tokens = 0
-        cached_tokens = 0
-        cost = 0.0
-
-        try:
-            usage = getattr(response, "usage", None)
-            if usage:
-                prompt_tokens = getattr(usage, "input_tokens", 0) or 0
-                completion_tokens = getattr(usage, "output_tokens", 0) or 0
-                details = getattr(usage, "input_tokens_details", None)
-                if details is not None:
-                    cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
-                usage_cost = getattr(usage, "cost", None)
-                if usage_cost:
-                    cost = float(usage_cost)
-        except (AttributeError, TypeError, ValueError):
-            pass
-
-        if cost == 0.0:
-            try:
-                cost = litellm.completion_cost(completion_response=response, model=model) or 0.0
-            except Exception:
-                self.log.warning(
-                    "completion_cost failed for responses model=%s", model, exc_info=True
-                )
-
-        return prompt_tokens, completion_tokens, cached_tokens, cost
+        if picture.data is None:
+            return None, picture.cost, model, "The image model returned no picture."
+        return picture.data, picture.cost, model, None
 
     def parse_reminder(
         self,
@@ -5087,21 +4317,18 @@ Examples (echo → action_prompt: ""):
 - "in 30m standup meeting" → action_prompt: "" (label, no verb directed at the bot)"""
 
         try:
-            optional_kwargs = self._get_provider_kwargs(model)
-
-            response = self._completion_with_tool_fallback(
+            reply = self._timed_completion(
+                "reminder_parse",
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text},
                 ],
-                timeout=timeout,
-                optional_kwargs=optional_kwargs,
-                op="reminder_parse",
                 channel=channel,
+                timeout=timeout,
             )
 
-            raw_content = response.choices[0].message.content.strip()
+            raw_content = reply.text.strip()
 
             # Strip markdown fences if present
             if raw_content.startswith("```"):
@@ -5234,41 +4461,22 @@ Examples (echo → action_prompt: ""):
             "them.\n" + overlay
         )
         model = self.plugin.registryValue("assistantModel")
-        # include_tools=False is what makes this tool-less: it suppresses the
-        # provider-side grounding tools _get_provider_kwargs would otherwise
-        # attach. No assistant tools are passed either, so the surface is empty.
-        optional_kwargs = self._get_provider_kwargs(model, include_tools=False)
-        # Gemini bills thinking against max_tokens, so this cap is sized for a
-        # sentence PLUS a round of thinking, not for the sentence alone. 120 was
-        # the sentence alone, and it truncated: whenever the disable below is
-        # ignored, thinking took 110-550 tokens and the sentence never got a
-        # turn. Sampled on gemini-flash-latest, thinking settles around 400-550
-        # for this prompt rather than growing with the cap, so 800 completes in
-        # both cases — 51 completion tokens when the disable holds, 487 when it
-        # does not. The wire length is bounded by _STATUS_ANNOUNCE_MAX_LEN, not
-        # by this.
-        optional_kwargs["max_tokens"] = 800
-        # Honoured only intermittently — measured 8/8 at 03:00 UTC and 1/5 an
-        # hour earlier, with reasoning_effort none/minimal and a thinkingConfig
-        # passthrough no better. Kept because it makes the common case ~10x
-        # cheaper, not because it can be relied on; the cap above and the
-        # finish_reason check below are what make a leak harmless. Providers
-        # differ on whether they accept the parameter (xAI's grok-4 rejects it),
-        # so drop_params carries it the same way the assistant path carries its
-        # sampling overrides. "low" rather than "disable": Anthropic rejects
-        # "disable" with a 400 that drop_params does not catch.
-        optional_kwargs["reasoning_effort"] = "low"
-        optional_kwargs.setdefault("drop_params", True)
-        response = self._completion_with_tool_fallback(
+        # One sentence plus whatever thinking the model does first: Gemini's
+        # thinking took 110-550 tokens and starved a 120 cap, so this cap is
+        # sized for both. Low effort keeps the thinking short; the cap and the
+        # finish_reason check below are what make a leak harmless. The wire
+        # length is bounded by _STATUS_ANNOUNCE_MAX_LEN, not by this.
+        reply = self._timed_completion(
+            "status_announce",
             model=model,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": json.dumps(facts)},
             ],
-            timeout=self.plugin.registryValue("timeout"),
-            optional_kwargs=optional_kwargs,
-            op="status_announce",
             channel=channel,
+            timeout=self.plugin.registryValue("timeout"),
+            max_tokens=800,
+            effort="low",
         )
         # A cut-off sentence is worse than no rewrite: the caller's post-checks
         # are all negative (no foreign host, service named), so a fragment like
@@ -5276,8 +4484,7 @@ Examples (echo → action_prompt: ""):
         # a template that carried the incident name and its permalink. Reject
         # anything the provider did not finish; the caller falls back to the
         # deterministic line, which is exactly the right answer here.
-        choice = response.choices[0]
-        if getattr(choice, "finish_reason", "stop") != "stop":
+        if reply.finish_reason != "stop":
             # warning, not info: this logger's INFO never reaches the log in
             # production (supybot.log.plugins.individualLogfiles is False and
             # the plugin logger sits above INFO), so an info() here writes to
@@ -5287,12 +4494,11 @@ Examples (echo → action_prompt: ""):
             # discarded completion is worth a line either way.
             self.log.warning(
                 "status_announce discarded: finish_reason=%s completion_tokens=%s, using template",
-                choice.finish_reason,
-                getattr(getattr(response, "usage", None), "completion_tokens", "?"),
+                reply.finish_reason,
+                reply.usage.output_tokens,
             )
             return None
-        content = choice.message.content
-        return content.strip() if content else None
+        return reply.text.strip() or None
 
     def _ask_completion(
         self, system_prompt: str, user_content: str, channel: str | None
@@ -5307,15 +4513,13 @@ Examples (echo → action_prompt: ""):
                 {"role": Role.SYSTEM, "content": system_prompt},
                 {"role": Role.USER, "content": user_content},
             ]
-            response = self._timed_completion(
+            return self._timed_completion(
                 "ask_helper",
                 model=model,
                 messages=messages,
                 channel=channel,
                 timeout=self.plugin.registryValue("timeout"),
-                **self._get_provider_kwargs(model, include_tools=False),
-            )
-            return response.choices[0].message.content
+            ).text
         except Exception as e:
             self.log.info("Ask completion failed: %s", self._sanitize(str(e)))
             return None
@@ -5444,7 +4648,7 @@ Examples (echo → action_prompt: ""):
             raises, so one failed draw can't sink the whole batch."""
             try:
                 styled = f"{style_prefix}: {it['image_prompt']}"
-                return it, self._attempt_image_generation(styled, model, timeout, channel)
+                return it, self._attempt_image_generation(styled, model, timeout)
             except Exception as e:  # noqa: BLE001 — isolate per-image failures
                 self.log.warning("storybook: draw id=%s raised %s", it.get("id"), e)
                 # A refusal can still have been charged; carry it to the total.
@@ -5539,86 +4743,6 @@ Examples (echo → action_prompt: ""):
             "illustrations": illos,
         }
 
-    @staticmethod
-    def _is_provider_refusal(error: Exception) -> bool:
-        """Did the provider turn this down over the content itself?
-
-        Only ever used to pick the user-facing message. Its sibling
-        ``_is_content_safety_error`` arms the auto-rewrite loop, and these two
-        must not be merged: a prompt that tripped a hard safety check is exactly
-        the one the loop must not go back and reword. Answering "was this a
-        refusal?" and "may I retry it?" with the same predicate would turn every
-        message improvement into a retry policy change.
-
-        Matched on the prose, not on xAI's ``permission-denied`` code, which it
-        also returns for a key with no access to a model. Telling a channel to
-        reword a perfectly good prompt because the operator picked the wrong
-        model name is the failure this avoids.
-
-        Args:
-            error: The exception to check
-
-        Returns:
-            True if the provider refused over content
-        """
-        text = str(error).lower()
-        return any(
-            marker in text
-            for marker in (
-                "violates usage guidelines",
-                "content violates",
-                "safety_check",
-                "usage policies",
-            )
-        )
-
-    @staticmethod
-    def _is_content_safety_error(error: Exception) -> bool:
-        """Check if a BadRequestError is actually a content safety rejection.
-
-        Some providers (e.g. OpenAI) return moderation blocks as BadRequestError
-        rather than ContentPolicyViolationError.
-
-        This is the switch that arms the auto-rewrite loop, so a provider whose
-        wording is missing here does not merely get classified oddly — it gets
-        no retry at all. That is what happened to xAI, which has been prod's
-        image model while the list only knew OpenAI's and Google's phrasing.
-        Measured over six hours on 2026-08-15: 18 draws, 10 refused, and not one
-        rewrite attempted, because ``imagine:content-moderated`` matches none of
-        the original four keywords. ``drawAutoRewriteMax`` was set to 3 the whole
-        time and had never once run.
-
-        The filter rejects the GENERATED IMAGE rather than the prompt, which
-        might suggest rewriting the prompt cannot help. The logs say otherwise:
-        of three turns where the chat model retried on its own initiative, both
-        that changed the prompt got through and the one that resent an identical
-        prompt was refused again.
-
-        Args:
-            error: The exception to check
-
-        Returns:
-            True if this is a content safety/moderation block
-        """
-        if not isinstance(error, litellm.BadRequestError):
-            return False
-        msg = str(error).lower()
-        return any(
-            keyword in msg
-            for keyword in (
-                "moderation_blocked",
-                "safety system",
-                "content policy",
-                "safety filter",
-                # xAI. Both the error code (imagine:content-moderated) and the
-                # prose it ships with ("Generated image rejected by content
-                # moderation.") are matched, so a change to either one alone
-                # does not silently disarm the loop again.
-                "content-moderated",
-                "content moderation",
-            )
-        )
-
     def _rewrite_prompt_for_safety(
         self,
         original_prompt: str,
@@ -5701,17 +4825,16 @@ Examples (echo → action_prompt: ""):
                 {"role": "user", "content": "\n".join(user_parts)},
             ]
 
-            response = self._timed_completion(
+            reply = self._timed_completion(
                 "prompt_rewrite",
                 model=model,
                 messages=messages,
                 channel=channel,
                 timeout=timeout,
-                metadata=self._get_litellm_metadata(),
             )
 
-            rewritten = response.choices[0].message.content
-            if not rewritten or not rewritten.strip():
+            rewritten = reply.text
+            if not rewritten.strip():
                 return None, 0, 0, 0.0
 
             rewritten = rewritten.strip()
@@ -5730,109 +4853,14 @@ Examples (echo → action_prompt: ""):
                     f"new_chars={len(rewritten)}"
                 )
 
-            prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
-            return rewritten, prompt_tokens, completion_tokens, cost
+            return rewritten, reply.usage.input_tokens, reply.usage.output_tokens, reply.cost
 
         except Exception as e:
             self.log.warning("Prompt rewrite failed: %s", self._sanitize(str(e)))
             return None, 0, 0, 0.0
 
-    def _image_api_base(self, channel: str | None = None, *, fallback: bool = False) -> str:
-        """Configured self-hosted image endpoint, or "" for the hosted path.
-
-        Rejected the same way the video URL is: a malformed or unsafe value
-        disables the override rather than pointing a credentialed request at
-        something that is not an image server.
-        """
-        key = "imageFallbackApiBase" if fallback else "imageApiBase"
-        base = (self.plugin.registryValue(key, channel) or "").strip().rstrip("/")
-        if not base or not validate_external_url(base):
-            return ""
-        return base
-
-    def _try_image_fallback(
-        self,
-        prompt: str,
-        *,
-        channel: str | None,
-        timeout: int,
-        refusals: list[BlockedAttempt],
-        prompt_tokens: int,
-        completion_tokens: int,
-        cost: float,
-    ) -> ImageResult | None:
-        """One draw against the fallback endpoint, or None if it cannot help.
-
-        Called only where a refusal would otherwise reach the user. ``prompt``
-        is the user's original — a rewrite exists to talk a filter around, and
-        the endpoint this reaches has no filter to talk around.
-
-        Returns None for every kind of "no": not configured, no token, refused
-        again, or the box is down. The caller then reports the refusal it
-        already had, because which of two backends disappointed the user is not
-        something they asked about.
-        """
-        base = self._image_api_base(channel, fallback=True)
-        model = (self.plugin.registryValue("imageFallbackModel", channel) or "").strip()
-        if not base or not model or not apikeys.animate_api_key():
-            return None
-
-        self.log.info("Image refused by the primary; trying the fallback endpoint")
-        try:
-            result = self._attempt_image_generation(prompt, model, timeout, channel, fallback=True)
-        except Exception as e:  # noqa: BLE001 — a broken fallback must not mask the refusal
-            self.log.warning("Image fallback failed: %s", self._sanitize(str(e))[:200])
-            return None
-        if result is None or result.error:
-            self.log.warning("Image fallback produced no image")
-            return None
-
-        # WARNING because prod keeps WARNING and above, and how often the
-        # primary refuses something the fallback will happily draw is the whole
-        # reason this exists — it should be countable from the logs.
-        self.log.warning(
-            f"image_fallback_served model={model} refusals={len(refusals)} "
-            f"prompt_chars={len(prompt)}"
-        )
-        return ImageResult(
-            content=result.content,
-            prompt_tokens=prompt_tokens + result.prompt_tokens,
-            completion_tokens=completion_tokens + result.completion_tokens,
-            cost=cost + result.cost,
-            model=result.model,
-            url=result.url,
-            # Every refusal that led here, kept whole: content_blocked rows are
-            # how the refusal rate is measured, and a recovery that swallowed
-            # them would blind the measurement it was built from.
-            blocked_attempts=tuple(refusals),
-        )
-
-    def _missing_image_key_error(self, model: str, channel: str | None = None) -> str | None:
-        """Message for a draw whose credential is unset, or None if it is fine.
-
-        Splits from ``_missing_key_error`` because the self-hosted endpoint
-        breaks that function's one assumption: there, the model name names the
-        provider, and the provider names the environment variable. Pointed at
-        the box, ``openai/<path>`` would demand OPENAI_API_KEY — a real
-        credential for a different service that this request never touches.
-        """
-        if self._image_api_base(channel):
-            if apikeys.animate_api_key():
-                return None
-            return _("no API key configured for the self-hosted image server (set %s)") % (
-                apikeys.ANIMATE_ENV_VAR
-            )
-        return self._missing_key_error(model)
-
     def _attempt_image_generation(
-        self,
-        prompt: str,
-        model: str,
-        timeout: int,
-        channel: str | None = None,
-        *,
-        fallback: bool = False,
-        aspect: str | None = None,
+        self, prompt: str, model: str, timeout: int, *, aspect: str | None = None
     ) -> ImageResult | None:
         """Attempt a single image generation call.
 
@@ -5840,64 +4868,20 @@ Examples (echo → action_prompt: ""):
             prompt: Text prompt for image generation
             model: Model identifier string
             timeout: Timeout in seconds
-            channel: Channel for per-channel endpoint config
-            fallback: Read the imageFallback* endpoint keys instead of the
-                primary ones. One lookup path, one flag choosing the key set —
-                a second endpoint resolver would be two ways to say the same
-                thing, and they drift.
             aspect: The planner's shape for the image (``IMAGE_ASPECTS``), or
-                None to let the provider choose. xAI only; the box takes a
-                pixel size from config instead.
+                None to let the provider choose.
 
         Returns:
-            ImageResult on success, None if data is empty (content blocked).
-            Raises exceptions for other errors.
+            ImageResult on success, None if no picture came back (content blocked).
+            Raises provider errors for everything else.
         """
-        kwargs: dict[str, Any] = {}
-        api_base = self._image_api_base(channel, fallback=fallback)
-        if api_base:
-            # Aimed at the box: its own bearer token, and the generation knobs
-            # under extra_body because num_inference_steps is not an OpenAI
-            # image parameter and LiteLLM drops what it does not recognise.
-            kwargs["api_base"] = api_base
-            api_key = apikeys.animate_api_key()
-            steps = int(
-                self.plugin.registryValue(
-                    "imageFallbackSteps" if fallback else "imageSteps", channel
-                )
-                or 0
-            )
-            if steps:
-                kwargs["extra_body"] = {"num_inference_steps": steps}
-            size = (
-                self.plugin.registryValue("imageFallbackSize" if fallback else "imageSize", channel)
-                or ""
-            ).strip()
-            if size:
-                kwargs["size"] = size
-        else:
-            api_key = apikeys.api_key_for(model)
-            if model.startswith("xai/"):
-                # Without an aspect xAI defaults to `auto`, its best guess
-                # from the prompt — which read a cinema poster as a street
-                # scene and drew it 16:9. The planner knows what it asked for.
-                ratio = _XAI_ASPECT_RATIOS.get(aspect or "")
-                if ratio:
-                    kwargs["aspect_ratio"] = ratio
-                kwargs["quality"] = "high"
-                kwargs["resolution"] = "2k"
-
+        # Without an aspect xAI defaults to `auto`, its best guess from the
+        # prompt — which read a cinema poster as a street scene and drew it
+        # 16:9. The planner knows what it asked for.
+        ratio = _XAI_ASPECT_RATIOS.get(aspect or "")
         t0 = time.monotonic()
         try:
-            response = litellm.image_generation(
-                prompt=prompt,
-                model=model,
-                api_key=api_key,
-                n=1,
-                timeout=timeout,
-                metadata=self._get_litellm_metadata(),
-                **kwargs,
-            )
+            picture = provider.draw(model, prompt, timeout=timeout, aspect_ratio=ratio, hires=True)
         except Exception as exc:
             err_elapsed = (time.monotonic() - t0) * 1000.0
             self.log.warning(
@@ -5911,52 +4895,16 @@ Examples (echo → action_prompt: ""):
             f"completion_timing op=image_generation model={model} "
             f"prompt_chars={len(prompt)} elapsed_ms={elapsed_ms:.0f}"
         )
-        self.log.info("image_generation response: id=%s", getattr(response, "id", "n/a"))
-        self._log_server_headers(response)
-
-        prompt_tokens, completion_tokens, cost = self._extract_usage(response, model)
-        if cost == 0.0:
-            cost = self._image_price(model, self_hosted=bool(api_base))
-
-        if response.data and len(response.data) > 0:
-            image_data = response.data[0]
-
-            if hasattr(image_data, "url") and image_data.url:
-                local_url = self._download_and_save_image(image_data.url)
-                saved_url = local_url or image_data.url
-                return ImageResult(
-                    content=saved_url,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    cost=cost,
-                    model=model,
-                    url=saved_url,
-                )
-
-            if hasattr(image_data, "b64_json") and image_data.b64_json:
-                url = self.save_image_to_http(image_data.b64_json)
-                if url:
-                    return ImageResult(
-                        content=url,
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        cost=cost,
-                        model=model,
-                        url=url,
-                    )
-                error_content = _("Error: Failed to save generated image")
-                # The provider billed the generation even though it was lost here.
-                return ImageResult(
-                    content=error_content,
-                    error=error_content,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    cost=cost,
-                    model=model,
-                )
-
-        # No image data — content was blocked
-        return None
+        if picture.data is None:
+            return None
+        url = self._save_image_bytes(picture.data, "png")
+        if url:
+            return ImageResult(content=url, cost=picture.cost, model=model, url=url)
+        error_content = _("Error: Failed to save generated image")
+        # The provider billed the generation even though it was lost here.
+        return ImageResult(
+            content=error_content, error=error_content, cost=picture.cost, model=model
+        )
 
     def _log_history_strip(
         self,
@@ -6105,9 +5053,7 @@ Examples (echo → action_prompt: ""):
 
         Unlike completion(), this method:
         - Preserves tool_calls on the LLM response
-        - Does NOT use _completion_with_tool_fallback (no silent tool stripping)
         - Runs a loop until the LLM produces text or the step cap is hit
-        - Calls _extract_usage() for proper cost tracking
 
         Args:
             prompt: User's natural language request
@@ -6389,9 +5335,7 @@ Examples (echo → action_prompt: ""):
             # by appending tool calls/results.
             stash_messages = list(messages)
 
-            # Safety settings but NO grounding tools — meta uses its own
-            # tools= kwarg passed explicitly below.
-            optional_kwargs: dict[str, Any] = self._get_provider_kwargs(model, include_tools=False)
+            optional_kwargs: dict[str, Any] = {}
 
             # Cap output tokens on conversational profiles. The cap bounds
             # the worst-case generation time (~50 tok/s); long-form replies
@@ -6407,23 +5351,12 @@ Examples (echo → action_prompt: ""):
             if profile.max_output_tokens is not None:
                 optional_kwargs["max_tokens"] = profile.max_output_tokens
 
-            # Per-profile sampling overrides (data-driven, like max_tokens
-            # above). Verse sets a modest temperature + frequency penalty to
-            # dampen the run-on/repetition spiral a non-reasoning model falls
-            # into over a long roleplay thread; other profiles leave these None
-            # and keep provider defaults. setdefault so an explicit caller
-            # kwarg still wins. Providers differ on which sampling params they
-            # accept — xAI/grok rejects frequency_penalty (raising
-            # UnsupportedParamsError), while gemini accepts it — so pass
-            # drop_params=True whenever we set one: LiteLLM silently drops the
-            # params the target provider doesn't support instead of failing the
-            # whole completion, keeping each override where it's honoured.
+            # Per-profile sampling override (data-driven, like max_tokens
+            # above). Verse sets a modest temperature to dampen the run-on
+            # spiral a non-reasoning model falls into over a long roleplay
+            # thread; other profiles leave it None and keep provider defaults.
             if profile.temperature is not None:
-                optional_kwargs.setdefault("temperature", profile.temperature)
-            if profile.frequency_penalty is not None:
-                optional_kwargs.setdefault("frequency_penalty", profile.frequency_penalty)
-            if profile.temperature is not None or profile.frequency_penalty is not None:
-                optional_kwargs.setdefault("drop_params", True)
+                optional_kwargs["temperature"] = profile.temperature
 
             # Canonical, deduplicated, capped source list, plus the frozen
             # name -> source mapping. Read once: they gate both the tool
@@ -6593,7 +5526,7 @@ Examples (echo → action_prompt: ""):
                 elif _step == 0 and force_initial_pending_tool:
                     completion_kwargs["tool_choice"] = "required"
 
-                response = self._timed_completion(
+                reply = self._timed_completion(
                     f"assistant_step_{_step + 1}",
                     model=model,
                     messages=messages,
@@ -6602,20 +5535,22 @@ Examples (echo → action_prompt: ""):
                     tools=profile_tools,
                     **completion_kwargs,
                 )
+                step_spend += Spend(reply.usage.input_tokens, reply.usage.output_tokens, reply.cost)
 
-                # Accumulate usage via _extract_usage for proper cost
-                p, c, cost = self._extract_usage(response, model)
-                step_spend += Spend(p, c, cost)
-
-                choice = response.choices[0]
-                message = choice.message
-
-                if message.content:
-                    last_assistant_text = message.content
+                if reply.text:
+                    last_assistant_text = reply.text
 
                 # If the LLM returned text (no tool calls), we're done
-                if not message.tool_calls:
-                    content = message.content or ""
+                if not reply.tool_calls:
+                    content = reply.text
+
+                    # Anthropic's safety classifier declines with HTTP 200 and
+                    # stop_reason "refusal", often with no text for the guards
+                    # below to read.
+                    if fallback_model and reply.finish_reason == "refusal":
+                        return self._serve_refusal_fallback(
+                            turn_args, model, fallback_model, "stop_reason", spent()
+                        )
 
                     # Reply guards, first half — see _PRE_IMAGE_REPLY_GUARDS.
                     # These judge the model's own words, so they run before the
@@ -6801,31 +5736,9 @@ Examples (echo → action_prompt: ""):
                         was_verse=was_verse,
                     )
 
-                # Append assistant message with tool_calls to history
-                messages.append(
-                    {
-                        "role": "assistant",
-                        # xAI rejects {"content": null}; a tool-call-only turn
-                        # has message.content=None. Coerce to "".
-                        "content": message.content or "",
-                        "tool_calls": [
-                            {
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
-                                },
-                            }
-                            for tc in message.tool_calls
-                        ],
-                    }
-                )
-                # Anthropic asks for the turn's thinking blocks back alongside
-                # its tool calls; without them the next step reasons from scratch.
-                thinking_blocks = getattr(message, "thinking_blocks", None)
-                if isinstance(thinking_blocks, list) and thinking_blocks:
-                    messages[-1]["thinking_blocks"] = thinking_blocks
+                # Append assistant message with tool_calls (and Anthropic's
+                # thinking blocks, which the next step needs back) to history
+                messages.append(reply.turn())
 
                 # Execute each tool call and append results
                 storybook_ok = False
@@ -6839,16 +5752,16 @@ Examples (echo → action_prompt: ""):
                 # errors still means the model reached for a tool, and only a
                 # turn that reached for none can be complaining about nothing.
                 any_tool_ran = True
-                for tc in message.tool_calls:
+                for tc in reply.tool_calls:
                     try:
-                        args = json.loads(tc.function.arguments)
+                        args = json.loads(tc.arguments)
                     except (json.JSONDecodeError, TypeError):
                         # Don't execute with empty args — destructive tools
                         # like clear_instruction accept no required args and
                         # would silently run on malformed input.
                         self.log.warning(
                             "meta tool call %s: malformed arguments, skipping",
-                            tc.function.name,
+                            tc.name,
                         )
                         result_str = json.dumps(
                             {"error": "Malformed tool arguments — call skipped."}
@@ -6872,7 +5785,7 @@ Examples (echo → action_prompt: ""):
                         # exactly like the malformed-arguments case above.
                         self.log.warning(
                             "meta tool call %s: non-dict arguments (%s), skipping",
-                            tc.function.name,
+                            tc.name,
                             type(args).__name__,
                         )
                         messages.append(
@@ -6888,10 +5801,10 @@ Examples (echo → action_prompt: ""):
 
                     self.log.info(
                         "meta tool call: %s",
-                        tc.function.name,
+                        tc.name,
                     )
 
-                    if extra_handlers and tc.function.name in extra_handlers:
+                    if extra_handlers and tc.name in extra_handlers:
                         # extra_handlers are built outside AssistantToolExecutor
                         # (verse tools, the Limnoria bridge) and so miss the
                         # blanket guard inside ``executor.execute``. Without this
@@ -6900,17 +5813,17 @@ Examples (echo → action_prompt: ""):
                         # answer, instead of the model seeing a tool error it can
                         # work around. Same degradation executor.execute applies.
                         try:
-                            tool_result = extra_handlers[tc.function.name](args)
+                            tool_result = extra_handlers[tc.name](args)
                         except Exception:
                             self.log.exception(
                                 "extra tool handler %s raised; returning tool error",
-                                tc.function.name,
+                                tc.name,
                             )
                             tool_result = ToolResult(
                                 content=json.dumps({"error": "Tool execution failed."})
                             )
                     else:
-                        tool_result = executor.execute(tc.function.name, args)
+                        tool_result = executor.execute(tc.name, args)
 
                     # ToolResult.content is a JSON string. Success uses
                     # {"status": "ok", ...}; errors use {"error": ...}.
@@ -6924,20 +5837,20 @@ Examples (echo → action_prompt: ""):
                     # The fallback re-runs the whole turn, tools included, so
                     # once anything but a lookup has worked there is no going
                     # back. Only an explicit error result counts as not worked.
-                    if tc.function.name not in _READ_ONLY_TOOLS and not (
+                    if tc.name not in _READ_ONLY_TOOLS and not (
                         isinstance(parsed, dict) and "error" in parsed
                     ):
                         fallback_model = ""
                     if isinstance(parsed, dict) and "error" not in parsed:
-                        last_successful_tool = tc.function.name
+                        last_successful_tool = tc.name
                         last_tool_message = str(parsed.get("message", "")).strip()
-                        if tc.function.name == "verse_storybook" and parsed.get("status") == "ok":
+                        if tc.name == "verse_storybook" and parsed.get("status") == "ok":
                             storybook_ok = True
-                        if tc.function.name in SILENT_TOOLS:
+                        if tc.name in SILENT_TOOLS:
                             silent_ok = True
-                        if tc.function.name == "generate_video":
+                        if tc.name == "generate_video":
                             video_tool_called = True
-                        if tc.function.name in _IMAGE_MINTING_TOOLS:
+                        if tc.name in _IMAGE_MINTING_TOOLS:
                             # Record what this turn actually minted, so the
                             # stale-image guard below can tell a fresh image
                             # from one lifted out of history.
@@ -6946,7 +5859,7 @@ Examples (echo → action_prompt: ""):
                             minted_image_urls.update(_IMAGE_URL_RE.findall(image_url))
                             if image_url:
                                 step_image_urls.append(image_url)
-                    elif isinstance(parsed, dict) and tc.function.name in _IMAGE_MINTING_TOOLS:
+                    elif isinstance(parsed, dict) and tc.name in _IMAGE_MINTING_TOOLS:
                         image_tool_called = True
                         image_tool_error = str(parsed.get("error") or "").strip() or None
 
@@ -6986,7 +5899,7 @@ Examples (echo → action_prompt: ""):
                 # Any text the model wrote alongside the call is dropped for
                 # the same reason. When every such call failed the turn continues
                 # so the model can answer in text.
-                if silent_ok and all(tc.function.name in SILENT_TOOLS for tc in message.tool_calls):
+                if silent_ok and all(tc.name in SILENT_TOOLS for tc in reply.tool_calls):
                     self.log.info(
                         "assistant_completion: short-circuit after %s, skipping step_%i",
                         last_successful_tool,
@@ -7030,14 +5943,14 @@ Examples (echo → action_prompt: ""):
                 # nothing to short-circuit on, so the turn continues and the
                 # model reports the failure honestly, as before.
                 if step_image_urls and all(
-                    tc.function.name in _IMAGE_MINTING_TOOLS for tc in message.tool_calls
+                    tc.name in _IMAGE_MINTING_TOOLS for tc in reply.tool_calls
                 ):
                     url = " ".join(step_image_urls)
                     self.log.info(
                         "assistant_completion: short-circuit after generate_image "
                         "(%i/%i calls delivered), skipping step_%i",
                         len(step_image_urls),
-                        len(message.tool_calls),
+                        len(reply.tool_calls),
                         _step + 2,
                     )
                     return AssistantResult(
@@ -7046,7 +5959,7 @@ Examples (echo → action_prompt: ""):
                         model=model,
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
-                        last_successful_tool=message.tool_calls[-1].function.name,
+                        last_successful_tool=reply.tool_calls[-1].name,
                         final_text_after_tools=url,
                         was_verse=was_verse,
                     )
@@ -7070,8 +5983,7 @@ Examples (echo → action_prompt: ""):
                 was_verse=was_verse,
             )
 
-        except litellm.Timeout as e:
-            self._log_server_headers(e)
+        except provider.RequestTimeoutError as e:
             self.log.warning("assistant_completion timed out: %s", self._sanitize(str(e)))
             # Map route_profile -> stash task_type. Draw uses image_generation's
             # own stash path; if it ever lands here, skip stashing. Verse is the
@@ -7102,7 +6014,6 @@ Examples (echo → action_prompt: ""):
                         "messages": stash_messages,
                         "max_tokens": profile.max_output_tokens,
                         "temperature": profile.temperature,
-                        "frequency_penalty": profile.frequency_penalty,
                     },
                     submitted_at=time.time(),
                     account=stash_account,
@@ -7136,7 +6047,7 @@ Examples (echo → action_prompt: ""):
             # 113 of them in the prod log, including refusals the user could
             # have simply reworded.
             self.log.exception("assistant_completion failed: %s", self._sanitize(str(e)))
-            if fallback_model and self._is_provider_refusal(e):
+            if fallback_model and isinstance(e, provider.RefusalError):
                 return self._serve_refusal_fallback(
                     turn_args, model, fallback_model, "provider_error", spent()
                 )
@@ -7188,7 +6099,7 @@ Examples (echo → action_prompt: ""):
             # resolved from the model itself, below, not stored in a local var)
             channel = msg.args[0] if msg and msg.args else None
             model = self.plugin.registryValue("imageModel", channel)
-            key_error = self._missing_image_key_error(model, channel)
+            key_error = self._missing_key_error(model)
             if key_error:
                 error_content = _("Error: %s") % key_error
                 return ImageResult(content=error_content, error=error_content)
@@ -7216,17 +6127,14 @@ Examples (echo → action_prompt: ""):
             block_reason = ""
 
             try:
-                result = self._attempt_image_generation(
-                    prompt, model, timeout, channel, aspect=aspect
-                )
+                result = self._attempt_image_generation(prompt, model, timeout, aspect=aspect)
                 if result is not None:
                     return result
-                # Empty data = content blocked (Google Imagen)
+                # No picture back = content blocked
                 content_blocked = True
                 block_reason = "Content blocked by safety filters (empty response)"
                 refusals.append(BlockedAttempt(prompt, block_reason))
-            except litellm.Timeout as e:
-                self._log_server_headers(e)
+            except provider.RequestTimeoutError as e:
                 # Stash for background retry on first-attempt timeout only
                 self.log.warning("Image generation timed out: %s", self._sanitize(str(e)))
                 nick, reply_target, is_channel, account = _msg_stash_context(msg)
@@ -7248,46 +6156,25 @@ Examples (echo → action_prompt: ""):
                 else:
                     error_content = self._handle_llm_error(e, "image generation")
                 return ImageResult(content=error_content, error=error_content)
-            except litellm.ContentPolicyViolationError as e:
-                self._log_server_headers(e)
+            except provider.ContentPolicyViolationError as e:
                 content_blocked = True
                 block_reason = self._sanitize(str(e))[:200]
                 refused_cost = self._billed_failure_cost(e, model)
                 total_cost += refused_cost
                 refusals.append(BlockedAttempt(prompt, block_reason, refused_cost))
             except Exception as e:
-                self._log_server_headers(e)
-                if self._is_content_safety_error(e):
-                    content_blocked = True
-                    block_reason = self._sanitize(str(e))[:200]
-                    refused_cost = self._billed_failure_cost(e, model)
-                    total_cost += refused_cost
-                    refusals.append(BlockedAttempt(prompt, block_reason, refused_cost))
-                else:
-                    # Non-content errors: no retry
-                    error_content = self._handle_llm_error(e, "image generation")
-                    return ImageResult(
-                        content=error_content,
-                        cost=self._billed_failure_cost(e, model),
-                        model=model,
-                        error=error_content,
-                    )
+                # Non-content errors: no retry
+                error_content = self._handle_llm_error(e, "image generation")
+                return ImageResult(
+                    content=error_content,
+                    cost=self._billed_failure_cost(e, model),
+                    model=model,
+                    error=error_content,
+                )
 
             # --- Auto-rewrite loop ---
             if not content_blocked or max_rewrites <= 0:
                 self.log.warning("Image generation returned no data. Prompt: %s", prompt[:100])
-                if content_blocked:
-                    served = self._try_image_fallback(
-                        original_prompt,
-                        channel=channel,
-                        timeout=timeout,
-                        refusals=refusals,
-                        prompt_tokens=total_prompt_tokens,
-                        completion_tokens=total_completion_tokens,
-                        cost=total_cost,
-                    )
-                    if served is not None:
-                        return served
                 error_content = _(
                     "Error: No image generated. The prompt may have been blocked by "
                     "content safety filters. Try rephrasing your request."
@@ -7330,7 +6217,7 @@ Examples (echo → action_prompt: ""):
                 # Retry image generation with rewritten prompt
                 try:
                     result = self._attempt_image_generation(
-                        current_prompt, model, timeout, channel, aspect=aspect
+                        current_prompt, model, timeout, aspect=aspect
                     )
                     if result is not None:
                         # Success! Aggregate costs and set rewritten_prompt
@@ -7348,49 +6235,29 @@ Examples (echo → action_prompt: ""):
                     block_reason = "Content blocked by safety filters (empty response)"
                     prior_rewrites.append((current_prompt, block_reason))
                     refusals.append(BlockedAttempt(current_prompt, block_reason))
-                except litellm.ContentPolicyViolationError as e:
-                    self._log_server_headers(e)
+                except provider.ContentPolicyViolationError as e:
                     block_reason = self._sanitize(str(e))[:200]
                     prior_rewrites.append((current_prompt, block_reason))
                     refused_cost = self._billed_failure_cost(e, model)
                     total_cost += refused_cost
                     refusals.append(BlockedAttempt(current_prompt, block_reason, refused_cost))
                 except Exception as e:
-                    self._log_server_headers(e)
-                    if self._is_content_safety_error(e):
-                        block_reason = self._sanitize(str(e))[:200]
-                        prior_rewrites.append((current_prompt, block_reason))
-                        refused_cost = self._billed_failure_cost(e, model)
-                        total_cost += refused_cost
-                        refusals.append(BlockedAttempt(current_prompt, block_reason, refused_cost))
-                    else:
-                        # Non-content error during retry — stop
-                        error_content = self._handle_llm_error(e, "image generation")
-                        return ImageResult(
-                            content=error_content,
-                            prompt_tokens=total_prompt_tokens,
-                            completion_tokens=total_completion_tokens,
-                            cost=total_cost + self._billed_failure_cost(e, model),
-                            model=model,
-                            error=error_content,
-                            blocked_attempts=tuple(refusals),
-                        )
+                    # Non-content error during retry — stop
+                    error_content = self._handle_llm_error(e, "image generation")
+                    return ImageResult(
+                        content=error_content,
+                        prompt_tokens=total_prompt_tokens,
+                        completion_tokens=total_completion_tokens,
+                        cost=total_cost + self._billed_failure_cost(e, model),
+                        model=model,
+                        error=error_content,
+                        blocked_attempts=tuple(refusals),
+                    )
 
             # Exhausted all retries
             self.log.warning(
                 "Image generation blocked after %s rewrite attempts", len(prior_rewrites)
             )
-            served = self._try_image_fallback(
-                original_prompt,
-                channel=channel,
-                timeout=timeout,
-                refusals=refusals,
-                prompt_tokens=total_prompt_tokens,
-                completion_tokens=total_completion_tokens,
-                cost=total_cost,
-            )
-            if served is not None:
-                return served
             # Says the useful part first: the bot already tried rewording it, so
             # rewording it again is not the move. Unless it did not get to --
             # a rewriter with no API key, or one that failed, leaves
@@ -7415,7 +6282,6 @@ Examples (echo → action_prompt: ""):
             )
 
         except Exception as e:
-            self._log_server_headers(e)
             error_content = self._handle_llm_error(e, "image generation")
             return ImageResult(content=error_content, error=error_content)
         finally:
@@ -7471,7 +6337,7 @@ Examples (echo → action_prompt: ""):
         model = (self.plugin.registryValue("imageModel", channel) or "").strip()
         if not model:
             return _("Error: no image model configured.")
-        return self._missing_image_key_error(model, channel)
+        return self._missing_key_error(model)
 
     def _animate_headers(self) -> dict[str, str]:
         return {
@@ -7900,20 +6766,20 @@ Examples (echo → action_prompt: ""):
         if status != 200 or not isinstance(payload, dict):
             # Transient — a bounced box should not lose a job that may still be
             # running. Raise so the poller releases it with backoff.
-            raise litellm.Timeout(  # noqa: TRY301
-                message=f"Video poll failed: status={status}",
+            raise provider.RequestTimeoutError(  # noqa: TRY301
+                f"Video poll failed: status={status}",
                 model=task.model or "animate",
-                llm_provider="vllm",
+                provider="vllm",
             )
 
         job_status = str(payload.get("status") or "")
         if job_status == "failed":
             return _fail(self._animate_error_text(payload)[:200])
         if job_status != "completed":
-            raise litellm.Timeout(  # noqa: TRY301
-                message=f"Video still rendering: status={job_status}",
+            raise provider.RequestTimeoutError(  # noqa: TRY301
+                f"Video still rendering: status={job_status}",
                 model=task.model or "animate",
-                llm_provider="vllm",
+                provider="vllm",
             )
 
         code, data = self._animate_request(f"/v1/videos/{job_id}/content", raw=True)
@@ -8454,27 +7320,6 @@ Examples (echo → action_prompt: ""):
             self.log.error("Failed to save image file: %s", e)
             return None
 
-    def save_image_to_http(self, b64_data: str, extension: str = "png") -> str | None:
-        """Save base64-encoded image to HTTP server.
-
-        Decodes base64 image data and saves it to the configured HTTP root
-        directory, returning a public URL.
-
-        Args:
-            b64_data: Base64-encoded image data
-            extension: Image file extension (default: png)
-
-        Returns:
-            Public URL to saved image or None on error
-        """
-        try:
-            image_bytes = base64.b64decode(b64_data)
-        except base64.binascii.Error as e:
-            self.log.error("Invalid base64 image data: %s", e)
-            return None
-
-        return self._save_image_bytes(image_bytes, extension)
-
     def _resolves_to_public(self, url: str) -> bool:
         """Return True only if every resolved IP for the URL's host is globally
         routable. Closes the DNS-rebinding gap in validate_external_url (which
@@ -8505,20 +7350,6 @@ Examples (echo → action_prompt: ""):
             if not ip.is_global:
                 return False
         return bool(infos)
-
-    def _download_and_save_image(self, url: str) -> str | None:
-        """Download an image from a URL and save it locally.
-
-        Args:
-            url: Image URL to download
-
-        Returns:
-            Local public URL to saved image or None on error
-        """
-        fetched = self._download_image_bytes(url)
-        if fetched is None:
-            return None
-        return self._save_image_bytes(*fetched)
 
     def _download_image_bytes(self, url: str) -> tuple[bytes, str] | None:
         """Fetch an image from an untrusted URL: ``(bytes, extension)``.
@@ -8634,7 +7465,7 @@ Examples (echo → action_prompt: ""):
         memories: list[str] | None = None,
         user_instruction: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Build messages array for LiteLLM.
+        """Build the chat messages array.
 
         Args:
             prompt: Text prompt
@@ -8655,7 +7486,7 @@ Examples (echo → action_prompt: ""):
                 that cannot pose as system/developer authority.
 
         Returns:
-            Messages array in LiteLLM format
+            Messages array in OpenAI chat format
         """
         messages: list[dict[str, Any]] = []
 
@@ -8918,22 +7749,15 @@ Examples (echo → action_prompt: ""):
             model = self.plugin.registryValue("memoryModel", target) or self.plugin.registryValue(
                 "assistantModel", target
             )
-            response = self._timed_completion(
+            reply = self._timed_completion(
                 "extract_memories",
                 model=model,
                 messages=messages,
                 channel=channel,
                 timeout=15,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "extraction",
-                        "strict": True,
-                        "schema": _EXTRACTION_SCHEMA,
-                    },
-                },
+                json_reply=_EXTRACTION_SCHEMA,
             )
-            content = response.choices[0].message.content.strip()
+            content = reply.text.strip()
             parsed = json.loads(content)
 
             add = [f for f in parsed.get("add", []) if isinstance(f, str)]
@@ -8988,16 +7812,15 @@ Examples (echo → action_prompt: ""):
             target = self._channel_target(channel)
             model = self.plugin.registryValue("assistantModel", target)
             timeout = self.plugin.registryValue("timeout")
-            response = self._timed_completion(
+            reply = self._timed_completion(
                 "cleanup_memories",
                 model=model,
                 messages=messages,
                 channel=channel,
                 timeout=timeout,
-                num_retries=2,
-                response_format={"type": "json_object"},
+                json_reply=True,
             )
-            content = response.choices[0].message.content.strip()
+            content = reply.text.strip()
             parsed = json.loads(content)
         except Exception as e:
             return CleanupResult(error=f"LLM call failed: {e}")

@@ -253,7 +253,7 @@ class ConversationContext:
         config: ContextConfig | None = None,
         max_age_seconds: int | None = None,
     ) -> list[dict[str, str]]:
-        """Get conversation history for LiteLLM.
+        """Get conversation history as chat messages.
 
         Args:
             nick: User's IRC nick
@@ -264,7 +264,7 @@ class ConversationContext:
                 routes like draw that only want very fresh context.
 
         Returns:
-            List of message dicts for LiteLLM
+            List of OpenAI-format message dicts
         """
         with self._lock:
             cfg = self._effective(config)

@@ -1,11 +1,10 @@
 [project]
 name = "llm"
 version = "0.1.0"
-description = "LiteLLM-powered AI commands for IRC bot"
+description = "AI commands for IRC bot"
 requires-python = ">=3.12"
 dependencies = [
     "limnoria>=2023.1.20",
-    "litellm>=1.83.14",
     "markdown>=3.5.0",
     "pygments>=2.17.0",
     "nh3>=0.2.0",

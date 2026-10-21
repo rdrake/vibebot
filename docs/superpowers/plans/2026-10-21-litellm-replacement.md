@@ -2,11 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Remove `litellm` from the dependency tree. Anthropic and xAI are called through their first-party SDKs, behind one small module that we own.
+> **Revised during implementation (2026-10-21):** no SDKs. `llm/provider.py` speaks to Anthropic and xAI with stdlib `urllib`, the house idiom (`statuspage`, the old `_xai_image`). Its interface is three calls (`chat`, `search`, `draw`), two result types (`Reply`, `Picture`) and one error family. Tasks 3 and 4 below describe the SDK version and are kept only as the record of the plan. The self-hosted image box is unreachable, so the image fallback and its seven config keys were removed instead of ported; Gemini paths, `frequency_penalty`, `drop_params` and the server-header probe were deleted too.
+
+**Goal:** Remove `litellm` from the dependency tree. Anthropic and xAI are called through one small module that we own.
 
 **Architecture:** A new `llm/providers.py` exposes the four calls `service.py` makes today: `completion`, `responses`, `image_generation` and `completion_cost`. It also exposes the exception classes the code catches. Each call returns OpenAI-shaped objects, which is the shape the code already reads. Behind it there are three backends: `anthropic` (Messages API), xAI (`openai` SDK, `base_url=https://api.x.ai/v1`), and the self-hosted box (`openai` SDK, configured `api_base`). Cost comes from our own price table.
 
-**Tech Stack:** Python 3.14, `anthropic` (new; 1.x is built on `httpx2`), `openai` 2.46.0 (already locked, pulled in by litellm today), pytest.
+**Tech Stack:** Python 3.14, stdlib `urllib` + `json`, pytest. Removing litellm drops 45 packages from the lock (`openai`, `pydantic`, `httpx`, `tokenizers`, `huggingface-hub`, `aiohttp`, `boto3`, …).
 
 ## Why now, and exposure
 

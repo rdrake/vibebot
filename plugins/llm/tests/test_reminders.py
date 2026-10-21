@@ -12,7 +12,6 @@ from llm.identity import Caller
 from llm.service import AssistantResult, ReminderParseResult, Spend
 
 from .conftest import (
-    FAKE_PROVIDER_KEYS,
     back_reminders_with_sqlite,
     due_reminder,
     make_completion_response,
@@ -896,7 +895,7 @@ class TestParseReminderService:
         """Create a mock plugin for service tests."""
         plugin = mocker.MagicMock()
         plugin.registryValue.side_effect = lambda key, *args: {
-            "assistantModel": "gemini/gemini-2.0-flash",
+            "assistantModel": "xai/grok-4.3",
             "timeout": 30,
         }.get(key, "")
         return plugin
@@ -934,7 +933,7 @@ class TestParseReminderService:
     ) -> None:
         """GIVEN text at exactly 500 chars WHEN parsing THEN proceeds to API call."""
         text = "x" * 500
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             '{"action": "schedule", "seconds": 60, "message": "test", "confirmation": "Set!"}'
         )
@@ -946,29 +945,29 @@ class TestParseReminderService:
     ) -> None:
         """GIVEN no key for the reminder model's provider THEN clarify with error.
 
-        The fixture's assistantModel is ``gemini/gemini-2.0-flash``, so
-        GEMINI_API_KEY — not any other provider variable — is what has to be
-        missing for this guard to fire.
+        The fixture's assistantModel is ``xai/grok-4.3``, so XAI_API_KEY — not
+        any other provider variable — is what has to be missing for this guard
+        to fire.
         """
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
 
         result = service.parse_reminder("in 30 minutes test")
         assert result.action == "clarify"
-        assert "GEMINI_API_KEY" in result.confirmation
+        assert "XAI_API_KEY" in result.confirmation
 
-    def test_parse_reminder_uses_assistant_keys_when_set(self, mocker: MockerFixture) -> None:
-        """parse_reminder sends assistantModel with that model's provider key."""
+    def test_parse_reminder_uses_assistant_model(self, mocker: MockerFixture) -> None:
+        """parse_reminder sends assistantModel; provider.chat resolves its key."""
         from llm.service import LLMService
 
         mock_plugin = mocker.MagicMock()
         mock_plugin.registryValue.side_effect = lambda key, *args: {
-            "assistantModel": "gemini/gemini-flash-latest",
+            "assistantModel": "anthropic/claude-haiku-4-5",
             "timeout": 30,
         }.get(key, "")
         mocker.patch("llm.service.log")
         service = LLMService(mock_plugin)
 
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             '{"action": "schedule", "seconds": 60, "message": "x", "confirmation": "ok"}'
         )
@@ -976,15 +975,13 @@ class TestParseReminderService:
         service.parse_reminder("in 60s test")
 
         kwargs = mock_completion.call_args.kwargs
-        assert kwargs["model"] == "gemini/gemini-flash-latest"
-        # gemini/ model -> GEMINI_API_KEY, not whatever the ask path used to hold.
-        assert kwargs["api_key"] == FAKE_PROVIDER_KEYS["GEMINI_API_KEY"]
+        assert kwargs["model"] == "anthropic/claude-haiku-4-5"
 
     def test_parse_reminder_schedule_success(
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN valid LLM response WHEN parsing THEN returns schedule result."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             '{"action": "schedule", "seconds": 1800, '
             '"message": "check build", "confirmation": "Reminder set for 30m."}'
@@ -1001,7 +998,7 @@ class TestParseReminderService:
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN clarify LLM response WHEN parsing THEN returns clarify result."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             '{"action": "clarify", "confirmation": "When should I remind you?"}'
         )
@@ -1013,7 +1010,7 @@ class TestParseReminderService:
 
     def test_parse_reminder_invalid_json(self, service: MagicMock, mocker: MockerFixture) -> None:
         """GIVEN invalid JSON WHEN parsing THEN returns clarify with error."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response("not valid json")
 
         result = service.parse_reminder("in 30 minutes test")
@@ -1025,7 +1022,7 @@ class TestParseReminderService:
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN JSON with markdown fences WHEN parsing THEN strips them."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             '```json\n{"action": "schedule", "seconds": 60, '
             '"message": "test", "confirmation": "Set!"}\n```'
@@ -1038,7 +1035,7 @@ class TestParseReminderService:
 
     def test_parse_reminder_with_note(self, service: MagicMock, mocker: MockerFixture) -> None:
         """GIVEN response with note WHEN parsing THEN includes note."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             '{"action": "schedule", "seconds": 3600, "message": "meeting", '
             '"confirmation": "Reminder set for 3pm.", "note": "Assuming EST"}'
@@ -1053,7 +1050,7 @@ class TestParseReminderService:
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN imperative reminder WHEN parsing THEN returns action_prompt."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             '{"action": "schedule", "seconds": 3600, "message": "post status", '
             '"confirmation": "Reminder set for 1h.", "action_prompt": "Post a status update in #ops."}'
@@ -1068,7 +1065,7 @@ class TestParseReminderService:
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN passive reminder WHEN parsing THEN action_prompt is empty."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             '{"action": "schedule", "seconds": 1200, "message": "check backups", '
             '"confirmation": "Reminder set for 20m.", "action_prompt": ""}'
@@ -1083,7 +1080,7 @@ class TestParseReminderService:
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN negative seconds WHEN parsing THEN returns clarify."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             '{"action": "schedule", "seconds": -100, "message": "test", "confirmation": "Set!"}'
         )
@@ -1094,7 +1091,7 @@ class TestParseReminderService:
 
     def test_parse_reminder_api_error(self, service: MagicMock, mocker: MockerFixture) -> None:
         """GIVEN API error WHEN parsing THEN returns clarify with error."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.side_effect = Exception("API error")
 
         result = service.parse_reminder("in 30 minutes test")
@@ -1106,7 +1103,7 @@ class TestParseReminderService:
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN zero seconds WHEN parsing THEN returns clarify."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             '{"action": "schedule", "seconds": 0, "message": "test", "confirmation": "Set!"}'
         )
@@ -1119,7 +1116,7 @@ class TestParseReminderService:
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN missing seconds field WHEN parsing THEN returns clarify."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             '{"action": "schedule", "message": "test", "confirmation": "Set!"}'
         )
@@ -1132,7 +1129,7 @@ class TestParseReminderService:
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN no message in response WHEN parsing THEN uses input text."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             '{"action": "schedule", "seconds": 60, "confirmation": "Set!"}'
         )
@@ -1142,38 +1139,11 @@ class TestParseReminderService:
         assert result.action == "schedule"
         assert result.message == "in 1 minute original text"
 
-    def test_parse_reminder_with_non_gemini_model(self, mocker: MockerFixture) -> None:
-        """GIVEN non-Gemini model WHEN parsing THEN works without Gemini tools."""
-        from llm.service import LLMService
-
-        mock_completion = mocker.patch("llm.service.litellm.completion")
-        mock_plugin = mocker.MagicMock()
-        mock_plugin.registryValue.side_effect = lambda key, *args: {
-            "assistantModel": "openai/gpt-4",  # Non-Gemini model
-            "timeout": 30,
-        }.get(key, "")
-
-        mocker.patch("llm.service.log")
-        service = LLMService(mock_plugin)
-
-        mock_completion.return_value = make_completion_response(
-            '{"action": "schedule", "seconds": 300, "message": "test", "confirmation": "Set!"}'
-        )
-
-        result = service.parse_reminder("in 5 minutes test")
-
-        assert result.action == "schedule"
-        assert result.seconds == 300
-        # Verify no Gemini-specific kwargs were passed
-        call_kwargs = mock_completion.call_args.kwargs
-        assert "tools" not in call_kwargs
-        assert "safety_settings" not in call_kwargs
-
     def test_parse_reminder_strips_fences_without_trailing_backticks(
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN markdown fence without closing WHEN parsing THEN handles gracefully."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         # Fence without proper closing
         mock_completion.return_value = make_completion_response(
             '```json\n{"action": "schedule", "seconds": 120, "message": "test", "confirmation": "Set!"}'
@@ -1188,7 +1158,7 @@ class TestParseReminderService:
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN numeric recurrence WHEN parsing THEN populates recurrence_seconds only."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             json.dumps(
                 {
@@ -1220,7 +1190,7 @@ class TestParseReminderService:
         """GIVEN a 30s cadence WHEN parsing THEN clarify instead of scheduling a
         chain that fires (and bills an LLM turn) twice a minute. Scheduled
         tasks share this parser, so the floor covers both."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             json.dumps(
                 {
@@ -1246,7 +1216,7 @@ class TestParseReminderService:
     ) -> None:
         """GIVEN a FREQ=SECONDLY rule WHEN parsing THEN the one-minute floor
         applies to calendar cadences too."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             json.dumps(
                 {
@@ -1271,7 +1241,7 @@ class TestParseReminderService:
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN calendar recurrence WHEN parsing THEN populates recurrence_rrule only."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             json.dumps(
                 {
@@ -1298,7 +1268,7 @@ class TestParseReminderService:
 
     def test_parse_reminder_watch_mode(self, service: MagicMock, mocker: MockerFixture) -> None:
         """GIVEN watch-style phrasing WHEN parsing THEN watch_mode is True."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             json.dumps(
                 {
@@ -1324,7 +1294,7 @@ class TestParseReminderService:
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN model leaks (recurring: ...) into action_prompt WHEN parsing THEN stripped."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             json.dumps(
                 {
@@ -1350,7 +1320,7 @@ class TestParseReminderService:
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN model leaks (watch ...) into action_prompt WHEN parsing THEN stripped."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             json.dumps(
                 {
@@ -1376,7 +1346,7 @@ class TestParseReminderService:
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN malformed rrule WHEN parsing THEN clears it and falls back to one-shot."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             json.dumps(
                 {
@@ -1402,7 +1372,7 @@ class TestParseReminderService:
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN model returns both recurrence kinds WHEN parsing THEN keeps rrule and clears seconds."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             json.dumps(
                 {
@@ -1427,7 +1397,7 @@ class TestParseReminderService:
         self, service: MagicMock, mocker: MockerFixture
     ) -> None:
         """GIVEN one-shot reminder WHEN parsing THEN both recurrence fields are None."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             json.dumps(
                 {
@@ -2120,7 +2090,7 @@ class TestReminderActionDelivery:
         mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
         plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="status: green",
-            model="gemini/gemini-2.0-flash-lite",
+            model="xai/grok-4-1-fast",
             spend=Spend(prompt_tokens=42, completion_tokens=8, cost=0.0001),
         )
 
@@ -2153,7 +2123,7 @@ class TestReminderActionDelivery:
         kwargs = plugin.db.log_usage.call_args.kwargs
         assert args[0] == "alice-acct"  # owner_key — account preferred over nick
         assert args[2] == "remind_action"
-        assert args[3] == "gemini/gemini-2.0-flash-lite"
+        assert args[3] == "xai/grok-4-1-fast"
         assert args[4] == 42
         assert args[5] == 8
         assert kwargs["status"] == "success"
@@ -2169,7 +2139,7 @@ class TestReminderActionDelivery:
         mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
         plugin.llm_service.assistant_completion.return_value = AssistantResult(
             content="[silent]",
-            model="gemini/gemini-2.0-flash-lite",
+            model="xai/grok-4-1-fast",
             spend=Spend(prompt_tokens=30, completion_tokens=2, cost=0.00005),
         )
 

@@ -1,0 +1,106 @@
+{
+  "url": "https://api.anthropic.com/v1/messages",
+  "headers": {
+    "host": "api.anthropic.com",
+    "accept-encoding": "gzip, deflate",
+    "connection": "keep-alive",
+    "user-agent": "litellm/1.103.0",
+    "anthropic-version": "2023-06-01",
+    "accept": "application/json",
+    "content-type": "application/json",
+    "content-length": "1075"
+  },
+  "body": {
+    "model": "claude-haiku-5-5",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "weather in oshawa?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "",
+            "signature": "sig-abc"
+          },
+          {
+            "type": "text",
+            "text": "[System: Empty message content sanitised to satisfy protocol]"
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_1",
+            "name": "search_web",
+            "input": {
+              "query": "oshawa weather"
+            }
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_2",
+            "name": "search_web",
+            "input": {
+              "query": "oshawa forecast"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_1",
+            "content": "5C cloudy"
+          },
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_2",
+            "content": "rain tomorrow"
+          }
+        ]
+      }
+    ],
+    "max_tokens": 400,
+    "tools": [
+      {
+        "name": "search_web",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        },
+        "type": "custom",
+        "description": "Search the web."
+      }
+    ],
+    "tool_choice": {
+      "type": "any"
+    },
+    "cache_control": {
+      "type": "ephemeral"
+    },
+    "system": [
+      {
+        "type": "text",
+        "text": "You are vibebot.",
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      }
+    ]
+  }
+}

@@ -118,21 +118,20 @@ class TestResponseLengthHandling:
 
     def test_image_responses_are_urls(self, mocker: MockerFixture) -> None:
         """GIVEN image generated WHEN response returned THEN is URL not data."""
-        mock_response = mocker.Mock()
-        mock_response.data = [mocker.Mock(url="https://provider.com/image.png", b64_json=None)]
+        from llm import provider
 
         self.mock_plugin.registryValue = mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "imageModel": "imagen",
+                "imageModel": "xai/grok-imagine-image",
                 "timeout": 30,
                 "maxPromptLength": 10000,
             }.get(key)
         )
 
-        mocker.patch("llm.service.litellm.image_generation", return_value=mock_response)
+        mocker.patch("llm.service.provider.draw", return_value=provider.Picture(data=b"png"))
         mocker.patch.object(
             self.service,
-            "_download_and_save_image",
+            "_save_image_bytes",
             return_value="https://example.com/llm/img_local.png",
         )
         result = self.service.image_generation("a cat")

@@ -18,17 +18,17 @@ def test_verse_compaction_model_key_registered() -> None:
 
 def test_relocated_client_types_importable_from_compaction():
     from llm.verse.compaction import (
-        LiteLLMVerseClient,
+        ProviderVerseClient,
         VerseCallUsage,
         VerseModelClient,
     )
 
     usage = VerseCallUsage(prompt_tokens=1, completion_tokens=2, cost=0.0)
     assert usage.completion_tokens == 2
-    # Structural check only. Do NOT use isinstance(LiteLLMVerseClient(),
+    # Structural check only. Do NOT use isinstance(ProviderVerseClient(),
     # VerseModelClient): VerseModelClient is a plain Protocol (not
     # @runtime_checkable), so isinstance() would raise TypeError, not pass.
-    assert callable(getattr(LiteLLMVerseClient, "call", None))
+    assert callable(getattr(ProviderVerseClient, "call", None))
     assert hasattr(VerseModelClient, "call")
 
 
@@ -90,7 +90,7 @@ class TestCompactVerse:
             store,
             retention_days=0,
             min_keep_events=20,
-            model="gemini/gemini-flash-lite-latest",
+            model="anthropic/claude-haiku-5-5",
             client=_FakeClient(),
             log_usage=lambda **kw: None,
             now=lambda: 1_000_000.0,
@@ -179,7 +179,7 @@ class TestCompactVerse:
             store,
             retention_days=30,
             min_keep_events=20,
-            model="gemini/gemini-flash-lite-latest",
+            model="anthropic/claude-haiku-5-5",
             client=client,
             log_usage=lambda **kw: usage_calls.append(kw),
             now=lambda: now,

@@ -1,0 +1,89 @@
+{
+  "url": "https://api.x.ai/v1/chat/completions",
+  "headers": {
+    "host": "api.x.ai",
+    "accept": "*/*",
+    "accept-encoding": "gzip, deflate",
+    "connection": "keep-alive",
+    "user-agent": "litellm/1.103.0",
+    "x-grok-conv-id": "abc",
+    "content-type": "application/json",
+    "content-length": "978"
+  },
+  "body": {
+    "model": "grok-4-1-fast-non-reasoning",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are vibebot."
+      },
+      {
+        "role": "user",
+        "content": "weather in oshawa?"
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "toolu_1",
+            "type": "function",
+            "function": {
+              "name": "search_web",
+              "arguments": "{\"query\":\"oshawa weather\"}"
+            }
+          },
+          {
+            "id": "toolu_2",
+            "type": "function",
+            "function": {
+              "name": "search_web",
+              "arguments": "{\"query\":\"oshawa forecast\"}"
+            }
+          }
+        ],
+        "thinking_blocks": [
+          {
+            "type": "thinking",
+            "thinking": "",
+            "signature": "sig-abc"
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "toolu_1",
+        "content": "5C cloudy"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "toolu_2",
+        "content": "rain tomorrow"
+      }
+    ],
+    "temperature": 0.9,
+    "max_tokens": 400,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "search_web",
+          "description": "Search the web.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        }
+      }
+    ],
+    "tool_choice": "required",
+    "prompt_cache_key": "abc"
+  }
+}

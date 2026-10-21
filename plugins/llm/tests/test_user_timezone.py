@@ -353,14 +353,14 @@ class TestParseReminderPrompt:
 
         plugin = mocker.MagicMock()
         plugin.registryValue.side_effect = lambda key, *args: {
-            "assistantModel": "gemini/gemini-2.0-flash",
+            "assistantModel": "xai/grok-4.3",
             "timeout": 30,
         }.get(key, "")
         mocker.patch("llm.service.log")
         return LLMService(plugin)
 
     def _system_prompt(self, service, mocker: MockerFixture, user_tz: UserTz) -> str:
-        completion = mocker.patch("llm.service.litellm.completion")
+        completion = mocker.patch("llm.service.provider.chat")
         completion.return_value = make_completion_response(
             json.dumps({"action": "clarify", "confirmation": "When?"})
         )

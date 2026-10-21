@@ -40,7 +40,7 @@ MAX_SEARCHES_PER_REQUEST = 3
 
 
 # Tool definitions in OpenAI function-calling format.
-# LiteLLM passes these through to any provider that supports tool calling.
+# provider.chat translates these for each provider.
 # The shapes generate_image lets the planner choose. The service maps each to
 # a provider ratio; the executor drops anything else on the floor.
 IMAGE_ASPECTS: frozenset[str] = frozenset({"portrait", "landscape", "square"})
@@ -646,7 +646,7 @@ class ToolSpec:
     visible_in: frozenset[str] = frozenset({PROFILE_CHAT, PROFILE_VERSE, PROFILE_REMIND_ACTION})
 
     def as_tool(self) -> dict[str, Any]:
-        """Return the OpenAI/LiteLLM tool schema for model calls."""
+        """Return the OpenAI-format tool schema for model calls."""
         return {"type": "function", "function": self.schema}
 
     def denial_reason(

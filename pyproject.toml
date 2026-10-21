@@ -58,7 +58,6 @@ markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
 filterwarnings = [
     "error",                            # Treat project warnings as test failures
     "ignore::SyntaxWarning",               # PEP 765: return-in-finally (supybot)
-    "ignore::DeprecationWarning:litellm",  # asyncio.iscoroutinefunction (Python 3.16)
     "ignore::DeprecationWarning:supybot",  # currentThread(), codecs.open()
     "ignore::ResourceWarning:supybot",     # Unclosed conf/*.conf files
     "ignore::ResourceWarning:tempfile",    # HTTPError cleanup on Python 3.14
@@ -71,7 +70,7 @@ filterwarnings = [
 python-version = "3.14"
 
 [tool.ty.rules]
-unresolved-import = "ignore"  # External deps (supybot, litellm) not in workspace
+unresolved-import = "ignore"  # External deps (supybot) not in workspace
 unresolved-attribute = "ignore"  # Supybot has no type stubs
 
 [tool.coverage.run]

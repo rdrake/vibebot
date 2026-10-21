@@ -64,14 +64,12 @@ class Profile:
         overlay_setting: Limnoria registry key for the channel-overridable
             personality overlay (e.g. ``"assistantSystemPrompt"``).
             ``None`` means this profile takes no overlay.
-        max_output_tokens: ``max_tokens`` cap for the LiteLLM completion.
+        max_output_tokens: ``max_tokens`` cap for the completion.
             ``None`` means unbounded.
         force_search_on_explicit: If True and an explicit search trigger
             matches the user prompt, force
             ``tool_choice={search_web}`` on step 0.
-        temperature: Sampling temperature for the LiteLLM completion.
-            ``None`` leaves the provider default in place.
-        frequency_penalty: Frequency penalty for the LiteLLM completion.
+        temperature: Sampling temperature. xAI only (see provider.chat);
             ``None`` leaves the provider default in place.
     """
 
@@ -82,7 +80,6 @@ class Profile:
     max_output_tokens: int | None
     force_search_on_explicit: bool
     temperature: float | None = None
-    frequency_penalty: float | None = None
 
 
 PROFILES: dict[str, Profile] = {
@@ -151,12 +148,9 @@ PROFILES: dict[str, Profile] = {
         force_search_on_explicit=False,
         # Dampen the run-on/repetition spiral a non-reasoning model falls into
         # over a long roleplay thread: a modest temperature keeps prose varied
-        # without drifting incoherent. NOTE: frequency_penalty was verified a
-        # no-op on grok (the deployed verse model) during retention-v1 live
-        # validation — kept for providers that honour it, but don't expect it
-        # to do anything on xAI.
+        # without drifting incoherent. Reaches grok only (the refusal
+        # fallback); Haiku rejects non-default sampling.
         temperature=0.8,
-        frequency_penalty=0.4,
     ),
     PROFILE_REMIND_ACTION: Profile(
         id=PROFILE_REMIND_ACTION,

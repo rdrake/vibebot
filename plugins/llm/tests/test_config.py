@@ -22,7 +22,7 @@ REGISTER_METHODS = {"registerGlobalValue", "registerChannelValue"}
 
 
 class TestValidatedModelName:
-    """Test model name validation with litellm."""
+    """Test model name validation: a provider prefix we call, priced or warned."""
 
     def setup_method(self) -> None:
         """Clear warned-models cache between tests."""
@@ -33,107 +33,72 @@ class TestValidatedModelName:
         """Create a ValidatedModelName instance for testing."""
         return ValidatedModelName(default, "Test model config")
 
-    def test_known_model_accepted(self) -> None:
-        """GIVEN a known model WHEN setValue called THEN accepts silently."""
+    def test_priced_model_accepted_silently(self, caplog: pytest.LogCaptureFixture) -> None:
+        """GIVEN a priced model WHEN setValue called THEN accepts without a warning."""
         v = self._make()
-        v.setValue("gemini/gemini-2.0-flash")
-        assert v() == "gemini/gemini-2.0-flash"
+        with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
+            v.setValue("xai/grok-4.3")
+        assert v() == "xai/grok-4.3"
+        assert caplog.text == ""
 
     def test_empty_string_accepted(self) -> None:
         """GIVEN empty string WHEN setValue called THEN accepts (not configured)."""
-        v = self._make("gemini/gemini-2.0-flash")
+        v = self._make("xai/grok-4.3")
         v.setValue("")
         assert v() == ""
 
     def test_whitespace_stripped(self) -> None:
         """GIVEN model with surrounding whitespace WHEN setValue THEN strips it."""
         v = self._make()
-        v.setValue("  gemini/gemini-2.0-flash  ")
-        assert v() == "gemini/gemini-2.0-flash"
+        v.setValue("  xai/grok-4.3  ")
+        assert v() == "xai/grok-4.3"
 
-    def test_provider_prefixed_unknown_accepted_with_warning(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """GIVEN valid provider but unknown model WHEN setValue THEN accepts with warning."""
+    def test_unpriced_model_accepted_with_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """GIVEN a provider we call but an unpriced model WHEN setValue THEN accepts with warning."""
         v = self._make()
         with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
-            v.setValue("openai/my-custom-fine-tune-xyz")
-        assert v() == "openai/my-custom-fine-tune-xyz"
-        assert "not in litellm" in caplog.text.lower()
+            v.setValue("anthropic/my-custom-model-xyz")
+        assert v() == "anthropic/my-custom-model-xyz"
+        assert "no price" in caplog.text.lower()
 
-    def test_completely_unknown_rejected(self) -> None:
-        """GIVEN completely unknown model WHEN setValue THEN raises InvalidRegistryValue."""
+    @pytest.mark.parametrize(
+        "model",
+        ["totally-bogus-xyz", "gemini/gemini-2.0-flash", "openai/gpt-4", "gpt-4", "xai/"],
+    )
+    def test_unknown_provider_rejected(self, model: str) -> None:
+        """GIVEN no provider prefix we call WHEN setValue THEN raises naming the valid ones."""
         v = self._make()
-        with pytest.raises(registry.InvalidRegistryValue, match="Unknown model"):
-            v.setValue("totally-bogus-xyz")
-
-    def test_typo_with_valid_provider_warns_with_suggestions(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """GIVEN typo with valid provider WHEN setValue THEN accepts with warning + suggestions."""
-        v = self._make()
-        with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
-            v.setValue("gemini/gemni-2.0-flash")
-        assert v() == "gemini/gemni-2.0-flash"
-        assert "similar known models" in caplog.text.lower()
-
-    def test_typo_without_provider_rejected_with_suggestions(self) -> None:
-        """GIVEN typo without provider prefix WHEN setValue THEN rejected with suggestions."""
-        v = self._make()
-        with pytest.raises(registry.InvalidRegistryValue, match="Did you mean"):
-            v.setValue("gpt-4o-mni")
-
-    def test_unknown_no_match_shows_docs_link(self) -> None:
-        """GIVEN unknown model with no close matches WHEN setValue THEN shows docs link."""
-        v = self._make()
-        with pytest.raises(registry.InvalidRegistryValue, match="docs.litellm.ai"):
-            v.setValue("zzz-no-match-zzz")
-
-    def test_default_assistant_model_passes(self) -> None:
-        """GIVEN default assistantModel value WHEN validated THEN passes."""
-        v = self._make()
-        v.setValue("gemini/gemini-flash-latest")
-        assert v() == "gemini/gemini-flash-latest"
-
-    def test_default_code_model_passes(self) -> None:
-        """GIVEN default codeModel value WHEN validated THEN passes."""
-        v = self._make()
-        v.setValue("gemini/gemini-1.5-flash")
-        assert v() == "gemini/gemini-1.5-flash"
+        with pytest.raises(registry.InvalidRegistryValue, match="Unknown model") as excinfo:
+            v.setValue(model)
+        assert "anthropic/" in str(excinfo.value)
+        assert "xai/" in str(excinfo.value)
 
     def test_refusal_fallback_model_validates_without_warning(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """GIVEN the priced refusal fallback WHEN setValue THEN no unknown-model warning."""
+        """GIVEN the priced refusal fallback WHEN setValue THEN no unpriced-model warning."""
         model = "xai/grok-4-1-fast-non-reasoning"
-        ValidatedModelName._warned.discard(model)
         v = self._make()
         with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
             v.setValue(model)
         assert v() == model
-        assert "not in litellm" not in caplog.text.lower()
+        assert "no price" not in caplog.text.lower()
 
-    def test_default_image_model_passes(self) -> None:
-        """GIVEN default imageModel value WHEN validated THEN passes (warn OK)."""
-        v = self._make()
-        # xai/grok-imagine-image may not be in model_list but
-        # provider is valid, so it should be accepted (with warning)
-        v.setValue("xai/grok-imagine-image")
-        assert v() == "xai/grok-imagine-image"
-
-    def test_suggest_models_returns_close_matches(self) -> None:
-        """GIVEN a near-miss model name WHEN _suggest_models THEN returns suggestions."""
-        suggestions = ValidatedModelName._suggest_models("gemini/gemni-2.0-flash")
-        assert len(suggestions) > 0
-        assert any("gemini" in s for s in suggestions)
-
-    def test_warning_only_fires_once_per_model(self, caplog: pytest.LogCaptureFixture) -> None:
-        """GIVEN unknown model warned once WHEN setValue again THEN no duplicate warning."""
+    def test_image_model_validates_without_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """GIVEN an image model priced per image WHEN setValue THEN no warning."""
         v = self._make()
         with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
-            v.setValue("openai/my-dedup-test-model")
+            v.setValue("xai/grok-imagine-image")
+        assert v() == "xai/grok-imagine-image"
+        assert "no price" not in caplog.text.lower()
+
+    def test_warning_only_fires_once_per_model(self, caplog: pytest.LogCaptureFixture) -> None:
+        """GIVEN unpriced model warned once WHEN setValue again THEN no duplicate warning."""
+        v = self._make()
+        with caplog.at_level(logging.WARNING, logger="supybot.plugins.LLM.config"):
+            v.setValue("xai/my-dedup-test-model")
             caplog.clear()
-            v.setValue("openai/my-dedup-test-model")
+            v.setValue("xai/my-dedup-test-model")
         assert caplog.text == ""
 
 
@@ -321,7 +286,7 @@ class TestValidatedModelNameThreadSafety:
         ValidatedModelName._warned.clear()
 
     def test_concurrent_set_value_no_duplicate_warnings(self, mocker: MockerFixture) -> None:
-        """GIVEN many threads setting the same unknown model WHEN concurrent THEN warns at most once."""
+        """GIVEN many threads setting the same unpriced model WHEN concurrent THEN warns at most once."""
         warnings_logged: list[str] = []
         lock = threading.Lock()
 
@@ -329,7 +294,7 @@ class TestValidatedModelNameThreadSafety:
             with lock:
                 warnings_logged.append(msg % args if args else msg)
 
-        model = "openai/thread-safety-test-model"
+        model = "xai/thread-safety-test-model"
 
         def set_model() -> None:
             v = ValidatedModelName("", "test")

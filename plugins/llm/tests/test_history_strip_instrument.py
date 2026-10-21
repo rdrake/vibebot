@@ -73,10 +73,9 @@ class TestHistoryStripLine:
 
     def _run(self, service: LLMService, mocker, **kwargs) -> None:  # type: ignore[no-untyped-def]
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             return_value=make_completion_response("Here's your bacon."),
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
         service.assistant_completion(
             prompt="give Jordan some bacon",
             nick="rdrake",

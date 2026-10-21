@@ -89,7 +89,6 @@ class TestBehaviorPreservation:
     # Per-profile sampling overrides; absent → None (provider default). Verse
     # alone tunes sampling to dampen its non-reasoning quality-collapse spiral.
     EXPECTED_TEMPERATURE = {"verse": 0.8}
-    EXPECTED_FREQUENCY_PENALTY = {"verse": 0.4}
     EXPECTED_PROMPT_IDS = {
         "chat": "chat",
         "code": "code",
@@ -139,13 +138,6 @@ class TestBehaviorPreservation:
     )
     def test_temperature(self, pid):
         assert profile.PROFILES[pid].temperature == self.EXPECTED_TEMPERATURE.get(pid)
-
-    @pytest.mark.parametrize(
-        "pid",
-        ["chat", "code", "draw", "animate", "verse", "remind_action"],
-    )
-    def test_frequency_penalty(self, pid):
-        assert profile.PROFILES[pid].frequency_penalty == self.EXPECTED_FREQUENCY_PENALTY.get(pid)
 
     @pytest.mark.parametrize(
         "pid",

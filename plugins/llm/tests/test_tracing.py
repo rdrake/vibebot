@@ -6,10 +6,9 @@ import logging
 import re
 import threading
 
-import httpx
 import pytest
 import supybot.registry as registry
-from llm.tracing import TraceFilter, extract_server_headers, generate_request_id, request_id
+from llm.tracing import TraceFilter, generate_request_id, request_id
 
 
 class TestGenerateRequestId:
@@ -158,68 +157,3 @@ class TestValidatedLogLevel:
         v = ValidatedLogLevel("WARNING", "test")
         with pytest.raises(registry.InvalidRegistryValue):
             v.setValue(value)
-
-
-class TestExtractServerHeaders:
-    """Tests for extract_server_headers."""
-
-    def test_extracts_from_response_headers(self) -> None:
-        """GIVEN response with _response_headers WHEN extracted THEN returns matching headers."""
-
-        class FakeResponse:
-            _response_headers = {"x-request-id": "abc123", "content-type": "application/json"}
-
-        result = extract_server_headers(FakeResponse())
-        assert result == {"x-request-id": "abc123"}
-
-    def test_extracts_from_exception_response(self) -> None:
-        """GIVEN exception with response.headers WHEN extracted THEN returns matching headers."""
-
-        class FakeError(Exception):
-            response = httpx.Response(
-                400,
-                headers={"cf-ray": "def456-YYZ", "x-request-id": "req-789"},
-            )
-
-        result = extract_server_headers(FakeError())
-        assert result == {"cf-ray": "def456-YYZ", "x-request-id": "req-789"}
-
-    def test_extracts_from_direct_headers(self) -> None:
-        """GIVEN object with .headers dict WHEN extracted THEN returns matching headers."""
-
-        class FakeObj:
-            headers = {"server": "nginx/1.25", "x-served-by": "node-3"}
-
-        result = extract_server_headers(FakeObj())
-        assert result == {"server": "nginx/1.25", "x-served-by": "node-3"}
-
-    def test_returns_empty_when_no_headers(self) -> None:
-        """GIVEN object with no header attributes WHEN extracted THEN returns empty dict."""
-        result = extract_server_headers(object())
-        assert result == {}
-
-    def test_returns_empty_for_none(self) -> None:
-        """GIVEN None WHEN extracted THEN returns empty dict."""
-        result = extract_server_headers(None)
-        assert result == {}
-
-    def test_ignores_non_server_headers(self) -> None:
-        """GIVEN headers with only non-server headers WHEN extracted THEN returns empty."""
-
-        class FakeResponse:
-            _response_headers = {
-                "content-type": "application/json",
-                "content-length": "42",
-            }
-
-        result = extract_server_headers(FakeResponse())
-        assert result == {}
-
-    def test_case_insensitive_header_names(self) -> None:
-        """GIVEN headers with mixed case WHEN extracted THEN matches case-insensitively."""
-
-        class FakeResponse:
-            _response_headers = httpx.Headers({"X-Request-ID": "abc", "CF-Ray": "def"})
-
-        result = extract_server_headers(FakeResponse())
-        assert result == {"x-request-id": "abc", "cf-ray": "def"}

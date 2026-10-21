@@ -38,7 +38,7 @@ class TestWithoutSearch:
 
         assert pick.content == _ANSWER and pick.error is None
         kwargs = completion.call_args.kwargs
-        assert kwargs["response_format"] == {"type": "json_object"}
+        assert kwargs["json_reply"] is True
         assert "tools" not in kwargs
         assert MEME_SEARCH_NOTE not in kwargs["messages"][0]["content"]
 
@@ -69,7 +69,7 @@ class TestSearchLoop:
         first, second = completion.call_args_list
         assert MEME_SEARCH_NOTE in first.kwargs["messages"][0]["content"]
         assert first.kwargs["tools"][0]["function"]["name"] == "search_templates"
-        assert "response_format" not in first.kwargs
+        assert "json_reply" not in first.kwargs
         tool_turn = second.kwargs["messages"][-1]
         assert tool_turn == {
             "role": "tool",

@@ -1,0 +1,56 @@
+{
+  "url": "https://api.anthropic.com/v1/messages",
+  "headers": {
+    "host": "api.anthropic.com",
+    "accept-encoding": "gzip, deflate",
+    "connection": "keep-alive",
+    "user-agent": "litellm/1.103.0",
+    "anthropic-version": "2023-06-01",
+    "accept": "application/json",
+    "content-type": "application/json",
+    "content-length": "354"
+  },
+  "body": {
+    "model": "claude-haiku-5-5",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "u1"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "I see the context."
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "u2"
+          }
+        ]
+      }
+    ],
+    "system": [
+      {
+        "type": "text",
+        "text": "A"
+      },
+      {
+        "type": "text",
+        "text": "B late"
+      }
+    ],
+    "max_tokens": 128000
+  }
+}

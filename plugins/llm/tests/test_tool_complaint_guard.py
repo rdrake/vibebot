@@ -186,8 +186,7 @@ class TestGuardIsWiredIntoTheChatPath:
             captured.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
             return make_completion_response("Here's your bacon, Jordan.")
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         service.assistant_completion(
             prompt="give Jordan some bacon",
@@ -250,8 +249,7 @@ class TestRetryWhenNoToolRan:
             seen.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
             return make_completion_response(next(replies))
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         result = service.assistant_completion(
             prompt="give Jordan some bacon",

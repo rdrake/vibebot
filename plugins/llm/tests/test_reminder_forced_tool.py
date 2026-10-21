@@ -20,10 +20,9 @@ from .conftest import make_completion_response
 def _run(service: Any, mocker: Any, prompt: str, profile: str = "chat") -> dict[str, Any]:
     """One assistant_completion, returning step 0's completion kwargs."""
     completion = mocker.patch(
-        "llm.service.litellm.completion",
+        "llm.service.provider.chat",
         side_effect=[make_completion_response("ok")],
     )
-    mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
     service.assistant_completion(
         prompt=prompt,
         nick="rdrake",

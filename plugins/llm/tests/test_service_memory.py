@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
+from .conftest import make_completion_response
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -20,6 +20,7 @@ class TestSummarize:
     def setup(self, make_service, mocker: MockerFixture) -> None:
         """Set up test fixtures."""
         self.mocker = mocker
+        self.make_service = make_service
         self.service, self.mock_plugin = make_service(
             assistantModel="gpt-4",
             timeout=30,
@@ -27,8 +28,9 @@ class TestSummarize:
 
     def test_summarize_returns_none_on_empty_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """GIVEN an empty provider variable WHEN summarize_for_irc called THEN returns None."""
-        monkeypatch.setenv("OPENAI_API_KEY", "")
-        mock_completion = self.mocker.patch("llm.service.litellm.completion")
+        self.service, self.mock_plugin = self.make_service(assistantModel="xai/grok-4.3")
+        monkeypatch.setenv("XAI_API_KEY", "")
+        mock_completion = self.mocker.patch("llm.service.provider.chat")
 
         result = self.service.summarize_for_irc("content")
 
@@ -37,7 +39,7 @@ class TestSummarize:
 
     def test_summarize_returns_none_on_exception(self) -> None:
         """GIVEN API error WHEN summarize_for_irc called THEN returns None gracefully."""
-        self.mocker.patch("llm.service.litellm.completion", side_effect=Exception("API error"))
+        self.mocker.patch("llm.service.provider.chat", side_effect=Exception("API error"))
         result = self.service.summarize_for_irc("content")
 
         assert result is None
@@ -46,25 +48,23 @@ class TestSummarize:
         """GIVEN empty response WHEN summarize_for_irc called THEN returns None."""
         mock_response = make_completion_response("")
 
-        self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
+        self.mocker.patch("llm.service.provider.chat", return_value=mock_response)
         result = self.service.summarize_for_irc("content")
 
         assert result is None
 
-    def test_summarize_uses_ask_model_and_key(self) -> None:
-        """GIVEN summarize_for_irc call WHEN API called THEN uses ask model and key."""
+    def test_summarize_uses_ask_model(self) -> None:
+        """GIVEN summarize_for_irc call WHEN API called THEN uses the ask model."""
         completion_kwargs = {}
 
         def capture_kwargs(**kwargs):
             completion_kwargs.update(kwargs)
             return make_completion_response("Summary")
 
-        self.mocker.patch("llm.service.litellm.completion", side_effect=capture_kwargs)
+        self.mocker.patch("llm.service.provider.chat", side_effect=capture_kwargs)
         self.service.summarize_for_irc("content")
 
         assert completion_kwargs["model"] == "gpt-4"
-        # "gpt-4" is an openai model, so the openai variable is the one sent.
-        assert completion_kwargs["api_key"] == FAKE_PROVIDER_KEYS["OPENAI_API_KEY"]
 
     def test_summarize_uses_channel_for_model_lookup(self) -> None:
         """GIVEN channel WHEN summarize_for_irc called THEN passes channel for model config."""
@@ -78,46 +78,12 @@ class TestSummarize:
 
         mock_response = make_completion_response("Summary")
 
-        self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
+        self.mocker.patch("llm.service.provider.chat", return_value=mock_response)
         self.service.summarize_for_irc("content", channel="#test")
 
         # assistantModel should be called with channel
         model_call = next(c for c in registry_calls if c[0] == "assistantModel")
         assert model_call[1] == "#test"
-
-    def test_summarize_uses_gemini_safety_settings(self) -> None:
-        """GIVEN gemini model WHEN summarize_for_irc called THEN includes safety settings."""
-        self.mock_plugin.registryValue = self.mocker.Mock(
-            side_effect=lambda key, channel=None: {
-                "assistantModel": "gemini/gemini-2.0-flash",
-                "timeout": 30,
-                "commandPrefixes": [],
-            }.get(key)
-        )
-
-        completion_kwargs = {}
-
-        def capture_kwargs(**kwargs):
-            completion_kwargs.update(kwargs)
-            return make_completion_response("Summary")
-
-        self.mocker.patch("llm.service.litellm.completion", side_effect=capture_kwargs)
-        self.service.summarize_for_irc("content")
-
-        assert completion_kwargs.get("safety_settings") is not None
-
-    def test_summarize_no_safety_settings_for_non_gemini(self) -> None:
-        """GIVEN non-gemini model WHEN summarize_for_irc called THEN no safety settings."""
-        completion_kwargs = {}
-
-        def capture_kwargs(**kwargs):
-            completion_kwargs.update(kwargs)
-            return make_completion_response("Summary")
-
-        self.mocker.patch("llm.service.litellm.completion", side_effect=capture_kwargs)
-        self.service.summarize_for_irc("content")
-
-        assert completion_kwargs.get("safety_settings") is None
 
     def test_summarize_for_irc_returns_one_line_teaser(self) -> None:
         """GIVEN content WHEN IRC teaser requested THEN returns one compact line."""
@@ -125,9 +91,7 @@ class TestSummarize:
             "  Liberia's history spans colonization, independence,\n"
             "  coups, civil war, and recovery. Extra text that should be trimmed."
         )
-        mock_completion = self.mocker.patch(
-            "llm.service.litellm.completion", return_value=mock_response
-        )
+        mock_completion = self.mocker.patch("llm.service.provider.chat", return_value=mock_response)
 
         result = self.service.summarize_for_irc("long answer", channel="#test", max_chars=72)
 
@@ -140,8 +104,9 @@ class TestSummarize:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """GIVEN no key for the ask model's provider WHEN teaser requested THEN None."""
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        mock_completion = self.mocker.patch("llm.service.litellm.completion")
+        self.service, self.mock_plugin = self.make_service(assistantModel="xai/grok-4.3")
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        mock_completion = self.mocker.patch("llm.service.provider.chat")
 
         result = self.service.summarize_for_irc("long answer", channel="#test", max_chars=80)
 
@@ -157,17 +122,11 @@ class TestMemoryInjection:
     ) -> None:
         """GIVEN memories WHEN completion called THEN facts in a user message after system+context, NOT in the system prompt (preserves prompt-cache stability)."""
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = "Hello!"
-        mock_response.usage.prompt_tokens = 10
-        mock_response.usage.completion_tokens = 5
-        mock_response._hidden_params = {"response_cost": 0.001}
-        mock_litellm.completion.return_value = mock_response
+        mock_chat = mocker.patch("llm.service.provider.chat")
+        mock_chat.return_value = make_completion_response("Hello!")
         service.completion("hi", command="ask", memories=["likes Python", "lives in Toronto"])
-        call_args = mock_litellm.completion.call_args
-        messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
+        call_args = mock_chat.call_args
+        messages = call_args.kwargs["messages"]
         system_msg = next(m for m in messages if m["role"] == "system")
         assert "likes Python" not in system_msg["content"]
         assert "lives in Toronto" not in system_msg["content"]
@@ -184,17 +143,11 @@ class TestMemoryInjection:
         not pose as an instruction: they are fenced in <user_memory> markers
         the model is told to treat as data."""
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = "Hello!"
-        mock_response.usage.prompt_tokens = 10
-        mock_response.usage.completion_tokens = 5
-        mock_response._hidden_params = {"response_cost": 0.001}
-        mock_litellm.completion.return_value = mock_response
+        mock_chat = mocker.patch("llm.service.provider.chat")
+        mock_chat.return_value = make_completion_response("Hello!")
         service.completion("hi", command="ask", memories=["likes Python"])
-        call_args = mock_litellm.completion.call_args
-        messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
+        call_args = mock_chat.call_args
+        messages = call_args.kwargs["messages"]
         mem_msg = next(
             m
             for m in messages
@@ -210,17 +163,11 @@ class TestMemoryInjection:
         reads as developer authority). It rides in a user-role message fenced
         in <user_instruction> markers."""
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = "Bonjour!"
-        mock_response.usage.prompt_tokens = 10
-        mock_response.usage.completion_tokens = 5
-        mock_response._hidden_params = {"response_cost": 0.001}
-        mock_litellm.completion.return_value = mock_response
+        mock_chat = mocker.patch("llm.service.provider.chat")
+        mock_chat.return_value = make_completion_response("Bonjour!")
         service.completion("hi", command="ask", user_instruction="always answer in French")
-        call_args = mock_litellm.completion.call_args
-        messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
+        call_args = mock_chat.call_args
+        messages = call_args.kwargs["messages"]
         system_msg = next(m for m in messages if m["role"] == "system")
         assert "always answer in French" not in system_msg["content"]
         instr_msg = next(
@@ -236,17 +183,11 @@ class TestMemoryInjection:
     ) -> None:
         """GIVEN no memories WHEN completion called THEN no memory section."""
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = "Hello!"
-        mock_response.usage.prompt_tokens = 10
-        mock_response.usage.completion_tokens = 5
-        mock_response._hidden_params = {"response_cost": 0.001}
-        mock_litellm.completion.return_value = mock_response
+        mock_chat = mocker.patch("llm.service.provider.chat")
+        mock_chat.return_value = make_completion_response("Hello!")
         service.completion("hi", command="ask")
-        call_args = mock_litellm.completion.call_args
-        messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
+        call_args = mock_chat.call_args
+        messages = call_args.kwargs["messages"]
         system_msg = next(m for m in messages if m["role"] == "system")
         assert "What you know about this user" not in system_msg["content"]
 
@@ -255,17 +196,11 @@ class TestMemoryInjection:
     ) -> None:
         """GIVEN empty memories list WHEN completion called THEN no memory section."""
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = mocker.MagicMock()
-        mock_response.choices = [mocker.MagicMock()]
-        mock_response.choices[0].message.content = "Hello!"
-        mock_response.usage.prompt_tokens = 10
-        mock_response.usage.completion_tokens = 5
-        mock_response._hidden_params = {"response_cost": 0.001}
-        mock_litellm.completion.return_value = mock_response
+        mock_chat = mocker.patch("llm.service.provider.chat")
+        mock_chat.return_value = make_completion_response("Hello!")
         service.completion("hi", command="ask", memories=[])
-        call_args = mock_litellm.completion.call_args
-        messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
+        call_args = mock_chat.call_args
+        messages = call_args.kwargs["messages"]
         system_msg = next(m for m in messages if m["role"] == "system")
         assert "What you know about this user" not in system_msg["content"]
 
@@ -285,9 +220,9 @@ class TestMemoryExtraction:
     def test_extract_memories_returns_facts(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN conversation with facts WHEN extracted THEN returns ExtractionResult."""
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response('{"add": ["likes Python", "lives in Toronto"]}')
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
         result = service.extract_memories(
             "user1", "#test", "I love Python and live in Toronto", "Cool!", []
         )
@@ -296,39 +231,37 @@ class TestMemoryExtraction:
     def test_extract_memories_uses_memory_model(self, make_service, mocker: MockerFixture) -> None:
         """memoryModel, when set, replaces assistantModel for extraction only."""
         service, _ = make_service(
-            assistantModel="gemini/gemini-flash-latest",
-            memoryModel="gemini/gemini-flash-lite-latest",
+            assistantModel="xai/grok-4.3",
+            memoryModel="xai/grok-4-fast",
         )
-        mock_litellm = mocker.patch("llm.service.litellm")
-        mock_litellm.completion.return_value = make_completion_response('{"add": []}')
+        mock_chat = mocker.patch("llm.service.provider.chat")
+        mock_chat.return_value = make_completion_response('{"add": []}')
         service.extract_memories("user1", "#test", "hello", "hi", [])
-        assert (
-            mock_litellm.completion.call_args.kwargs["model"] == "gemini/gemini-flash-lite-latest"
-        )
+        assert mock_chat.call_args.kwargs["model"] == "xai/grok-4-fast"
 
     def test_extract_memories_falls_back_to_assistant_model(
         self, make_service, mocker: MockerFixture
     ) -> None:
-        service, _ = make_service(assistantModel="gemini/gemini-flash-latest", memoryModel="")
-        mock_litellm = mocker.patch("llm.service.litellm")
-        mock_litellm.completion.return_value = make_completion_response('{"add": []}')
+        service, _ = make_service(assistantModel="xai/grok-4.3", memoryModel="")
+        mock_chat = mocker.patch("llm.service.provider.chat")
+        mock_chat.return_value = make_completion_response('{"add": []}')
         service.extract_memories("user1", "#test", "hello", "hi", [])
-        assert mock_litellm.completion.call_args.kwargs["model"] == "gemini/gemini-flash-latest"
+        assert mock_chat.call_args.kwargs["model"] == "xai/grok-4.3"
 
     def test_extract_memories_empty_on_no_facts(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN boring conversation WHEN extracted THEN returns empty result."""
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response('{"add": []}')
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
         result = service.extract_memories("user1", "#test", "hello", "hi", [])
         assert result.add == []
 
     def test_extract_memories_empty_on_error(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN API error WHEN extracting THEN returns empty result."""
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
-        mock_litellm.completion.side_effect = Exception("API down")
+        mock_chat = mocker.patch("llm.service.provider.chat")
+        mock_chat.side_effect = Exception("API down")
         result = service.extract_memories("user1", "#test", "hi", "hello", [])
         assert result.add == []
 
@@ -337,8 +270,8 @@ class TestMemoryExtraction:
     ) -> None:
         """GIVEN extraction raises THEN error field is populated AND traceback logged."""
         service, _ = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
-        mock_litellm.completion.side_effect = RuntimeError("boom")
+        mock_chat = mocker.patch("llm.service.provider.chat")
+        mock_chat.side_effect = RuntimeError("boom")
 
         with caplog.at_level(logging.ERROR, logger="LLM"):
             result = service.extract_memories("user1", "#test", "hi", "hello", [])
@@ -354,8 +287,8 @@ class TestMemoryExtraction:
     ) -> None:
         """GIVEN _ask_completion raises THEN logs at INFO and returns None."""
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
-        mock_litellm.completion.side_effect = RuntimeError("nope")
+        mock_chat = mocker.patch("llm.service.provider.chat")
+        mock_chat.side_effect = RuntimeError("nope")
 
         with caplog.at_level(logging.INFO, logger="LLM"):
             out = service._ask_completion("sys", "user", channel=None)
@@ -369,9 +302,9 @@ class TestMemoryExtraction:
     ) -> None:
         """GIVEN non-JSON response WHEN extracting THEN returns empty result."""
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response("not json at all")
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
         result = service.extract_memories("user1", "#test", "hi", "hello", [])
         assert result.add == []
 
@@ -380,12 +313,12 @@ class TestMemoryExtraction:
     ) -> None:
         """GIVEN existing memories WHEN extracting THEN included in prompt."""
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response('{"add": []}')
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
         service.extract_memories("user1", "#test", "hi", "hello", ["already knows Python"])
-        call_args = mock_litellm.completion.call_args
-        messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
+        call_args = mock_chat.call_args
+        messages = call_args.kwargs["messages"]
         prompt_text = " ".join(m["content"] for m in messages)
         assert "already knows Python" in prompt_text
 
@@ -394,9 +327,9 @@ class TestMemoryExtraction:
     ) -> None:
         """GIVEN candidates WHEN LLM reinforces THEN indices flow through."""
         service, _ = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response('{"add": ["new fact"], "reinforce": [0, 2]}')
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
         result = service.extract_memories(
             "user1",
             "#test",
@@ -413,9 +346,9 @@ class TestMemoryExtraction:
     ) -> None:
         """GIVEN reinforce index >= candidate count WHEN parsed THEN dropped."""
         service, _ = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response('{"add": [], "reinforce": [0, 5, -1, 1]}')
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
         result = service.extract_memories(
             "user1", "#test", "hi", "hello", [], existing_candidates=["a", "b"]
         )
@@ -426,9 +359,9 @@ class TestMemoryExtraction:
     ) -> None:
         """GIVEN candidate facts WHEN extracting THEN they appear indexed in prompt."""
         service, _ = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response('{"add": [], "reinforce": []}')
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
         service.extract_memories(
             "user1",
             "#test",
@@ -437,8 +370,8 @@ class TestMemoryExtraction:
             [],
             existing_candidates=["uses Arch Linux", "lives in Berlin"],
         )
-        call_args = mock_litellm.completion.call_args
-        messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
+        call_args = mock_chat.call_args
+        messages = call_args.kwargs["messages"]
         prompt_text = " ".join(m["content"] for m in messages)
         assert "[0] uses Arch Linux" in prompt_text
         assert "[1] lives in Berlin" in prompt_text
@@ -454,13 +387,13 @@ class TestMemoryExtraction:
         from llm.prompts import MEMORY_EXTRACTION_PROMPT
 
         service, _ = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response('{"add": [], "reinforce": []}')
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
 
         service.extract_memories("alice", "#test", "hi", "hello", ["knows Python", "uses Arch"])
-        first_system = mock_litellm.completion.call_args.kwargs["messages"][0]
-        mock_litellm.completion.reset_mock()
+        first_system = mock_chat.call_args.kwargs["messages"][0]
+        mock_chat.reset_mock()
 
         service.extract_memories(
             "bob",
@@ -470,7 +403,7 @@ class TestMemoryExtraction:
             ["plays guitar"],
             existing_candidates=["likes coffee"],
         )
-        second_system = mock_litellm.completion.call_args.kwargs["messages"][0]
+        second_system = mock_chat.call_args.kwargs["messages"][0]
 
         assert first_system == second_system
         assert first_system["content"] == MEMORY_EXTRACTION_PROMPT
@@ -483,9 +416,9 @@ class TestMemoryExtraction:
         system prompt cache-stable while still feeding the model the context
         it needs to choose between add and reinforce."""
         service, _ = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response('{"add": [], "reinforce": []}')
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
 
         service.extract_memories(
             "alice",
@@ -496,7 +429,7 @@ class TestMemoryExtraction:
             existing_candidates=["likes coffee"],
         )
 
-        messages = mock_litellm.completion.call_args.kwargs["messages"]
+        messages = mock_chat.call_args.kwargs["messages"]
         user_msg = messages[1]
         assert user_msg["role"] == "user"
         assert "knows Python" in user_msg["content"]
@@ -512,11 +445,11 @@ class TestMemoryCleanup:
         from llm.persistence import MemoryRow
 
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response(
             '{"drop": [4], "merge": [{"indices": [1, 2], "text": "likes Python"}]}'
         )
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
 
         rows = [
             MemoryRow(10, "user1", "moved to Vancouver", "#test", 500.0),
@@ -536,8 +469,8 @@ class TestMemoryCleanup:
         from llm.persistence import MemoryRow
 
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
-        mock_litellm.completion.side_effect = Exception("API down")
+        mock_chat = mocker.patch("llm.service.provider.chat")
+        mock_chat.side_effect = Exception("API down")
 
         rows = [
             MemoryRow(10, "user1", "fact a", "#test", 100.0),
@@ -553,9 +486,9 @@ class TestMemoryCleanup:
         from llm.persistence import MemoryRow
 
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response("not json at all")
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
 
         rows = [
             MemoryRow(10, "user1", "fact a", "#test", 100.0),
@@ -574,11 +507,11 @@ class TestMemoryCleanup:
         from llm.persistence import MemoryRow
 
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response(
             '{"drop": [1], "merge": [{"indices": [0, 1], "text": "combined"}]}'
         )
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
 
         rows = [
             MemoryRow(10, "user1", "fact a", "#test", 100.0),
@@ -593,9 +526,9 @@ class TestMemoryCleanup:
         from llm.persistence import MemoryRow
 
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response('{"drop": [5], "merge": []}')
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
 
         rows = [
             MemoryRow(10, "user1", "fact a", "#test", 100.0),
@@ -609,11 +542,11 @@ class TestMemoryCleanup:
         from llm.persistence import MemoryRow
 
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response(
             '{"drop": [], "merge": [{"indices": [0, 1], "text": ""}]}'
         )
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
 
         rows = [
             MemoryRow(10, "user1", "fact a", "#test", 100.0),
@@ -629,9 +562,9 @@ class TestMemoryCleanup:
         from llm.persistence import MemoryRow
 
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response('{"drop": [0, 1], "merge": []}')
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
 
         rows = [
             MemoryRow(10, "user1", "fact a", "#test", 100.0),
@@ -653,9 +586,9 @@ class TestMemoryCleanup:
         from llm.persistence import MemoryRow
 
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response('{"drop": [], "merge": []}')
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
 
         rows = [
             MemoryRow(10, "user1", "likes Python", "#test", 200.0),
@@ -663,8 +596,8 @@ class TestMemoryCleanup:
         ]
         service.cleanup_memories("user1", "#test", rows)
 
-        call_args = mock_litellm.completion.call_args
-        messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
+        call_args = mock_chat.call_args
+        messages = call_args.kwargs["messages"]
         prompt_text = " ".join(m["content"] for m in messages)
         assert "[0] likes Python" in prompt_text
         assert "[1] works at Acme" in prompt_text
@@ -674,55 +607,32 @@ class TestMemoryCleanup:
         from llm.persistence import MemoryRow
 
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response('{"drop": [], "merge": []}')
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
 
         rows = [MemoryRow(10, "user1", "fact", "#test", 100.0)]
         service.cleanup_memories("user1", "#test", rows)
 
-        call_kwargs = mock_litellm.completion.call_args.kwargs
-        # Cleanup runs on assistantModel; the key follows that model's provider.
+        call_kwargs = mock_chat.call_args.kwargs
         from .conftest import TEST_MODEL
 
-        assert call_kwargs["model"] == TEST_MODEL  # "gpt-4" -> openai
-        assert call_kwargs["api_key"] == FAKE_PROVIDER_KEYS["OPENAI_API_KEY"]
+        assert call_kwargs["model"] == TEST_MODEL
 
     def test_cleanup_uses_registry_timeout(self, make_service, mocker: MockerFixture) -> None:
         """GIVEN custom timeout WHEN cleanup runs THEN LLM call uses registry value."""
         from llm.persistence import MemoryRow
 
         service, mock_plugin = make_service(timeout=123)
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response('{"drop": [], "merge": []}')
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
 
         rows = [MemoryRow(10, "user1", "fact", "#test", 100.0)]
         service.cleanup_memories("user1", "#test", rows)
 
-        call_kwargs = mock_litellm.completion.call_args.kwargs
+        call_kwargs = mock_chat.call_args.kwargs
         assert call_kwargs["timeout"] == 123
-
-    def test_cleanup_key_follows_the_configured_model(
-        self, make_service, mocker: MockerFixture
-    ) -> None:
-        """GIVEN a gemini assistantModel WHEN cleanup runs THEN the gemini key is sent.
-
-        Changing the model changes the credential with it — there is no separate
-        per-command key left that could stay pointed at the previous provider.
-        """
-        from llm.persistence import MemoryRow
-
-        service, mock_plugin = make_service(assistantModel="gemini/gemini-flash-latest")
-        mock_litellm = mocker.patch("llm.service.litellm")
-        mock_response = make_completion_response('{"drop": [], "merge": []}')
-        mock_litellm.completion.return_value = mock_response
-
-        rows = [MemoryRow(10, "user1", "fact", "#test", 100.0)]
-        service.cleanup_memories("user1", "#test", rows)
-
-        call_kwargs = mock_litellm.completion.call_args.kwargs
-        assert call_kwargs["api_key"] == FAKE_PROVIDER_KEYS["GEMINI_API_KEY"]
 
     def test_cleanup_result_has_no_keep_field(self) -> None:
         """GIVEN CleanupResult WHEN inspected THEN has no keep field."""
@@ -735,9 +645,9 @@ class TestMemoryCleanup:
         from llm.persistence import MemoryRow
 
         service, mock_plugin = make_service()
-        mock_litellm = mocker.patch("llm.service.litellm")
+        mock_chat = mocker.patch("llm.service.provider.chat")
         mock_response = make_completion_response('{"drop": [2], "merge": []}')
-        mock_litellm.completion.return_value = mock_response
+        mock_chat.return_value = mock_response
 
         rows = [
             MemoryRow(10, "user1", "fact a", "#test", 300.0),
@@ -756,34 +666,6 @@ class TestMemoryCleanup:
         assert "Be aggressive" in MEMORY_CLEANUP_PROMPT
 
 
-class TestExtractMemories:
-    """Test extract_memories uses the assistant model and that model's key."""
-
-    def test_api_key_matches_assistant_models_provider(
-        self, make_service, mocker: MockerFixture
-    ) -> None:
-        """GIVEN the assistant model WHEN extract_memories runs THEN its provider's key is sent.
-
-        There is no longer a distinct "assistant key" setting to route
-        through — the key is resolved from whichever model is actually
-        called (apikeys.api_key_for), same as every other completion path.
-        This pins that extract_memories calls litellm.completion with the
-        assistant model's provider key rather than some other provider's.
-        """
-        service, mock_plugin = make_service()
-        mock_completion = mocker.patch("llm.service.litellm.completion")
-        mock_response = make_completion_response('{"add": ["likes cats"]}')
-        mock_completion.return_value = mock_response
-
-        result = service.extract_memories("nick", "#chan", "I like cats", "Cool!", [])
-
-        assert result.add == ["likes cats"]
-        # TEST_MODEL is "gpt-4" -> openai.
-        assert (
-            mock_completion.call_args.kwargs.get("api_key") == FAKE_PROVIDER_KEYS["OPENAI_API_KEY"]
-        )
-
-
 class TestCleanupMemoriesValidation:
     """Tests for cleanup_memories validation logic at lines 2694-2723."""
 
@@ -794,11 +676,11 @@ class TestCleanupMemoriesValidation:
         self.service, self.mock_plugin = make_service()
 
     def _mock_cleanup_response(self, parsed: object) -> None:
-        """Mock litellm.completion to return a JSON-encoded response."""
+        """Mock provider.chat to return a JSON-encoded response."""
         import json
 
         response = make_completion_response(json.dumps(parsed))
-        self.mocker.patch("llm.service.litellm.completion", return_value=response)
+        self.mocker.patch("llm.service.provider.chat", return_value=response)
 
     def _make_rows(self, count: int) -> list:
         """Create a list of MemoryRow objects for testing."""

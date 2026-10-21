@@ -681,14 +681,14 @@ class TestStatusAnnounceCompletion:
 
     Mirrors TestParseReminderService's mock_plugin/service fixture pair
     (test_reminders.py) — the established shape for unit-testing a one-shot
-    completion method with litellm.completion mocked out.
+    completion method with provider.chat mocked out.
     """
 
     @pytest.fixture
     def mock_plugin(self, mocker):
         plugin = mocker.MagicMock()
         plugin.registryValue.side_effect = lambda key, *args, **kwargs: {
-            "assistantModel": "gemini/gemini-2.0-flash",
+            "assistantModel": "anthropic/claude-haiku-5-5",
             "timeout": 30,
             "assistantSystemPrompt": "",
         }.get(key, "")
@@ -701,13 +701,13 @@ class TestStatusAnnounceCompletion:
 
     def test_no_tools_key_in_optional_kwargs(self, service, mocker):
         """include_tools=False is what makes this tool-less."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response("Claude API is degraded.")
         service.status_announce_completion(facts={"name": "x"}, channel="#test")
         assert "tools" not in mock_completion.call_args.kwargs
 
     def test_facts_arrive_as_the_json_user_block(self, service, mocker):
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response("Claude API is degraded.")
         facts = {"name": "Elevated errors", "service": "Claude", "url": "https://status.claude.com"}
         service.status_announce_completion(facts=facts, channel="#test")
@@ -716,7 +716,7 @@ class TestStatusAnnounceCompletion:
         assert json.loads(user_msg["content"]) == facts
 
     def test_none_content_returns_none(self, service, mocker):
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(None)
         result = service.status_announce_completion(facts={"name": "x"}, channel="#test")
         assert result is None
@@ -730,7 +730,7 @@ class TestStatusAnnounceCompletion:
         carries no URL, and therefore passed every post-check while saying
         less than the template it displaced.
         """
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             "Claude incident opened", finish_reason="length"
         )
@@ -738,7 +738,7 @@ class TestStatusAnnounceCompletion:
         assert result is None
 
     def test_complete_completion_is_returned(self, service, mocker):
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response(
             "Claude API is degraded.", finish_reason="stop"
         )
@@ -750,25 +750,22 @@ class TestStatusAnnounceCompletion:
     ):
         """Asked for, but not relied on.
 
-        gemini-flash-latest honours this intermittently — 8/8 in one sample,
-        1/5 an hour earlier, with reasoning_effort none/minimal and a
-        thinkingConfig passthrough no better. It stays because the honoured
-        case costs ~10x less. ``drop_params`` keeps the parameter harmless on a
-        provider that rejects it, matching the sampling overrides on the
-        assistant path. "low", not "disable": Anthropic 400s on "disable".
+        gemini-flash-latest honoured a reasoning cap intermittently — 8/8 in
+        one sample, 1/5 an hour earlier. It stays because the honoured case
+        costs ~10x less; the cap and the finish_reason check are what make a
+        leak harmless.
         """
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response("Claude API is degraded.")
         service.status_announce_completion(facts={"name": "x"}, channel="#test")
-        assert mock_completion.call_args.kwargs["reasoning_effort"] == "low"
-        assert mock_completion.call_args.kwargs["drop_params"] is True
+        assert mock_completion.call_args.kwargs["effort"] == "low"
 
     def test_the_cap_leaves_room_for_thinking_plus_a_sentence(self, service, mocker):
-        """Gemini bills thinking against max_tokens, so a cap sized for the
+        """Thinking is billed against max_tokens, so a cap sized for the
         sentence alone truncates every time the disable above is ignored.
         Thinking settles around 400-550 for this prompt rather than growing
         with the cap, so the cap has to clear that, not the sentence."""
-        mock_completion = mocker.patch("llm.service.litellm.completion")
+        mock_completion = mocker.patch("llm.service.provider.chat")
         mock_completion.return_value = make_completion_response("Claude API is degraded.")
         service.status_announce_completion(facts={"name": "x"}, channel="#test")
         assert mock_completion.call_args.kwargs["max_tokens"] >= 600
