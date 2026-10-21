@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from llm import provider
@@ -279,12 +279,14 @@ class TestConcurrentAPIKeyIsolation:
         observed: list[tuple[str, object]] = []
         lock = threading.Lock()
 
-        def record(url: str, headers: dict[str, str], body: object, **kwargs: object) -> dict:
+        def record(
+            url: str, headers: dict[str, str], body: dict[str, Any], **kwargs: object
+        ) -> dict:
             key = headers.get("x-api-key") or headers.get("Authorization", "").removeprefix(
                 "Bearer "
             )
             with lock:
-                observed.append((kwargs["model"], key))
+                observed.append((f"{kwargs['provider']}/{body['model']}", key))
             time.sleep(0.01)  # widen the interleaving window
             return {}
 
