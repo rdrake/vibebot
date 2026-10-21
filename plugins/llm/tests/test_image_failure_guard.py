@@ -162,7 +162,7 @@ class TestGuardIsWiredIntoTheChatPath:
 
     @pytest.fixture
     def service(self, make_service) -> LLMService:  # type: ignore[no-untyped-def]
-        svc, _plugin = make_service(assistantModel="gpt-4")
+        svc, _plugin = make_service(assistantModel="xai/grok-4.3")
         return svc
 
     def _messages_for(
@@ -178,8 +178,7 @@ class TestGuardIsWiredIntoTheChatPath:
             captured.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
             return make_completion_response("Here's your cat.")
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         service.assistant_completion(
             prompt="draw a cat",

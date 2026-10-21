@@ -2,47 +2,30 @@
 
 from __future__ import annotations
 
-import difflib
 import logging
 import threading
 
-import litellm
 import supybot.conf as conf
 import supybot.registry as registry
 from supybot.i18n import PluginInternationalization
+
+from . import apikeys, provider
 
 _ = PluginInternationalization("LLM")
 
 _log = logging.getLogger("supybot.plugins.LLM.config")
 
-# refusalFallbackModel's default. LiteLLM's price table has no entry for it, so
-# completion_cost would fail and its spend would book at $0. The alias is
-# served by grok-4.3 non-reasoning (owner, 2026-10-14), so it is priced at
-# grok-4.3's per-token rates. Registered here rather than in service.py because
-# the registry validates defaults at import, and config loads first.
+# refusalFallbackModel's default.
 REFUSAL_FALLBACK_MODEL = "xai/grok-4-1-fast-non-reasoning"
-litellm.register_model(
-    {
-        REFUSAL_FALLBACK_MODEL: {
-            key: litellm.model_cost["xai/grok-4.3"][key]
-            for key in (
-                "input_cost_per_token",
-                "output_cost_per_token",
-                "cache_read_input_token_cost",
-            )
-        }
-        | {"litellm_provider": "xai", "mode": "chat"}
-    }
-)
 
 
 class ValidatedModelName(registry.String):
-    """A model name validated against litellm's known models.
+    """A ``provider/name`` model string for a provider the plugin can call.
 
     - Empty strings are accepted (means "not configured").
-    - Models that litellm can parse (provider recognized) are accepted.
-      If the specific model isn't in litellm.model_list, a warning is logged once.
-    - Models that litellm cannot parse at all are rejected with suggestions.
+    - Any other prefix is rejected: provider.py has no client for it.
+    - A model with no price in provider.py is accepted with a one-time
+      warning, because its spend would book as $0.
     """
 
     _warned: set[str] = set()
@@ -55,62 +38,19 @@ class ValidatedModelName(registry.String):
         super().setValue(v)
 
     def _validate_model(self, model: str) -> None:
-        """Validate a model name against litellm's known models."""
-        try:
-            litellm.get_llm_provider(model)
-        except Exception as exc:  # noqa: BLE001
-            # BadRequestError is litellm's documented "unknown model" signal,
-            # but get_llm_provider can also raise other types internally (e.g.
-            # a KeyError/ValueError on a malformed provider prefix). Any of
-            # those escaping here would abort registry construction / bot.conf
-            # loading at startup instead of rejecting one bad value, so map
-            # every failure to a clean InvalidRegistryValue.
-            suggestions = self._suggest_models(model)
-            msg = f"Unknown model: {model!r}."
-            if suggestions:
-                msg += f" Did you mean: {', '.join(suggestions)}?"
-            else:
-                msg += " See https://docs.litellm.ai/docs/providers for supported models."
-            if not isinstance(exc, litellm.exceptions.BadRequestError):
-                msg += f" ({type(exc).__name__})"
-            raise registry.InvalidRegistryValue(msg) from exc
-
-        # Provider recognized — warn once if model is not in the known list.
-        # model_cost also counts: litellm.register_model fills only that.
-        if model not in litellm.model_list and model not in litellm.model_cost:
-            with ValidatedModelName._warned_lock:
-                if model not in ValidatedModelName._warned:
-                    ValidatedModelName._warned.add(model)
-                    suggestions = self._suggest_models(model)
-                    hint = ""
-                    if suggestions:
-                        hint = f" Similar known models: {', '.join(suggestions)}."
-                    _log.warning(
-                        "Model %r not in litellm's known model list (may be a custom "
-                        "deployment or newer model).%s",
-                        model,
-                        hint,
-                    )
-
-    @staticmethod
-    def _suggest_models(model: str, n: int = 3, cutoff: float = 0.6) -> list[str]:
-        """Suggest similar model names using fuzzy matching."""
-        # Try matching against full model list first
-        matches = difflib.get_close_matches(model, litellm.model_list, n=n, cutoff=cutoff)
-        if matches:
-            return matches
-
-        # If provider-prefixed, also try matching within that provider's models
-        if "/" in model:
-            provider, model_name = model.split("/", 1)
-            provider_models = litellm.models_by_provider.get(provider, set())
-            if provider_models:
-                sub_matches = difflib.get_close_matches(
-                    model_name, list(provider_models), n=n, cutoff=cutoff
+        if not apikeys.provider_of(model):
+            prefixes = ", ".join(f"{p}/" for p in sorted(apikeys.PROVIDER_ENV_VARS))
+            raise registry.InvalidRegistryValue(
+                f"Unknown model: {model!r}. Use a {prefixes} model."
+            )
+        if model in provider.PRICES or model in provider.IMAGE_PRICES:
+            return
+        with ValidatedModelName._warned_lock:
+            if model not in ValidatedModelName._warned:
+                ValidatedModelName._warned.add(model)
+                _log.warning(
+                    "Model %r has no price in provider.py; its spend will book as $0.", model
                 )
-                return [f"{provider}/{m}" for m in sub_matches]
-
-        return []
 
 
 _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
@@ -135,10 +75,10 @@ def configure(advanced: bool) -> None:
     print("=" * 60)
     print("LLM Plugin Configuration")
     print("=" * 60)
-    print("\nThis plugin provides AI-powered commands using LiteLLM.")
+    print("\nThis plugin provides AI-powered commands for Anthropic and xAI models.")
     print("You'll need API keys for the models you want to use.")
     print("\nAPI keys come from the environment, one per provider:")
-    print("  XAI_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY")
+    print("  XAI_API_KEY, ANTHROPIC_API_KEY")
     print("\nFor more info, see the README.md")
     print("=" * 60)
 
@@ -233,97 +173,11 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
-    "imageApiBase",
-    registry.String(
-        "",
-        _("""Base URL of an OpenAI-shaped image endpoint to draw against instead
-        of the model's own provider, e.g. http://host:port/v1 for the
-        self-hosted box. Empty means draw through the provider LiteLLM infers
-        from imageModel, which is the hosted default. When set, the bearer
-        token is ANIMATE_API_KEY — the self-hosted server's credential — not
-        the provider key imageModel's name would imply."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "imageSteps",
-    registry.NonNegativeInteger(
-        0,
-        _("""Denoising steps for a self-hosted image endpoint. 0 leaves the
-        choice to the server. Ignored unless imageApiBase is set, since hosted
-        providers do not take this parameter. Steps are the dominant cost:
-        measured on the reference box at 1024x576, 8 steps took ~27s and 25
-        took ~94s on an idle server."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "imageSize",
-    registry.String(
-        "",
-        _("""Output geometry as WxH for a self-hosted image endpoint, e.g.
-        1024x576. Empty lets the server choose. Ignored unless imageApiBase is
-        set: hosted providers are tuned through their own knobs instead."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "imageFallbackApiBase",
-    registry.String(
-        "",
-        _("""Base URL of an OpenAI-shaped image endpoint to draw against when the
-        primary provider REFUSES a prompt on content grounds. Empty disables
-        the fallback and a refusal reaches the user as an error, which is the
-        behaviour without this set. Authenticates with ANIMATE_API_KEY. The
-        fallback is sent the user's ORIGINAL prompt, never a safety rewrite:
-        an endpoint that does not refuse has nothing to be talked around."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "imageFallbackModel",
-    registry.String(
-        "",
-        _("""Model for imageFallbackApiBase. A plain string, not a validated
-        model name, because a self-hosted server names its models whatever it
-        likes — a filesystem path, for instance. Prefix with the wire format
-        LiteLLM should speak, e.g. openai//work/models/Some-Model."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "imageFallbackSteps",
-    registry.NonNegativeInteger(
-        0,
-        _("""Denoising steps for the fallback endpoint. 0 lets the server
-        choose. See imageSteps: this is the dominant cost of a fallback
-        draw."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "imageFallbackSize",
-    registry.String(
-        "",
-        _("""Output geometry as WxH for the fallback endpoint. Empty lets the
-        server choose."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
     "searchModel",
     ValidatedModelName(
         "xai/grok-4.3",
-        _("""Model for search/fetch tools. Falls back to assistantModel if empty.
-        Only xAI and Gemini models search; any other provider answers from
-        its own knowledge without looking anything up."""),
+        _("""Model for search/fetch tools. Must be an xai/ model: xAI's
+        Responses API is the only web search the plugin calls."""),
     ),
 )
 
@@ -334,8 +188,7 @@ conf.registerChannelValue(
         "",
         _("""Model for the memory extraction that runs after every reply.
         Falls back to assistantModel if empty. Its output is never shown, so a
-        flash-lite class model is enough; on Gemini a different model also
-        keeps these calls out of the chat model's free-tier daily quota."""),
+        small model is enough."""),
     ),
 )
 
@@ -358,8 +211,8 @@ conf.registerChannelValue(
     "subjectResearchModel",
     ValidatedModelName(
         "",
-        _("""Model for the subject-research pre-stage. Falls back to
-        searchModel, then assistantModel. Worth setting when the search model
+        _("""Model for the subject-research pre-stage (an xai/ model). Falls
+        back to searchModel. Worth setting when the search model
         is more reticent about describing real people than the generator
         downstream is."""),
     ),
@@ -373,9 +226,8 @@ conf.registerChannelValue(
         _("""Model for verse-mode (in-world roleplay) replies. Falls back to
         assistantModel if empty. Useful when the channel's assistantModel is a
         reasoning model that empirically produces terse output for long-form
-        scenes — point this at a non-reasoning model (e.g. gemini-flash-latest)
-        to get richer prose for verse turns without changing chat-mode
-        behavior."""),
+        scenes — point this at a non-reasoning model to get richer prose for
+        verse turns without changing chat-mode behavior."""),
     ),
 )
 

@@ -11,14 +11,13 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
+from llm import provider
 from llm.context import ContextConfig, ConversationContext
 from llm.service import LLMService
 
 from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
 
 if TYPE_CHECKING:
-    from unittest.mock import Mock
-
     from pytest_mock import MockerFixture
 
 pytestmark = pytest.mark.slow
@@ -269,30 +268,33 @@ class TestConcurrentAPIKeyIsolation:
         """GIVEN concurrent requests on different providers THEN no key bleeds.
 
         Keys are no longer per-request state, so the interesting contamination
-        is now cross-provider: 20 threads interleaving three providers must each
+        is now cross-provider: 20 threads interleaving two providers must each
         see their own model's variable, never a neighbour's.
         """
-        models = ["xai/grok-4.3", "gemini/gemini-3-flash-preview", "openai/gpt-5.2"]
+        models = ["xai/grok-4.3", "anthropic/claude-haiku-4-5"]
         expected = {
             "xai/grok-4.3": FAKE_PROVIDER_KEYS["XAI_API_KEY"],
-            "gemini/gemini-3-flash-preview": FAKE_PROVIDER_KEYS["GEMINI_API_KEY"],
-            "openai/gpt-5.2": FAKE_PROVIDER_KEYS["OPENAI_API_KEY"],
+            "anthropic/claude-haiku-4-5": FAKE_PROVIDER_KEYS["ANTHROPIC_API_KEY"],
         }
         observed: list[tuple[str, object]] = []
         lock = threading.Lock()
 
-        def record(**kwargs: object) -> object:
+        def record(url: str, headers: dict[str, str], body: object, **kwargs: object) -> dict:
+            key = headers.get("x-api-key") or headers.get("Authorization", "").removeprefix(
+                "Bearer "
+            )
             with lock:
-                observed.append((kwargs["model"], kwargs.get("api_key")))
+                observed.append((kwargs["model"], key))
             time.sleep(0.01)  # widen the interleaving window
-            return make_completion_response()
+            return {}
 
-        monkeypatch.setattr("litellm.completion", record)
+        # The key is read inside provider.chat, so stub the wire, not chat.
+        monkeypatch.setattr("llm.provider._post", record)
         service, _ = make_service()
 
         def worker(index: int) -> None:
             model = models[index % len(models)]
-            service._timed_completion("ask", model=model, messages=[], channel=None)
+            service._timed_completion("ask", model=model, messages=[], channel=None, timeout=5)
 
         threads = [threading.Thread(target=worker, args=(i,)) for i in range(20)]
         for thread in threads:
@@ -301,7 +303,7 @@ class TestConcurrentAPIKeyIsolation:
             thread.join()
 
         assert len(observed) == 20
-        assert len({key for _model, key in observed}) == 3
+        assert len({key for _model, key in observed}) == 2
         for model, key in observed:
             assert key == expected[model], f"key bleed: {model} received another provider's key"
 
@@ -522,7 +524,7 @@ class TestNetworkFailureRecovery:
         call_count = [0]
         lock = threading.Lock()
 
-        def flaky_completion(**kwargs) -> Mock:
+        def flaky_completion(**kwargs) -> provider.Reply:
             with lock:
                 call_count[0] += 1
                 current = call_count[0]
@@ -531,17 +533,12 @@ class TestNetworkFailureRecovery:
             if current % 3 == 0:
                 raise Exception("Intermittent network error")
 
-            response = mocker.Mock()
-            response.choices = [mocker.Mock()]
-            response.choices[0].message = mocker.Mock()
-            response.choices[0].message.content = f"Response {current}"
-            response.choices[0].message.tool_calls = None
-            return response
+            return make_completion_response(f"Response {current}")
 
         service, _ = make_service()
         results = []
 
-        mocker.patch("llm.service.litellm.completion", side_effect=flaky_completion)
+        mocker.patch("llm.service.provider.chat", side_effect=flaky_completion)
         for i in range(9):
             result = service.completion(f"Request {i}", command="ask")
             results.append(result.content)
@@ -606,8 +603,6 @@ class TestHighVolumeFileOperations:
 
     def test_concurrent_image_saving(self, service: LLMService, tmp_path) -> None:
         """GIVEN many concurrent image saves WHEN saving THEN all files created."""
-        import base64
-
         urls = []
         lock = threading.Lock()
         errors = []
@@ -616,8 +611,7 @@ class TestHighVolumeFileOperations:
             try:
                 # Create unique "image" data
                 data = f"FAKE_IMAGE_DATA_{image_id}".encode()
-                b64_data = base64.b64encode(data).decode()
-                url = service.save_image_to_http(b64_data)
+                url = service._save_image_bytes(data, "png")
                 if url:
                     with lock:
                         urls.append(url)

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import litellm
 import pytest
+from llm import provider
 from llm.assistant import (
     _BOOKKEEPING_TOOLS,
     ASSISTANT_TOOL_SPECS,
@@ -788,12 +788,8 @@ class TestMetaCompletion:
         mock_response = make_completion_response("Done \u2014 instruction set.")
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             return_value=mock_response,
-        )
-        mocker.patch(
-            "llm.service.litellm.completion_cost",
-            return_value=0.001,
         )
 
         result = service.assistant_completion(
@@ -819,10 +815,9 @@ class TestMetaCompletion:
         second_response = make_completion_response("Done \u2014 I'll respond in haiku.")
 
         mock_completion = mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, second_response],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         db = mocker.MagicMock()
         db.save_instruction.return_value = None
@@ -850,13 +845,12 @@ class TestMetaCompletion:
         threads from the request into the executor's gate."""
         tool_call = make_tool_call("list_memories", {}, call_id="call_1")
         mock_completion = mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[
                 make_completion_response(None, tool_calls=[tool_call]),
                 make_completion_response("No can do."),
             ],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
         db = mocker.MagicMock()
 
         service.assistant_completion(
@@ -880,7 +874,7 @@ class TestMetaCompletion:
         loop_response = make_completion_response(None, tool_calls=[tool_call])
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             return_value=loop_response,
         )
 
@@ -913,7 +907,7 @@ class TestMetaCompletion:
     ) -> None:
         """GIVEN LLM API fails WHEN called THEN returns error result."""
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=Exception("API down"),
         )
 
@@ -937,10 +931,9 @@ class TestMetaCompletion:
         second_response = make_completion_response("Deleted 2 memories.")
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, second_response],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         db = mocker.MagicMock()
         db.delete_memory.return_value = True
@@ -971,17 +964,16 @@ class TestMetaCompletion:
         garbage model output. The malformed-arguments guard must skip and emit
         an error tool-message instead.
         """
-        # A raw string is passed through verbatim, so .function.arguments is
+        # A raw string is passed through verbatim, so .arguments is
         # non-JSON and json.loads() raises inside the loop.
         bad_call = make_tool_call("clear_instruction", "{not valid json", call_id="call_bad")
         first_response = make_completion_response(None, tool_calls=[bad_call])
         second_response = make_completion_response("Couldn't do that.")
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, second_response],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         db = mocker.MagicMock()
 
@@ -1020,10 +1012,9 @@ class TestMetaCompletion:
         second_response = make_completion_response("Carrying on in-scene.")
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, second_response],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         result = service.assistant_completion(
             prompt="do a thing",
@@ -1060,10 +1051,9 @@ class TestMetaCompletion:
         second_response = make_completion_response("Carrying on in-scene.")
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, second_response],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         result = service.assistant_completion(
             prompt="do a thing",
@@ -1081,14 +1071,13 @@ class TestMetaCompletion:
         assert result.last_successful_tool != "verse_record"
 
     def test_cost_is_populated(self, service: LLMService, mocker: MockerFixture) -> None:
-        """GIVEN meta completion WHEN successful THEN cost is calculated."""
-        mock_response = make_completion_response("Done.")
+        """GIVEN meta completion WHEN successful THEN the reply's cost is carried."""
+        mock_response = make_completion_response("Done.", cost=0.005)
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             return_value=mock_response,
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.005)
 
         result = service.assistant_completion(
             prompt="get instruction",
@@ -1099,7 +1088,7 @@ class TestMetaCompletion:
             bot_nick="VibeBot",
         )
 
-        assert result.cost > 0
+        assert result.cost == pytest.approx(0.005)
 
     def test_assistant_completion_layers_system_prompt_over_framework(
         self, service: LLMService, mocker: MockerFixture
@@ -1116,8 +1105,7 @@ class TestMetaCompletion:
             captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
             return mock_response
 
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
 
         service.assistant_completion(
             prompt="hello",
@@ -1157,8 +1145,7 @@ class TestMetaCompletion:
             captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
             return mock_response
 
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
 
         service.assistant_completion(
             prompt="describe the scene",
@@ -1204,8 +1191,7 @@ class TestMetaCompletion:
             captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
             return mock_response
 
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
 
         # Mirror the shipped default assistantSystemPrompt terseness pump.
         service.assistant_completion(
@@ -1229,16 +1215,11 @@ class TestMetaCompletion:
         assert "does NOT apply in verse" in content
         assert "the length it deserves" in content
 
-    def test_assistant_completion_verse_sampling_overrides_drop_unsupported(
+    def test_assistant_completion_verse_passes_its_temperature(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
-        """Verse sets temperature + frequency_penalty to dampen the run-on
-        spiral, but xAI/grok rejects frequency_penalty with
-        UnsupportedParamsError — which previously failed the whole completion
-        (user saw the generic error). The call must pass drop_params=True so
-        LiteLLM drops provider-unsupported sampling params instead of raising,
-        keeping each override where the provider honours it.
-        """
+        """Verse sets its own temperature to dampen the run-on spiral; the
+        profile's value must reach the provider call."""
         from llm.service import PROFILE_VERSE, PROFILES
 
         mock_response = make_completion_response("Done.")
@@ -1248,8 +1229,7 @@ class TestMetaCompletion:
             captured_kwargs.update(kwargs)
             return mock_response
 
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
 
         service.assistant_completion(
             prompt="describe the scene",
@@ -1264,9 +1244,6 @@ class TestMetaCompletion:
 
         profile = PROFILES[PROFILE_VERSE]
         assert captured_kwargs.get("temperature") == profile.temperature
-        assert captured_kwargs.get("frequency_penalty") == profile.frequency_penalty
-        # The fix: unsupported params are dropped, not fatal.
-        assert captured_kwargs.get("drop_params") is True
 
     def test_assistant_completion_drops_channel_history_for_verse(
         self, service: LLMService, mocker: MockerFixture
@@ -1290,8 +1267,7 @@ class TestMetaCompletion:
             captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
             return mock_response
 
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
 
         channel_history = [
             {"nick": "alice", "role": "user", "content": "tell us about the stinky lads"},
@@ -1335,8 +1311,7 @@ class TestMetaCompletion:
             captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
             return mock_response
 
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
 
         channel_history = [
             {"nick": "alice", "role": "user", "content": "tell us about the stinky lads"},
@@ -1377,8 +1352,7 @@ class TestMetaCompletion:
             captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
             return mock_response
 
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
 
         history = [
             {"role": "user", "content": "tell us about the stinky lads"},
@@ -1422,8 +1396,7 @@ class TestMetaCompletion:
             captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
             return mock_response
 
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
 
         history = [
             {"role": "user", "content": "tell us about the stinky lads"},
@@ -1460,8 +1433,7 @@ class TestMetaCompletion:
             captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
             return mock_response
 
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
 
         service.assistant_completion(
             prompt="hello",
@@ -1488,8 +1460,7 @@ class TestMetaCompletion:
             captured_messages.extend(kwargs.get("messages", []))  # type: ignore[union-attr]
             return mock_response
 
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
 
         service.assistant_completion(
             prompt="hello",
@@ -1520,8 +1491,7 @@ class TestMetaCompletion:
             captured.append(kwargs.get("messages", [])[0]["content"])  # type: ignore[index]
             return mock_response
 
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
         lookup = {"type": "function", "function": {"name": "irc_lookup", "parameters": {}}}
         common = {
             "prompt": "whois eck",
@@ -1549,8 +1519,7 @@ class TestMetaCompletion:
             captured.append(kwargs.get("messages", [])[0]["content"])  # type: ignore[index]
             return make_completion_response("Done.")
 
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
         react = {"type": "function", "function": {"name": "react", "parameters": {}}}
         common = {
             "prompt": "react to bob",
@@ -1579,8 +1548,7 @@ class TestMetaCompletion:
             captured.update(kwargs)
             return mock_response
 
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
 
         service.assistant_completion(
             prompt="hello",
@@ -1604,8 +1572,7 @@ class TestMetaCompletion:
         """assistant_completion passes search_fn/fetch_fn/code_fn to AssistantToolExecutor."""
         mock_response = make_completion_response("Done.")
 
-        mocker.patch("llm.service.litellm.completion", return_value=mock_response)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", return_value=mock_response)
 
         mock_executor_cls = mocker.patch("llm.assistant.AssistantToolExecutor")
 
@@ -1641,10 +1608,9 @@ class TestMetaCompletion:
         second_response = make_completion_response("Nefarious 2 details...")
 
         mock_completion = mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, second_response],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         result = service.assistant_completion(
             prompt="search for the latest nefarious 2 release",
@@ -1682,10 +1648,9 @@ class TestMetaCompletion:
         forbidden = make_completion_response("throwaway beat")
 
         mock_completion = mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, forbidden],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         mock_executor = mocker.MagicMock()
         mock_executor.grounding_used = False
@@ -1732,10 +1697,7 @@ class TestMetaCompletion:
             if s["function"]["name"] == "verse_storybook"
         ]
         text_response = make_completion_response("Once upon a time the lads met...")
-        mock_completion = mocker.patch(
-            "llm.service.litellm.completion", side_effect=[text_response]
-        )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mock_completion = mocker.patch("llm.service.provider.chat", side_effect=[text_response])
 
         mock_executor = mocker.MagicMock()
         mock_executor.grounding_used = False
@@ -1767,10 +1729,9 @@ class TestMetaCompletion:
         second_response = make_completion_response("Here are results.")
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, second_response],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         # Mock the executor to set grounding_used when execute is called
         mock_executor = mocker.MagicMock()
@@ -1800,14 +1761,17 @@ class TestMetaCompletion:
         """AssistantResult totals include costs from leaf tool calls."""
         # First response: tool call; second response: text
         tool_call = make_tool_call("web_search", {"query": "test"}, call_id="call_1")
-        first_response = make_completion_response(None, tool_calls=[tool_call])
-        second_response = make_completion_response("Here are results.")
+        first_response = make_completion_response(
+            None, tool_calls=[tool_call], prompt_tokens=10, completion_tokens=5, cost=0.001
+        )
+        second_response = make_completion_response(
+            "Here are results.", prompt_tokens=10, completion_tokens=5, cost=0.001
+        )
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, second_response],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         # Mock executor with accumulated leaf costs
         mock_executor = mocker.MagicMock()
@@ -1817,9 +1781,6 @@ class TestMetaCompletion:
         mock_executor.accumulated_cost = 0.05
         mock_executor.execute.return_value = ToolResult(content='{"results": []}')
         mocker.patch("llm.assistant.AssistantToolExecutor", return_value=mock_executor)
-
-        # _extract_usage returns (10, 5, 0.001) for each LLM call
-        mocker.patch.object(service, "_extract_usage", return_value=(10, 5, 0.001))
 
         result = service.assistant_completion(
             prompt="search for test",
@@ -1841,7 +1802,8 @@ class TestMetaCompletion:
         "error",
         [
             pytest.param(
-                litellm.Timeout(message="slow", model="m", llm_provider="xai"), id="timeout"
+                provider.RequestTimeoutError("slow", model="xai/grok-4", provider="xai"),
+                id="timeout",
             ),
             pytest.param(RuntimeError("boom"), id="other"),
         ],
@@ -1854,8 +1816,13 @@ class TestMetaCompletion:
         THEN the result still carries that cost, tokens and model."""
         tool_call = make_tool_call("web_search", {"query": "test"}, call_id="call_1")
         mocker.patch(
-            "llm.service.litellm.completion",
-            side_effect=[make_completion_response(None, tool_calls=[tool_call]), error],
+            "llm.service.provider.chat",
+            side_effect=[
+                make_completion_response(
+                    None, tool_calls=[tool_call], prompt_tokens=10, completion_tokens=5, cost=0.001
+                ),
+                error,
+            ],
         )
         mock_executor = mocker.MagicMock()
         mock_executor.grounding_used = False
@@ -1864,7 +1831,6 @@ class TestMetaCompletion:
         mock_executor.accumulated_cost = 0.05
         mock_executor.execute.return_value = ToolResult(content='{"results": []}')
         mocker.patch("llm.assistant.AssistantToolExecutor", return_value=mock_executor)
-        mocker.patch.object(service, "_extract_usage", return_value=(10, 5, 0.001))
         mocker.patch.object(service, "_stash_timeout", return_value=stashed)
 
         result = service.assistant_completion(
@@ -1899,12 +1865,11 @@ class TestMetaCompletion:
         verse system prompt and verseModel ride along in the stashed messages,
         so the retry regenerates the scene text).
         """
-        import litellm as litellm_module
 
         mocker.patch(
-            "llm.service.litellm.completion",
-            side_effect=litellm_module.Timeout(
-                message="timed out", model="gpt-4", llm_provider="openai"
+            "llm.service.provider.chat",
+            side_effect=provider.RequestTimeoutError(
+                "timed out", model="xai/grok-4", provider="xai"
             ),
         )
         stash_mock = mocker.patch.object(service, "_stash_timeout", return_value=True)
@@ -1934,12 +1899,11 @@ class TestMetaCompletion:
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
         """When _stash_timeout returns False (expiry disabled), assistant returns an error."""
-        import litellm as litellm_module
 
         mocker.patch(
-            "llm.service.litellm.completion",
-            side_effect=litellm_module.Timeout(
-                message="timed out", model="gpt-4", llm_provider="openai"
+            "llm.service.provider.chat",
+            side_effect=provider.RequestTimeoutError(
+                "timed out", model="xai/grok-4", provider="xai"
             ),
         )
         mocker.patch.object(service, "_stash_timeout", return_value=False)
@@ -1961,7 +1925,6 @@ class TestMetaCompletion:
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
         """Stashed request_data captures the initial messages, not the tool-loop-mutated list."""
-        import litellm as litellm_module
 
         # First call returns a tool_calls response (mutates `messages`),
         # second call raises Timeout. The stash should still see the
@@ -1970,10 +1933,10 @@ class TestMetaCompletion:
         first_response = make_completion_response(None, tool_calls=[tool_call])
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[
                 first_response,
-                litellm_module.Timeout(message="timed out", model="gpt-4", llm_provider="openai"),
+                provider.RequestTimeoutError("timed out", model="xai/grok-4", provider="xai"),
             ],
         )
         stash_mock = mocker.patch.object(service, "_stash_timeout", return_value=True)
@@ -2000,14 +1963,13 @@ class TestMetaCompletion:
     def test_extra_tools_appended_to_profile_tools(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
-        """extra_tools are included in the tools kwarg passed to litellm.completion."""
+        """extra_tools are included in the tools kwarg passed to provider.chat."""
         mock_response = make_completion_response("Done.")
 
         mock_completion = mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             return_value=mock_response,
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         fake_schema = {
             "type": "function",
@@ -2045,10 +2007,9 @@ class TestMetaCompletion:
         second_response = make_completion_response("Pong.")
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, second_response],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         mock_executor = mocker.MagicMock()
         mock_executor.grounding_used = False
@@ -2089,10 +2050,9 @@ class TestMetaCompletion:
         second_response = make_completion_response("Sorry, that failed.")
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, second_response],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         mock_executor = mocker.MagicMock()
         mock_executor.grounding_used = False
@@ -2130,10 +2090,9 @@ class TestMetaCompletion:
         second_response = make_completion_response("Pong.")
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, second_response],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         mock_executor = mocker.MagicMock()
         mock_executor.grounding_used = False
@@ -2175,10 +2134,9 @@ class TestMetaCompletion:
         forbidden = make_completion_response("the lads high-five in The Clearing")
 
         completion = mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, forbidden],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         mock_executor = mocker.MagicMock()
         mock_executor.grounding_used = False
@@ -2212,10 +2170,7 @@ class TestMetaCompletion:
         tool_call = make_tool_call(tool, {"emoji": "👍"}, call_id="call_r")
         first = make_completion_response(alongside, tool_calls=[tool_call])
         second = make_completion_response("Reacted with 👍!")
-        completion = mocker.patch(
-            "llm.service.litellm.completion", side_effect=[first, second, second]
-        )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
+        completion = mocker.patch("llm.service.provider.chat", side_effect=[first, second, second])
         mock_executor = mocker.MagicMock()
         mock_executor.grounding_used = False
         mock_executor.accumulated_prompt_tokens = 0
@@ -2297,14 +2252,9 @@ class TestAssistantCompletionEchoGuard:
         return svc
 
     @staticmethod
-    def _text_response(mocker: MockerFixture, content: str) -> MagicMock:
+    def _text_response(mocker: MockerFixture, content: str) -> provider.Reply:
         """Build a mock completion response carrying ``content`` and no tools."""
-        resp = mocker.MagicMock()
-        choice = mocker.MagicMock()
-        choice.message.content = content
-        choice.message.tool_calls = None
-        resp.choices = [choice]
-        return resp
+        return make_completion_response(content)
 
     def test_normalize_for_echo_collapses_case_space_punctuation(self) -> None:
         """GIVEN trivially varied text WHEN normalized THEN forms collapse to one."""
@@ -2341,8 +2291,7 @@ class TestAssistantCompletionEchoGuard:
             seen_messages.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
             return responses[len(seen_messages) - 1]
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         result = service.assistant_completion(
             prompt="finish the story",
@@ -2370,10 +2319,9 @@ class TestAssistantCompletionEchoGuard:
         budget is spent THEN an error result with empty content is returned —
         so the caller surfaces "try again" instead of relaying the echo."""
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=lambda **_kw: self._text_response(mocker, "Finish the story."),
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         result = service.assistant_completion(
             prompt="finish the story",
@@ -2417,13 +2365,12 @@ class TestVerseDenialReseed:
         corrected = "The Year 8 lads stormed the assembly hall in a fog of glory."
 
         mock_completion = mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[
                 make_completion_response(denial),
                 make_completion_response(corrected),
             ],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         result = service.assistant_completion(
             prompt="tell the tale of the assgas assembly",
@@ -2470,13 +2417,8 @@ class TestVerseDenialGuard:
         return svc
 
     @staticmethod
-    def _text_response(mocker: MockerFixture, content: str) -> MagicMock:
-        resp = mocker.MagicMock()
-        choice = mocker.MagicMock()
-        choice.message.content = content
-        choice.message.tool_calls = None
-        resp.choices = [choice]
-        return resp
+    def _text_response(mocker: MockerFixture, content: str) -> provider.Reply:
+        return make_completion_response(content)
 
     @pytest.mark.parametrize(
         "reply",
@@ -2540,8 +2482,7 @@ class TestVerseDenialGuard:
             seen_messages.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
             return responses[len(seen_messages) - 1]
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         result = service.assistant_completion(
             prompt="what happened when the stinky lads sharted out science",
@@ -2577,8 +2518,7 @@ class TestVerseDenialGuard:
             calls["n"] += 1
             return self._text_response(mocker, denial)
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         result = service.assistant_completion(
             prompt="did the moon landing hoax happen",
@@ -2603,10 +2543,9 @@ class TestVerseDenialGuard:
 
         denial = "That never happened at all, pure fiction not in the canon."
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=lambda **_kw: self._text_response(mocker, denial),
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         result = service.assistant_completion(
             prompt="what happened at alton towers",
@@ -2681,13 +2620,8 @@ class TestVerseDegradedGuard:
         return svc
 
     @staticmethod
-    def _text_response(mocker: MockerFixture, content: str) -> MagicMock:
-        resp = mocker.MagicMock()
-        choice = mocker.MagicMock()
-        choice.message.content = content
-        choice.message.tool_calls = None
-        resp.choices = [choice]
-        return resp
+    def _text_response(mocker: MockerFixture, content: str) -> provider.Reply:
+        return make_completion_response(content)
 
     # A 200-word passage looping the same five words: low unique ratio, but
     # punctuated so it trips the diversity branch, not the run-on branch.
@@ -2835,8 +2769,7 @@ class TestVerseDegradedGuard:
             seen_messages.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
             return responses[len(seen_messages) - 1]
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         result = service.assistant_completion(
             prompt="what happened in the science lab",
@@ -2876,8 +2809,7 @@ class TestVerseDegradedGuard:
             seen.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
             return responses[len(seen) - 1]
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         result = service.assistant_completion(
             prompt="summarize the meeting",
@@ -2906,10 +2838,9 @@ class TestVerseDegradedGuard:
         from llm.service import PROFILE_VERSE
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=lambda **_kw: self._text_response(mocker, self.LOOPING),
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         result = service.assistant_completion(
             prompt="what happened in the dorm",
@@ -2944,13 +2875,8 @@ class TestRepeatReplyGuard:
         return svc
 
     @staticmethod
-    def _text_response(mocker: MockerFixture, content: str) -> MagicMock:
-        resp = mocker.MagicMock()
-        choice = mocker.MagicMock()
-        choice.message.content = content
-        choice.message.tool_calls = None
-        resp.choices = [choice]
-        return resp
+    def _text_response(mocker: MockerFixture, content: str) -> provider.Reply:
+        return make_completion_response(content)
 
     # Real production pair: the bot's greeting reply on consecutive days —
     # different verbs and endings, same stuck schtick.
@@ -3051,8 +2977,7 @@ class TestRepeatReplyGuard:
             seen.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
             return responses[len(seen) - 1]
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         result = service.assistant_completion(
             prompt="how's it going",
@@ -3091,8 +3016,7 @@ class TestRepeatReplyGuard:
             seen.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
             return responses[len(seen) - 1]
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         result = service.assistant_completion(
             prompt="how's it going",
@@ -3135,8 +3059,7 @@ class TestRepeatReplyGuard:
             calls += 1
             return self._text_response(mocker, candidate)
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         result = service.assistant_completion(
             prompt="continue with something concise",
@@ -3171,8 +3094,7 @@ class TestRepeatReplyGuard:
             calls += 1
             return self._text_response(mocker, candidate)
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         result = service.assistant_completion(
             prompt="continue the scene",
@@ -3204,8 +3126,7 @@ class TestRepeatReplyGuard:
             calls += 1
             return self._text_response(mocker, self.COMET_A)
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         result = service.assistant_completion(
             prompt="continue the scene",
@@ -3228,10 +3149,9 @@ class TestRepeatReplyGuard:
         """GIVEN the model keeps parroting after the retry budget WHEN the
         loop finishes THEN the best-effort reply is still delivered."""
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=lambda **_kw: self._text_response(mocker, self.COMET_A),
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         result = service.assistant_completion(
             prompt="how's it going",
@@ -3682,7 +3602,7 @@ class TestDrawForMeta:
     def test_free_refusal_still_gets_its_row(
         self, plugin, mocker: MockerFixture, mock_irc: MagicMock
     ) -> None:
-        """Imagen blocks by returning empty data and charges nothing for it.
+        """A draw blocked with no picture returned can charge nothing for it.
 
         The "nothing was spent, skip the row" rule is about calls that never
         reached a provider. This one reached one and came back refused; the
@@ -3692,7 +3612,7 @@ class TestDrawForMeta:
 
         plugin.llm_service.image_generation.return_value = ImageResult(
             content="https://img.example/cat.png",
-            model="gemini/imagen-4.0-fast-generate-001",
+            model="xai/grok-imagine-image",
             cost=0.0,
             blocked_attempts=(BlockedAttempt("a cat on fire", "empty response", 0.0),),
         )
@@ -4079,10 +3999,9 @@ class TestMetaIntegration:
         second_response = make_completion_response("Done \u2014 I'll respond in haiku.")
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, second_response],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         result = svc.assistant_completion(
             route_profile=PROFILE_REMIND_ACTION,
@@ -4129,10 +4048,9 @@ class TestMetaIntegration:
         r3 = make_completion_response("Deleted 2 memories about cats.")
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[r1, r2, r3],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         result = svc.assistant_completion(
             route_profile=PROFILE_REMIND_ACTION,
@@ -4187,10 +4105,9 @@ class TestMetaIntegration:
         second_response = make_completion_response("You've made 2 requests costing $0.03.")
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, second_response],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         from llm.context import ContextConfig, ConversationContext
 
@@ -4220,10 +4137,9 @@ class TestMetaIntegration:
         second_response = make_completion_response("Cleaned up your memories.")
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, second_response],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         from llm.context import ContextConfig, ConversationContext
 
@@ -4259,10 +4175,9 @@ class TestMetaIntegration:
         second_response = make_completion_response("Reminder set: deploy (in 2 hours).")
 
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[first_response, second_response],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
 
         from llm.context import ContextConfig, ConversationContext
 
@@ -5168,8 +5083,7 @@ class TestAssistantCompletionReadsModelKeyFromProfiles:
 
         mock_response = make_completion_response("ok")
 
-        mocker.patch("llm.service.litellm.completion", return_value=mock_response)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", return_value=mock_response)
 
         # Capture every registryValue call so we can prove our sentinel
         # keys were the ones used.
@@ -5225,8 +5139,7 @@ class TestAssistantCompletionReadsModelKeyFromProfiles:
             captured_model.append(kwargs.get("model"))
             return mock_response
 
-        mocker.patch("llm.service.litellm.completion", side_effect=capture)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=capture)
 
         service.assistant_completion(
             prompt="hello",

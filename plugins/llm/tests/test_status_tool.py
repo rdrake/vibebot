@@ -221,10 +221,9 @@ class TestToolWiringGate:
         plugin._STATUS_MAX_QUERYABLE = LLM._STATUS_MAX_QUERYABLE
         plugin._status_tool_payload = mocker.Mock(name="_status_tool_payload")
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             return_value=make_completion_response("hi"),
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
         # AssistantToolExecutor is imported locally inside assistant_completion
         # (service.py ~4744), so the patch target is the defining module, not
         # llm.service's (nonexistent) module-level attribute.
@@ -298,10 +297,9 @@ class TestToolSchemaGateOnConfig:
         plugin._STATUS_MAX_QUERYABLE = LLM._STATUS_MAX_QUERYABLE
         plugin._status_tool_payload = mocker.Mock(name="_status_tool_payload")
         completion = mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             return_value=make_completion_response("hi"),
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         service.assistant_completion(
             prompt="hi",
@@ -431,10 +429,9 @@ class TestQueryableOnlyGate:
             "llm.assistant.AssistantToolExecutor", wraps=AssistantToolExecutor
         )
         completion = mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             return_value=make_completion_response("hi"),
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         service.assistant_completion(
             prompt="hi",

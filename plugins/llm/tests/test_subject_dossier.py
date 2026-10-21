@@ -33,10 +33,8 @@ if TYPE_CHECKING:
 
 def _answering(mocker, service, text: str, **usage: Any):
     """Stub the provider call so the researcher returns ``text``."""
-    mocker.patch.object(service, "_is_xai_model", return_value=False)
-    return mocker.patch.object(
-        service,
-        "_completion_with_tool_fallback",
+    return mocker.patch(
+        "llm.service.provider.search",
         return_value=make_completion_response(
             text,
             prompt_tokens=usage.get("prompt_tokens", 40),
@@ -199,47 +197,34 @@ class TestDossierParsing:
 
 
 class TestDossierModelSelection:
-    """Three keys, most specific first."""
+    """Two keys, most specific first."""
 
     def test_prefers_subject_research_model(self, make_service, mocker) -> None:
-        """GIVEN all three keys set WHEN researched THEN the research key wins."""
+        """GIVEN both keys set WHEN researched THEN the research key wins."""
         service, _ = make_service(
-            subjectResearchModel="gemini/gemini-2.5-flash",
-            searchModel="gemini/gemini-2.0-flash",
-            assistantModel="gemini/gemini-flash-latest",
+            subjectResearchModel="xai/grok-4.3",
+            searchModel="xai/grok-4-1-fast-reasoning",
+            assistantModel="anthropic/claude-haiku-5-5",
         )
         call = _answering(mocker, service, "- A — b")
 
         result = service.subject_dossier("x", channel="#test")
 
-        assert call.call_args.kwargs["model"] == "gemini/gemini-2.5-flash"
-        assert result.model == "gemini/gemini-2.5-flash"
+        assert call.call_args.args[0] == "xai/grok-4.3"
+        assert result.model == "xai/grok-4.3"
 
     def test_falls_back_to_search_model(self, make_service, mocker) -> None:
         """GIVEN no research key WHEN researched THEN searchModel is used."""
         service, _ = make_service(
             subjectResearchModel="",
-            searchModel="gemini/gemini-2.0-flash",
-            assistantModel="gemini/gemini-flash-latest",
+            searchModel="xai/grok-4-1-fast-reasoning",
+            assistantModel="anthropic/claude-haiku-5-5",
         )
         call = _answering(mocker, service, "- A — b")
 
         service.subject_dossier("x", channel="#test")
 
-        assert call.call_args.kwargs["model"] == "gemini/gemini-2.0-flash"
-
-    def test_falls_back_to_assistant_model(self, make_service, mocker) -> None:
-        """GIVEN neither key WHEN researched THEN assistantModel is used."""
-        service, _ = make_service(
-            subjectResearchModel="",
-            searchModel="",
-            assistantModel="gemini/gemini-flash-latest",
-        )
-        call = _answering(mocker, service, "- A — b")
-
-        service.subject_dossier("x", channel="#test")
-
-        assert call.call_args.kwargs["model"] == "gemini/gemini-flash-latest"
+        assert call.call_args.args[0] == "xai/grok-4-1-fast-reasoning"
 
 
 class TestDossierFailureAndSpend:
@@ -253,10 +238,7 @@ class TestDossierFailureAndSpend:
         that arrangement holds rather than trusting it.
         """
         service, _ = make_service()
-        mocker.patch.object(service, "_is_xai_model", return_value=False)
-        mocker.patch.object(
-            service, "_completion_with_tool_fallback", side_effect=RuntimeError("boom")
-        )
+        mocker.patch("llm.service.provider.search", side_effect=RuntimeError("boom"))
 
         result = service.subject_dossier("churchill", channel="#test")
 
@@ -288,5 +270,5 @@ class TestDossierFailureAndSpend:
 
         service.subject_dossier("draw {this} and {that}", channel="#test")
 
-        sent = call.call_args.kwargs["messages"][0]["content"]
+        sent = call.call_args.args[1]
         assert "{this}" in sent

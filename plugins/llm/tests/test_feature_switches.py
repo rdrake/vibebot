@@ -15,9 +15,8 @@ from .conftest import make_completion_response
 def _chat_tool_names(make_service, mocker, **overrides) -> set[str]:
     service, _plugin = make_service(assistantModel="gpt-4", **overrides)
     completion = mocker.patch(
-        "llm.service.litellm.completion", return_value=make_completion_response("hi")
+        "llm.service.provider.chat", return_value=make_completion_response("hi")
     )
-    mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
     service.assistant_completion(
         prompt="hello",
         nick="testuser",

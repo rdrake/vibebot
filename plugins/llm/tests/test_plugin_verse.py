@@ -10,7 +10,7 @@ import pytest
 from llm.identity import Caller, Identity
 from llm.service import AssistantResult, Spend
 
-from .conftest import make_registry_side_effect
+from .conftest import make_completion_response, make_registry_side_effect
 from .verse.conftest import link_avatar
 
 if TYPE_CHECKING:
@@ -2780,7 +2780,7 @@ class TestVersecompactCommand:
                 )
 
         mocker.patch(
-            "llm.verse.compaction.LiteLLMVerseClient",
+            "llm.verse.compaction.ProviderVerseClient",
             return_value=_FakeClient(),
         )
 
@@ -2831,7 +2831,7 @@ class TestVersecompactCommand:
             side_effect=lambda prefix, cap: cap.startswith("llm."),
         )
         mocker.patch(
-            "llm.verse.compaction.LiteLLMVerseClient",
+            "llm.verse.compaction.ProviderVerseClient",
             return_value=mocker.MagicMock(),
         )
 
@@ -2875,7 +2875,7 @@ class TestVersecompactCommand:
             side_effect=lambda prefix, cap: cap.startswith("llm."),
         )
         mocker.patch(
-            "llm.verse.compaction.LiteLLMVerseClient",
+            "llm.verse.compaction.ProviderVerseClient",
             return_value=mocker.MagicMock(),
         )
 
@@ -2922,7 +2922,7 @@ class TestVersecompactCommand:
             side_effect=lambda prefix, cap: cap.startswith("llm."),
         )
         mocker.patch(
-            "llm.verse.compaction.LiteLLMVerseClient",
+            "llm.verse.compaction.ProviderVerseClient",
             return_value=mocker.MagicMock(),
         )
 
@@ -3159,7 +3159,7 @@ class TestDeloomedPluginBoot:
                 return "digest", VerseCallUsage(prompt_tokens=5, completion_tokens=5, cost=0.0)
 
         mocker.patch(
-            "llm.verse.compaction.LiteLLMVerseClient",
+            "llm.verse.compaction.ProviderVerseClient",
             return_value=_FakeClient(),
         )
 
@@ -3516,30 +3516,33 @@ class TestVerseTriggerGate:
         assert not plugin._verse_triggered("#afnet", store, avatar_id, "hello there")
 
 
-class TestCompactionKeyResolution:
-    """The key litellm.completion receives follows the compaction call's model.
+class TestProviderVerseClient:
+    """Compaction calls provider.chat with the call's own model.
 
-    LiteLLMVerseClient used to be constructed with assistantApiKey (an xAI
-    key in prod) and pair it unconditionally with whatever model the caller
-    passed to call() — including gemini/ compaction models. Resolving the
-    key from the model inside call() makes that mismatch unrepresentable.
+    The key is resolved from the model inside provider.chat, so a client built
+    with one provider's key can never pair it with another provider's model.
     """
 
-    def test_key_matches_the_call_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """GIVEN a gemini compaction model WHEN calling THEN the gemini key is sent."""
+    def test_sends_the_call_model_and_returns_usage(self, mocker) -> None:
+        """GIVEN a compaction call WHEN it runs THEN provider.chat gets that
+        model and the reply's text, tokens and cost come back."""
         from llm.verse import compaction
 
-        seen: dict[str, object] = {}
+        chat = mocker.patch(
+            "llm.provider.chat",
+            return_value=make_completion_response(
+                "digest", prompt_tokens=7, completion_tokens=3, cost=0.002
+            ),
+        )
+        messages = [{"role": "user", "content": "compact this"}]
+        content, usage = compaction.ProviderVerseClient().call(
+            op="compact", model="anthropic/claude-haiku-5-5", messages=messages
+        )
 
-        def fake_completion(**kwargs: object) -> object:
-            seen.update(kwargs)
-            raise RuntimeError("stop here — only the kwargs matter")
-
-        monkeypatch.setattr("litellm.completion", fake_completion)
-        client = compaction.LiteLLMVerseClient()
-        with pytest.raises(RuntimeError):
-            client.call(op="compact", model="gemini/gemini-flash-lite-latest", messages=[])
-        assert seen["api_key"] == "AIza-fake-key-for-tests-0000"
+        assert chat.call_args.args[0] == "anthropic/claude-haiku-5-5"
+        assert chat.call_args.args[1] == messages
+        assert content == "digest"
+        assert usage == compaction.VerseCallUsage(7, 3, 0.002)
 
     def test_client_takes_no_api_key_argument(self) -> None:
         """GIVEN the constructor WHEN inspected THEN no api_key parameter."""
@@ -3547,7 +3550,7 @@ class TestCompactionKeyResolution:
 
         from llm.verse import compaction
 
-        assert "api_key" not in inspect.signature(compaction.LiteLLMVerseClient).parameters
+        assert "api_key" not in inspect.signature(compaction.ProviderVerseClient).parameters
 
 
 def test_verse_store_cache_folds_channel_case(plugin_env, tmp_path, mocker) -> None:

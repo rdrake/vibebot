@@ -86,7 +86,7 @@ class VerseDispatchResult:
 
 
 def make_verse_tool_specs(*, max_actors: int = 8, storybook: bool = False) -> list[dict]:
-    """Return OpenAI/LiteLLM tool specs for the five verse tools.
+    """Return OpenAI-format tool specs for the five verse tools.
 
     The tools are model-callable but only meaningful when the @ask path
     is verse-routed (see plugin._verse_route_for + C7d dispatch).

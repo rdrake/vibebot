@@ -19,21 +19,12 @@ class TestProviderOf:
         ("model", "expected"),
         [
             ("xai/grok-4.3", "xai"),
-            ("gemini/gemini-3-flash-preview", "gemini"),
-            ("openai/gpt-5.2", "openai"),
             ("anthropic/claude-3-opus", "anthropic"),
-            ("gpt-4", "openai"),  # unprefixed names are legal
-            ("dall-e-3", "openai"),
-            ("vertex_ai/imagen-4.0-generate-001", "vertex_ai"),  # known, unmanaged
+            ("xai/grok-imagine-image", "xai"),
         ],
     )
     def test_known_models_resolve(self, model: str, expected: str) -> None:
-        """GIVEN a model LiteLLM recognises WHEN provider_of THEN its provider.
-
-        vertex_ai is included deliberately: "known but unmanaged" and
-        "unresolvable" must stay distinguishable, because they take different
-        paths at the boundary.
-        """
+        """GIVEN a provider/name model we call WHEN provider_of THEN its prefix."""
         assert apikeys.provider_of(model) == expected
 
     @pytest.mark.parametrize(
@@ -43,6 +34,11 @@ class TestProviderOf:
             "   ",
             "not-a-real-model-xyz",
             "claude-3-opus",
+            "gpt-4",  # unprefixed: no provider we call
+            "gemini/gemini-3-flash-preview",  # no longer a managed provider
+            "openai/gpt-5.2",
+            "vertex_ai/imagen-4.0-generate-001",
+            "xai/",
             "/",
             "//",
             "/gpt-4",
@@ -53,43 +49,20 @@ class TestProviderOf:
         ],
     )
     def test_unresolvable_models_return_empty(self, model: str) -> None:
-        """GIVEN a model LiteLLM rejects WHEN provider_of THEN "" and no raise.
+        """GIVEN a model naming no provider we call WHEN provider_of THEN "" and no raise.
 
-        LiteLLM raises BadRequestError for these. Key resolution runs inside
-        failure handlers, so a new exception type here would surface as an
-        unhandled crash instead of a config error.
+        Key resolution runs inside failure handlers, so an exception here would
+        surface as an unhandled crash instead of a config error.
         """
         assert apikeys.provider_of(model) == ""
 
-    def test_mixed_case_prefix_is_not_resolvable(self) -> None:
-        """GIVEN "XAI/grok-4.3" WHEN provider_of THEN "" — LiteLLM is case-sensitive.
+    def test_mixed_case_prefix_resolves(self) -> None:
+        """GIVEN "XAI/grok-4.3" WHEN provider_of THEN "xai".
 
-        Pinned so the behaviour is deliberate: normalizing the case here would
-        only send LiteLLM a model string it rejects a moment later.
+        provider.chat lowercases the prefix too, so the key check and the call
+        agree on which provider is being paid.
         """
-        assert apikeys.provider_of("XAI/grok-4.3") == ""
-
-    def test_non_bad_request_exception_is_still_swallowed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """GIVEN litellm.get_llm_provider raises something other than
-        BadRequestError WHEN provider_of THEN "" and no raise.
-
-        provider_of runs inside failure handlers, so any exception type escaping
-        it — not just the BadRequestError LiteLLM happens to raise today — would
-        surface as an unhandled crash instead of a configuration error. This
-        pins the ``except Exception`` clause broad: narrowing it to
-        ``except litellm.exceptions.BadRequestError`` would still pass every
-        other test in this file (LiteLLM 1.93.0 wraps all its internal failures
-        into BadRequestError before they escape) while silently reintroducing
-        exactly the crash this module exists to prevent.
-        """
-
-        def _raise(_model: str) -> tuple[str, str, str, str]:
-            raise TypeError("not a BadRequestError")
-
-        monkeypatch.setattr(apikeys.litellm, "get_llm_provider", _raise)
-        assert apikeys.provider_of("xai/grok-4.3") == ""
+        assert apikeys.provider_of("XAI/grok-4.3") == "xai"
 
 
 class TestEnvVarFor:
@@ -98,8 +71,8 @@ class TestEnvVarFor:
         assert apikeys.env_var_for("xai/grok-4.3") == "XAI_API_KEY"
 
     def test_unmanaged_provider(self) -> None:
-        """GIVEN a vertex_ai model WHEN env_var_for THEN None."""
-        assert apikeys.env_var_for("vertex_ai/imagen-4.0-generate-001") is None
+        """GIVEN a gemini model WHEN env_var_for THEN None."""
+        assert apikeys.env_var_for("gemini/gemini-3-flash-preview") is None
 
 
 class TestIsManaged:
@@ -107,15 +80,9 @@ class TestIsManaged:
         """GIVEN an xai model WHEN is_managed THEN True."""
         assert apikeys.is_managed("xai/grok-4.3") is True
 
-    @pytest.mark.parametrize(
-        "model", ["vertex_ai/imagen-4.0-generate-001", "not-a-real-model-xyz", ""]
-    )
+    @pytest.mark.parametrize("model", ["gemini/gemini-3-flash-preview", "not-a-real-model-xyz", ""])
     def test_unmanaged(self, model: str) -> None:
-        """GIVEN an unmanaged or unresolvable model WHEN is_managed THEN False.
-
-        False means "hand LiteLLM None and let it use its own credentials" —
-        which is how vertex_ai keeps working via ADC.
-        """
+        """GIVEN an unmanaged or unresolvable model WHEN is_managed THEN False."""
         assert apikeys.is_managed(model) is False
 
 
@@ -144,11 +111,11 @@ class TestApiKeyFor:
 
         docker --env-file and hand-edited files both produce these.
         """
-        monkeypatch.setenv("GEMINI_API_KEY", "  AIza-fake-value-for-tests\n")
-        assert apikeys.api_key_for("gemini/gemini-3-flash-preview") == "AIza-fake-value-for-tests"
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "  sk-ant-fake-value-for-tests\n")
+        assert apikeys.api_key_for("anthropic/claude-3-opus") == "sk-ant-fake-value-for-tests"
 
     def test_unmanaged_provider_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """GIVEN a vertex_ai model WHEN api_key_for THEN None even if a var exists.
+        """GIVEN an unmanaged model WHEN api_key_for THEN None even if a var exists.
 
         Guards against an implementation that derives the variable name as
         f"{provider.upper()}_API_KEY" instead of consulting the map.
@@ -159,9 +126,9 @@ class TestApiKeyFor:
     def test_provider_isolation(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """GIVEN both vars set WHEN resolving each THEN no cross-provider bleed."""
         monkeypatch.setenv("XAI_API_KEY", "xai-fake-value-for-tests")
-        monkeypatch.setenv("GEMINI_API_KEY", "gemini-fake-value-for-tests")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-fake-value-for-tests")
         assert apikeys.api_key_for("xai/grok-4.3") == "xai-fake-value-for-tests"
-        assert apikeys.api_key_for("gemini/gemini-3-flash-preview") == "gemini-fake-value-for-tests"
+        assert apikeys.api_key_for("anthropic/claude-3-opus") == "anthropic-fake-value-for-tests"
 
     def test_reads_env_on_every_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """GIVEN the var changes WHEN resolving again THEN the new value.
@@ -355,7 +322,6 @@ class TestSecretFilter:
 
     def test_scrubs_traceback(self) -> None:
         """GIVEN a key in the exception WHEN filtered THEN exc_text redacted."""
-        import sys
 
         try:
             raise ValueError(f"auth failed for {self.SECRET}")
@@ -465,7 +431,7 @@ class TestInstallSecretFilter:
 
     @pytest.mark.parametrize(
         "logger_name",
-        ["", "supybot", "llm", "LiteLLM", "LiteLLM Proxy", "LiteLLM Router"],
+        ["", "supybot", "llm"],
     )
     def test_installs_on_each_target_logger(self, logger_name: str) -> None:
         """GIVEN a handler on each real install target WHEN installed THEN it gets a SecretFilter.
@@ -473,11 +439,7 @@ class TestInstallSecretFilter:
         Parametrized over every target, not just one: a mutant that shrinks
         `targets` to `["llm"]` alone still passes if only "llm" is checked —
         and per the production leak this module exists to close, "supybot" is
-        the target that actually has a handler attached today. The three
-        "LiteLLM"/"LiteLLM Proxy"/"LiteLLM Router" entries cover the loggers
-        `import litellm` attaches its own stderr handler to — outside the
-        supybot/llm hierarchy and therefore missed by handlers-on-ancestors
-        reasoning alone.
+        the target that actually has a handler attached today.
         """
         logger = logging.getLogger(logger_name)
         handler = logging.StreamHandler(io.StringIO())
@@ -488,35 +450,6 @@ class TestInstallSecretFilter:
             assert any(isinstance(f, apikeys.SecretFilter) for f in handler.filters)
         finally:
             logger.removeHandler(handler)
-
-    def test_litellm_own_stderr_handler_scrubs_a_record(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """GIVEN a record on litellm's own "LiteLLM" logger WHEN installed
-        THEN the key is redacted before reaching that logger's own handler.
-
-        Unlike ``test_installs_on_each_target_logger`` (which adds a fresh
-        throwaway handler and checks a filter attaches to it), this exercises
-        the real ``StreamHandler(stderr)`` that ``import litellm`` attaches
-        directly to the "LiteLLM" logger at import time — the exact handler a
-        raw key reached ``docker logs`` through before "LiteLLM" was added to
-        ``targets``. A logger's own handler runs before propagation, so
-        covering root/supybot/llm alone never touched it.
-
-        litellm's handler re-reads ``sys.stderr`` on every emit, so the
-        capture patches ``sys.stderr`` rather than ``handler.stream``.
-        """
-        secret = "xai-fake-value-long-enough"
-        monkeypatch.setenv("XAI_API_KEY", secret)
-        logger = logging.getLogger("LiteLLM")
-        assert any(isinstance(h, logging.StreamHandler) for h in logger.handlers)
-        buffer = io.StringIO()
-        monkeypatch.setattr(sys, "stderr", buffer)
-        apikeys.install_secret_filter()
-        logger.error("litellm auth failure: key=%s", secret)
-        output = buffer.getvalue()
-        assert secret not in output
-        assert "[REDACTED]" in output
 
     def test_installs_on_last_resort(self) -> None:
         """GIVEN no handler anywhere in the llm.* hierarchy WHEN installed

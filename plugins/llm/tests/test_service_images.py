@@ -5,11 +5,11 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING
 
-import openai
 import pytest
+from llm import provider
 from llm import service as service_module
 
-from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
+from .conftest import make_completion_response
 
 if TYPE_CHECKING:
     from unittest.mock import Mock
@@ -17,8 +17,21 @@ if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 
+PNG = b"\x89PNG\r\n\x1a\nfake image"
+
+
+def _picture(cost: float = 0.0) -> provider.Picture:
+    """A delivered picture, as provider.draw returns it."""
+    return provider.Picture(data=PNG, cost=cost)
+
+
+def _blocked() -> provider.Picture:
+    """No picture back: xAI's filter blocked it."""
+    return provider.Picture(data=None)
+
+
 class TestImageSaving:
-    """Tests for save_image_to_http and _save_image_bytes functionality."""
+    """Tests for _save_image_bytes functionality."""
 
     @pytest.fixture(autouse=True)
     def setup(self, make_service, mocker: MockerFixture) -> None:
@@ -30,62 +43,6 @@ class TestImageSaving:
             fileCleanupAge=24,
             fileCleanupMax=1000,
         )
-
-    # --- save_image_to_http tests ---
-
-    def test_save_image_to_http_success(self, tmp_path: object) -> None:
-        """GIVEN valid base64 image WHEN saving THEN returns URL."""
-        import base64
-
-        # Mock config to use temp directory
-        self.mock_plugin.registryValue = self.mocker.Mock(
-            side_effect=lambda key, channel=None: {
-                "httpRoot": str(tmp_path),
-                "httpUrlBase": "https://example.com/llm",
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
-        )
-
-        # Create simple PNG-like data
-        image_data = b"\x89PNG\r\n\x1a\n" + b"fake image data"
-        b64_data = base64.b64encode(image_data).decode()
-
-        result = self.service.save_image_to_http(b64_data)
-
-        assert result is not None
-        assert result.startswith("https://example.com/llm/img_")
-        assert result.endswith(".png")
-
-    def test_save_image_to_http_custom_extension(self, tmp_path: object) -> None:
-        """GIVEN custom extension WHEN saving THEN uses that extension."""
-        import base64
-
-        self.mock_plugin.registryValue = self.mocker.Mock(
-            side_effect=lambda key, channel=None: {
-                "httpRoot": str(tmp_path),
-                "httpUrlBase": "https://example.com/llm",
-                "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
-            }.get(key)
-        )
-
-        image_data = b"fake jpeg data"
-        b64_data = base64.b64encode(image_data).decode()
-
-        result = self.service.save_image_to_http(b64_data, extension="jpg")
-
-        assert result is not None
-        assert result.endswith(".jpg")
-
-    def test_save_image_to_http_invalid_base64(self) -> None:
-        """GIVEN invalid base64 WHEN saving THEN returns None and logs error."""
-        result = self.service.save_image_to_http("not valid base64!!!")
-
-        # Error is logged via service's own logger (not plugin.log)
-        assert result is None
-
-    # --- _save_image_bytes tests ---
 
     def test_save_image_bytes_success(self, tmp_path: object) -> None:
         """GIVEN valid image bytes WHEN saving THEN returns URL."""
@@ -236,176 +193,6 @@ class TestImageSaving:
         assert png_files[0].read_bytes() == image_data
 
 
-class TestDownloadAndSaveImage:
-    """Tests for _download_and_save_image functionality."""
-
-    @pytest.fixture(autouse=True)
-    def setup(self, make_service, mocker: MockerFixture) -> None:
-        """Set up test fixtures."""
-        self.mocker = mocker
-        self.service, self.mock_plugin = make_service(
-            httpRoot="/tmp/test_llm_images",
-            httpUrlBase="https://example.com/llm",
-            drawTimeout=60,
-            timeout=30,
-            fileCleanupAge=24,
-            fileCleanupMax=1000,
-        )
-
-    def test_download_success(self) -> None:
-        """GIVEN valid image URL WHEN downloading THEN returns local URL."""
-        mock_resp = self.mocker.Mock()
-        mock_resp.read.return_value = b"\x89PNG\r\n\x1a\nfake"
-        mock_resp.headers = {"Content-Type": "image/png"}
-        mock_resp.__enter__ = self.mocker.Mock(return_value=mock_resp)
-        mock_resp.__exit__ = self.mocker.Mock(return_value=False)
-
-        mock_opener = self.mocker.Mock()
-        mock_opener.open.return_value = mock_resp
-        self.mocker.patch("urllib.request.build_opener", return_value=mock_opener)
-        mock_save = self.mocker.patch.object(
-            self.service,
-            "_save_image_bytes",
-            return_value="https://example.com/llm/img_abc.png",
-        )
-        result = self.service._download_and_save_image("https://provider.com/img.png")
-
-        assert result == "https://example.com/llm/img_abc.png"
-        mock_save.assert_called_once_with(b"\x89PNG\r\n\x1a\nfake", "png")
-
-    def test_download_jpeg_content_type(self) -> None:
-        """GIVEN JPEG content type WHEN downloading THEN uses jpg extension."""
-        mock_resp = self.mocker.Mock()
-        mock_resp.read.return_value = b"fake jpeg"
-        mock_resp.headers = {"Content-Type": "image/jpeg"}
-        mock_resp.__enter__ = self.mocker.Mock(return_value=mock_resp)
-        mock_resp.__exit__ = self.mocker.Mock(return_value=False)
-
-        mock_opener = self.mocker.Mock()
-        mock_opener.open.return_value = mock_resp
-        self.mocker.patch("urllib.request.build_opener", return_value=mock_opener)
-        mock_save = self.mocker.patch.object(self.service, "_save_image_bytes", return_value="url")
-        self.service._download_and_save_image("https://provider.com/img")
-
-        mock_save.assert_called_once_with(b"fake jpeg", "jpg")
-
-    def test_download_infers_extension_from_url(self) -> None:
-        """GIVEN no content type WHEN URL has extension THEN infers from URL."""
-        mock_resp = self.mocker.Mock()
-        mock_resp.read.return_value = b"fake webp"
-        mock_resp.headers = {"Content-Type": "application/octet-stream"}
-        mock_resp.__enter__ = self.mocker.Mock(return_value=mock_resp)
-        mock_resp.__exit__ = self.mocker.Mock(return_value=False)
-
-        mock_opener = self.mocker.Mock()
-        mock_opener.open.return_value = mock_resp
-        self.mocker.patch("urllib.request.build_opener", return_value=mock_opener)
-        mock_save = self.mocker.patch.object(self.service, "_save_image_bytes", return_value="url")
-        self.service._download_and_save_image("https://provider.com/img.webp")
-
-        mock_save.assert_called_once_with(b"fake webp", "webp")
-
-    def test_download_defaults_to_png(self) -> None:
-        """GIVEN no content type and no URL extension WHEN downloading THEN defaults to png."""
-        mock_resp = self.mocker.Mock()
-        mock_resp.read.return_value = b"mystery image"
-        mock_resp.headers = {"Content-Type": ""}
-        mock_resp.__enter__ = self.mocker.Mock(return_value=mock_resp)
-        mock_resp.__exit__ = self.mocker.Mock(return_value=False)
-
-        mock_opener = self.mocker.Mock()
-        mock_opener.open.return_value = mock_resp
-        self.mocker.patch("urllib.request.build_opener", return_value=mock_opener)
-        mock_save = self.mocker.patch.object(self.service, "_save_image_bytes", return_value="url")
-        self.service._download_and_save_image("https://provider.com/generate?id=123")
-
-        mock_save.assert_called_once_with(b"mystery image", "png")
-
-    def test_download_too_large(self) -> None:
-        """GIVEN image exceeds 20 MB WHEN downloading THEN returns None."""
-        mock_resp = self.mocker.Mock()
-        mock_resp.read.return_value = b"x" * (20 * 1024 * 1024 + 1)
-        mock_resp.headers = {"Content-Type": "image/png"}
-        mock_resp.__enter__ = self.mocker.Mock(return_value=mock_resp)
-        mock_resp.__exit__ = self.mocker.Mock(return_value=False)
-
-        mock_opener = self.mocker.Mock()
-        mock_opener.open.return_value = mock_resp
-        self.mocker.patch("urllib.request.build_opener", return_value=mock_opener)
-        result = self.service._download_and_save_image("https://provider.com/huge.png")
-
-        assert result is None
-
-    def test_download_network_error(self) -> None:
-        """GIVEN network error WHEN downloading THEN returns None."""
-        import urllib.error
-
-        mock_opener = self.mocker.Mock()
-        mock_opener.open.side_effect = urllib.error.URLError("connection refused")
-        self.mocker.patch("urllib.request.build_opener", return_value=mock_opener)
-        result = self.service._download_and_save_image("https://provider.com/img.png")
-
-        assert result is None
-
-    def test_download_rejects_non_http_scheme(self) -> None:
-        """GIVEN file:// URL WHEN downloading THEN refuses without fetching."""
-        mock_build = self.mocker.patch("urllib.request.build_opener")
-        result = self.service._download_and_save_image("file:///etc/passwd")
-
-        assert result is None
-        mock_build.assert_not_called()
-
-    def test_download_rejects_loopback_literal(self) -> None:
-        """GIVEN 127.0.0.1 URL WHEN downloading THEN refuses without fetching."""
-        mock_build = self.mocker.patch("urllib.request.build_opener")
-        result = self.service._download_and_save_image("http://127.0.0.1/img.png")
-
-        assert result is None
-        mock_build.assert_not_called()
-
-    def test_download_rejects_private_literal(self) -> None:
-        """GIVEN 192.168.x.x URL WHEN downloading THEN refuses without fetching."""
-        mock_build = self.mocker.patch("urllib.request.build_opener")
-        result = self.service._download_and_save_image("http://192.168.1.1/img.png")
-
-        assert result is None
-        mock_build.assert_not_called()
-
-    def test_download_rejects_link_local_literal(self) -> None:
-        """GIVEN 169.254.x.x URL WHEN downloading THEN refuses without fetching."""
-        mock_build = self.mocker.patch("urllib.request.build_opener")
-        result = self.service._download_and_save_image("http://169.254.169.254/latest")
-
-        assert result is None
-        mock_build.assert_not_called()
-
-    def test_download_disables_redirects(self) -> None:
-        """GIVEN download path WHEN building opener THEN installs a no-redirect handler."""
-        import urllib.request
-
-        captured: dict[str, object] = {}
-        real_build = urllib.request.build_opener
-
-        def capture_build(*handlers: object) -> object:
-            captured["handlers"] = handlers
-            return real_build(*handlers)
-
-        self.mocker.patch("urllib.request.build_opener", side_effect=capture_build)
-        # Force network call to bail without actually fetching
-        self.mocker.patch.object(self.service, "_save_image_bytes", return_value=None)
-
-        # We don't care if the open call fails — only that build_opener was
-        # called with a HTTPRedirectHandler subclass that vetoes redirects.
-        self.service._download_and_save_image("https://nonexistent.invalid/img.png")
-
-        handlers = captured.get("handlers", ())
-        assert any(
-            isinstance(h, urllib.request.HTTPRedirectHandler)
-            and h.redirect_request(None, None, None, None, None) is None  # type: ignore[arg-type]
-            for h in handlers  # type: ignore[union-attr]
-        )
-
-
 class TestImageGenerationWithBase64:
     """Tests for image_generation with base64 handling and typing indicators."""
 
@@ -414,7 +201,7 @@ class TestImageGenerationWithBase64:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            imageModel="gemini/imagen-4.0-generate-001",
+            imageModel="xai/grok-imagine-image",
             timeout=30,
             maxPromptLength=10000,
             httpRoot="/tmp/test",
@@ -439,40 +226,11 @@ class TestImageGenerationWithBase64:
         msg.prefix = "testnick!user@host"
         return msg
 
-    def test_image_generation_with_url_response(self) -> None:
-        """GIVEN provider returns URL WHEN generating THEN downloads and returns local URL."""
-        mock_response = self.mocker.Mock()
-        mock_response.data = [self.mocker.Mock(url="https://provider.com/image.png", b64_json=None)]
-
-        self.mocker.patch("llm.service.litellm.image_generation", return_value=mock_response)
-        mock_download = self.mocker.patch.object(
-            self.service,
-            "_download_and_save_image",
-            return_value="https://example.com/llm/img_abc123.png",
-        )
-        result = self.service.image_generation("a cat")
-
-        mock_download.assert_called_once_with("https://provider.com/image.png")
-        assert result.content == "https://example.com/llm/img_abc123.png"
-
-    def test_image_generation_url_download_failure_falls_back(self) -> None:
-        """GIVEN provider returns URL and download fails WHEN generating THEN falls back to provider URL."""
-        mock_response = self.mocker.Mock()
-        mock_response.data = [self.mocker.Mock(url="https://provider.com/image.png", b64_json=None)]
-
-        self.mocker.patch("llm.service.litellm.image_generation", return_value=mock_response)
-        self.mocker.patch.object(self.service, "_download_and_save_image", return_value=None)
-        result = self.service.image_generation("a cat")
-
-        assert result.content == "https://provider.com/image.png"
-
-    def test_image_generation_with_base64_response(self, tmp_path: object) -> None:
-        """GIVEN provider returns base64 WHEN generating THEN saves and returns URL."""
-        import base64
-
+    def test_image_generation_saves_the_picture(self, tmp_path: object) -> None:
+        """GIVEN provider returns picture bytes WHEN generating THEN saves and returns URL."""
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "imageModel": "gemini/imagen",
+                "imageModel": "xai/grok-imagine-image",
                 "timeout": 30,
                 "maxPromptLength": 10000,
                 "httpRoot": str(tmp_path),
@@ -482,13 +240,7 @@ class TestImageGenerationWithBase64:
             }.get(key)
         )
 
-        image_data = b"\x89PNG\r\n\x1a\nfake image"
-        b64_data = base64.b64encode(image_data).decode()
-
-        mock_response = self.mocker.Mock()
-        mock_response.data = [self.mocker.Mock(url=None, b64_json=b64_data)]
-
-        self.mocker.patch("llm.service.litellm.image_generation", return_value=mock_response)
+        self.mocker.patch("llm.service.provider.draw", return_value=_picture())
         result = self.service.image_generation("a cat")
 
         assert result.content.startswith("https://example.com/llm/img_")
@@ -499,11 +251,8 @@ class TestImageGenerationWithBase64:
         irc = self._make_mock_irc()
         msg = self._make_mock_msg()
 
-        mock_response = self.mocker.Mock()
-        mock_response.data = [self.mocker.Mock(url="https://example.com/image.png", b64_json=None)]
-
-        self.mocker.patch("llm.service.litellm.image_generation", return_value=mock_response)
-        self.mocker.patch.object(self.service, "_download_and_save_image", return_value=None)
+        self.mocker.patch("llm.service.provider.draw", return_value=_picture())
+        self.mocker.patch.object(self.service, "_save_image_bytes", return_value=None)
         self.service.image_generation("a cat", irc=irc, msg=msg)
 
         # Should have called queueMsg twice - once for active, once for done
@@ -522,9 +271,7 @@ class TestImageGenerationWithBase64:
         irc = self._make_mock_irc()
         msg = self._make_mock_msg()
 
-        self.mocker.patch(
-            "llm.service.litellm.image_generation", side_effect=Exception("API error")
-        )
+        self.mocker.patch("llm.service.provider.draw", side_effect=Exception("API error"))
         result = self.service.image_generation("a cat", irc=irc, msg=msg)
 
         assert "Error" in result.content
@@ -536,10 +283,7 @@ class TestImageGenerationWithBase64:
 
     def test_image_generation_no_data_in_response(self) -> None:
         """GIVEN empty response WHEN generating THEN returns content filter error."""
-        mock_response = self.mocker.Mock()
-        mock_response.data = []
-
-        self.mocker.patch("llm.service.litellm.image_generation", return_value=mock_response)
+        self.mocker.patch("llm.service.provider.draw", return_value=_blocked())
         result = self.service.image_generation("a cat")
 
         assert "No image generated" in result.content
@@ -547,13 +291,10 @@ class TestImageGenerationWithBase64:
 
     def test_image_generation_without_irc_context(self) -> None:
         """GIVEN no irc context WHEN generating THEN works without typing indicators."""
-        mock_response = self.mocker.Mock()
-        mock_response.data = [self.mocker.Mock(url="https://example.com/image.png", b64_json=None)]
-
-        self.mocker.patch("llm.service.litellm.image_generation", return_value=mock_response)
+        self.mocker.patch("llm.service.provider.draw", return_value=_picture())
         self.mocker.patch.object(
             self.service,
-            "_download_and_save_image",
+            "_save_image_bytes",
             return_value="https://example.com/llm/img_local.png",
         )
         result = self.service.image_generation("a cat")
@@ -730,7 +471,7 @@ class TestDrawContext:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            imageModel="gemini/imagen",
+            imageModel="xai/grok-imagine-image",
             timeout=30,
             maxPromptLength=10000,
             drawAutoRewriteMax=0,
@@ -738,21 +479,11 @@ class TestDrawContext:
 
     def test_image_generation_uses_raw_prompt(self) -> None:
         """GIVEN a prompt WHEN generating image THEN uses prompt as-is."""
-        prompt_used = []
-
-        def capture_prompt(**kwargs):
-            prompt_used.append(kwargs.get("prompt", ""))
-            mock_response = self.mocker.Mock()
-            mock_response.data = [
-                self.mocker.Mock(url="https://example.com/img.png", b64_json=None)
-            ]
-            return mock_response
-
-        self.mocker.patch("llm.service.litellm.image_generation", side_effect=capture_prompt)
-        self.mocker.patch.object(self.service, "_download_and_save_image", return_value=None)
+        draw = self.mocker.patch("llm.service.provider.draw", return_value=_picture())
+        self.mocker.patch.object(self.service, "_save_image_bytes", return_value=None)
         self.service.image_generation("a sunset")
 
-        assert prompt_used[0] == "a sunset"
+        assert draw.call_args.args[1] == "a sunset"
 
 
 class TestImageUrlSsrfProtection:
@@ -803,8 +534,8 @@ class TestDrawAutoRewrite:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            imageModel="vertex_ai/imagen-4.0-generate-001",
-            assistantModel="gemini/gemini-flash-latest",
+            imageModel="xai/grok-imagine-image",
+            assistantModel="anthropic/claude-haiku-5-5",
             timeout=30,
             maxPromptLength=10000,
             httpRoot="/tmp/test",
@@ -812,8 +543,8 @@ class TestDrawAutoRewrite:
             drawAutoRewriteMax=3,
         )
         self.config_values = {
-            "imageModel": "vertex_ai/imagen-4.0-generate-001",
-            "assistantModel": "gemini/gemini-flash-latest",
+            "imageModel": "xai/grok-imagine-image",
+            "assistantModel": "anthropic/claude-haiku-5-5",
             "timeout": 30,
             "maxPromptLength": 10000,
             "httpRoot": "/tmp/test",
@@ -821,23 +552,19 @@ class TestDrawAutoRewrite:
             "drawAutoRewriteMax": 3,
         }
 
-    def _make_success_response(self, url: str = "https://example.com/img.png") -> Mock:
-        """Create a mock successful image generation response."""
-        response = self.mocker.Mock()
-        response.data = [self.mocker.Mock(url=url, b64_json=None)]
-        response.usage = self.mocker.Mock(prompt_tokens=5, completion_tokens=0)
-        return response
+    def _make_success_response(self) -> provider.Picture:
+        """A delivered picture."""
+        return _picture(cost=0.02)
 
-    def _make_empty_response(self) -> Mock:
-        """Create a mock empty (content-blocked) image generation response."""
-        response = self.mocker.Mock()
-        response.data = []
-        response.usage = self.mocker.Mock(prompt_tokens=5, completion_tokens=0)
-        return response
+    def _make_empty_response(self) -> provider.Picture:
+        """No picture back (content-blocked)."""
+        return _blocked()
 
-    def _make_rewrite_response(self, rewritten: str = "a safe cat") -> Mock:
-        """Create a mock completion response for prompt rewriting."""
-        return make_completion_response(rewritten, prompt_tokens=20, completion_tokens=10)
+    def _make_rewrite_response(self, rewritten: str = "a safe cat") -> provider.Reply:
+        """A completion response for prompt rewriting."""
+        return make_completion_response(
+            rewritten, prompt_tokens=20, completion_tokens=10, cost=0.001
+        )
 
     def test_auto_rewrite_on_empty_data_succeeds(self) -> None:
         """GIVEN empty response data WHEN auto-rewrite enabled THEN retries with rewritten prompt."""
@@ -845,14 +572,11 @@ class TestDrawAutoRewrite:
         success_resp = self._make_success_response()
         rewrite_resp = self._make_rewrite_response("a friendly cat")
 
-        self.mocker.patch(
-            "llm.service.litellm.image_generation", side_effect=[empty_resp, success_resp]
-        )
-        self.mocker.patch("llm.service.litellm.completion", return_value=rewrite_resp)
-        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.01)
+        self.mocker.patch("llm.service.provider.draw", side_effect=[empty_resp, success_resp])
+        self.mocker.patch("llm.service.provider.chat", return_value=rewrite_resp)
         self.mocker.patch.object(
             self.service,
-            "_download_and_save_image",
+            "_save_image_bytes",
             return_value="https://example.com/llm/img_local.png",
         )
         result = self.service.image_generation("a dangerous cat")
@@ -862,25 +586,22 @@ class TestDrawAutoRewrite:
 
     def test_auto_rewrite_on_content_policy_error_succeeds(self) -> None:
         """GIVEN ContentPolicyViolationError WHEN auto-rewrite enabled THEN retries."""
-        import litellm as litellm_module
-
         rewrite_resp = self._make_rewrite_response("a safe prompt")
         success_resp = self._make_success_response()
 
         self.mocker.patch(
-            "llm.service.litellm.image_generation",
+            "llm.service.provider.draw",
             side_effect=[
-                litellm_module.ContentPolicyViolationError(
-                    message="blocked", model="imagen", llm_provider="vertex_ai"
+                provider.ContentPolicyViolationError(
+                    "blocked", model="xai/grok-imagine-image", provider="xai"
                 ),
                 success_resp,
             ],
         )
-        self.mocker.patch("llm.service.litellm.completion", return_value=rewrite_resp)
-        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.01)
+        self.mocker.patch("llm.service.provider.chat", return_value=rewrite_resp)
         self.mocker.patch.object(
             self.service,
-            "_download_and_save_image",
+            "_save_image_bytes",
             return_value="https://example.com/llm/img_local.png",
         )
         result = self.service.image_generation("bad prompt")
@@ -896,17 +617,16 @@ class TestDrawAutoRewrite:
         rewrite2 = self._make_rewrite_response("rewrite v2")
 
         self.mocker.patch(
-            "llm.service.litellm.image_generation",
+            "llm.service.provider.draw",
             side_effect=[empty_resp, empty_resp, success_resp],
         )
         self.mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[rewrite1, rewrite2],
         )
-        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
         self.mocker.patch.object(
             self.service,
-            "_download_and_save_image",
+            "_save_image_bytes",
             return_value="https://example.com/llm/img_local.png",
         )
         result = self.service.image_generation("test prompt")
@@ -922,14 +642,13 @@ class TestDrawAutoRewrite:
         rewrite3 = self._make_rewrite_response("rewrite v3")
 
         self.mocker.patch(
-            "llm.service.litellm.image_generation",
+            "llm.service.provider.draw",
             side_effect=[empty_resp, empty_resp, empty_resp, empty_resp],
         )
         self.mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[rewrite1, rewrite2, rewrite3],
         )
-        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
         result = self.service.image_generation("test prompt")
 
         assert "3 rewordings" in result.content
@@ -943,9 +662,8 @@ class TestDrawAutoRewrite:
         )
         empty_resp = self._make_empty_response()
 
-        self.mocker.patch("llm.service.litellm.image_generation", return_value=empty_resp)
-        mock_completion = self.mocker.patch("llm.service.litellm.completion")
-        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        self.mocker.patch("llm.service.provider.draw", return_value=empty_resp)
+        mock_completion = self.mocker.patch("llm.service.provider.chat")
         result = self.service.image_generation("test prompt")
 
         assert "content safety filters" in result.content
@@ -959,12 +677,11 @@ class TestDrawAutoRewrite:
         """
         empty_resp = self._make_empty_response()
 
-        self.mocker.patch("llm.service.litellm.image_generation", return_value=empty_resp)
+        self.mocker.patch("llm.service.provider.draw", return_value=empty_resp)
         self.mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=Exception("LLM unavailable"),
         )
-        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
         result = self.service.image_generation("test prompt")
 
         assert result.error is not None
@@ -975,16 +692,15 @@ class TestDrawAutoRewrite:
     ) -> None:
         """GIVEN no key for the rewrite model's provider WHEN blocked THEN skips rewrite.
 
-        The rewriter runs on ``assistantModel`` (gemini/gemini-flash-latest), so
-        GEMINI_API_KEY is the variable that gates it. ``imageModel`` here is a
-        vertex_ai model, which is unmanaged and so unaffected either way.
+        The rewriter runs on ``assistantModel`` (anthropic/claude-haiku-5-5), so
+        ANTHROPIC_API_KEY is the variable that gates it. ``imageModel`` is an
+        xai/ model, whose key stays set.
         """
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         empty_resp = self._make_empty_response()
 
-        self.mocker.patch("llm.service.litellm.image_generation", return_value=empty_resp)
-        mock_completion = self.mocker.patch("llm.service.litellm.completion")
-        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        self.mocker.patch("llm.service.provider.draw", return_value=empty_resp)
+        mock_completion = self.mocker.patch("llm.service.provider.chat")
         result = self.service.image_generation("test prompt")
 
         assert result.error is not None
@@ -997,12 +713,11 @@ class TestDrawAutoRewrite:
         success_resp = self._make_success_response()
         rewrite_resp = self._make_rewrite_response("safe prompt")
 
-        self.mocker.patch(
-            "llm.service.litellm.image_generation", side_effect=[empty_resp, success_resp]
+        self.mocker.patch("llm.service.provider.draw", side_effect=[empty_resp, success_resp])
+        self.mocker.patch("llm.service.provider.chat", return_value=rewrite_resp)
+        self.mocker.patch.object(
+            self.service, "_save_image_bytes", return_value="https://example.com/llm/img_a.png"
         )
-        self.mocker.patch("llm.service.litellm.completion", return_value=rewrite_resp)
-        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.005)
-        self.mocker.patch.object(self.service, "_download_and_save_image", return_value=None)
         result = self.service.image_generation("test prompt")
 
         # Should include both rewrite and generation costs
@@ -1011,15 +726,13 @@ class TestDrawAutoRewrite:
 
     def test_non_content_error_does_not_trigger_rewrite(self) -> None:
         """GIVEN timeout error WHEN generating THEN no rewrite attempted."""
-        import litellm as litellm_module
-
         self.mocker.patch(
-            "llm.service.litellm.image_generation",
-            side_effect=litellm_module.Timeout(
-                message="timed out", model="imagen", llm_provider="vertex_ai"
+            "llm.service.provider.draw",
+            side_effect=provider.RequestTimeoutError(
+                "timed out", model="xai/grok-imagine-image", provider="xai"
             ),
         )
-        mock_completion = self.mocker.patch("llm.service.litellm.completion")
+        mock_completion = self.mocker.patch("llm.service.provider.chat")
         result = self.service.image_generation("test prompt")
 
         assert "timed out" in result.content.lower()
@@ -1027,15 +740,13 @@ class TestDrawAutoRewrite:
 
     def test_auth_error_does_not_trigger_rewrite(self) -> None:
         """GIVEN authentication error WHEN generating THEN no rewrite attempted."""
-        import litellm as litellm_module
-
         self.mocker.patch(
-            "llm.service.litellm.image_generation",
-            side_effect=litellm_module.AuthenticationError(
-                message="invalid key", model="imagen", llm_provider="vertex_ai"
+            "llm.service.provider.draw",
+            side_effect=provider.AuthenticationError(
+                "invalid key", model="xai/grok-imagine-image", provider="xai"
             ),
         )
-        mock_completion = self.mocker.patch("llm.service.litellm.completion")
+        mock_completion = self.mocker.patch("llm.service.provider.chat")
         result = self.service.image_generation("test prompt")
 
         assert "Invalid API key" in result.content
@@ -1052,14 +763,13 @@ class TestDrawAutoRewrite:
         rewrite2 = self._make_rewrite_response("rewrite v2")
 
         self.mocker.patch(
-            "llm.service.litellm.image_generation",
+            "llm.service.provider.draw",
             side_effect=[empty_resp, empty_resp, empty_resp],
         )
         mock_completion = self.mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[rewrite1, rewrite2],
         )
-        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.001)
         self.service.image_generation("test prompt")
 
         # Second rewrite call should include prior_rewrites in the user message
@@ -1073,59 +783,23 @@ class TestDrawAutoRewrite:
         """GIVEN first attempt succeeds WHEN no rewrite needed THEN rewritten_prompt is None."""
         success_resp = self._make_success_response()
 
-        self.mocker.patch("llm.service.litellm.image_generation", return_value=success_resp)
-        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.01)
-        self.mocker.patch.object(self.service, "_download_and_save_image", return_value=None)
+        self.mocker.patch("llm.service.provider.draw", return_value=success_resp)
+        self.mocker.patch.object(self.service, "_save_image_bytes", return_value=None)
         result = self.service.image_generation("a cat")
 
         assert result.rewritten_prompt is None
 
-    def test_auto_rewrite_on_bad_request_moderation_blocked(self) -> None:
-        """GIVEN BadRequestError with moderation_blocked WHEN auto-rewrite enabled THEN retries."""
-        import litellm as litellm_module
-
-        rewrite_resp = self._make_rewrite_response("a safe prompt")
-        success_resp = self._make_success_response()
-
-        self.mocker.patch(
-            "llm.service.litellm.image_generation",
-            side_effect=[
-                litellm_module.BadRequestError(
-                    message=(
-                        "OpenAIException - Error code: 400 - {'error': {'code': "
-                        "'moderation_blocked'}}"
-                    ),
-                    model="imagen",
-                    llm_provider="vertex_ai",
-                ),
-                success_resp,
-            ],
-        )
-        self.mocker.patch("llm.service.litellm.completion", return_value=rewrite_resp)
-        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.01)
-        self.mocker.patch.object(
-            self.service,
-            "_download_and_save_image",
-            return_value="https://example.com/llm/img_local.png",
-        )
-        result = self.service.image_generation("bad prompt")
-
-        assert result.content == "https://example.com/llm/img_local.png"
-        assert result.rewritten_prompt == "a safe prompt"
-
     def test_non_moderation_bad_request_does_not_trigger_rewrite(self) -> None:
         """GIVEN BadRequestError without moderation keywords WHEN generating THEN no rewrite."""
-        import litellm as litellm_module
-
         self.mocker.patch(
-            "llm.service.litellm.image_generation",
-            side_effect=litellm_module.BadRequestError(
-                message="Invalid image size parameter",
-                model="imagen",
-                llm_provider="vertex_ai",
+            "llm.service.provider.draw",
+            side_effect=provider.BadRequestError(
+                "Invalid image size parameter",
+                model="xai/grok-imagine-image",
+                provider="xai",
             ),
         )
-        mock_completion = self.mocker.patch("llm.service.litellm.completion")
+        mock_completion = self.mocker.patch("llm.service.provider.chat")
         result = self.service.image_generation("test prompt")
 
         assert "Error" in result.content
@@ -1152,16 +826,15 @@ class TestImageGenerationValidation:
     def test_image_generation_missing_draw_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """GIVEN no key for the image model's provider THEN returns an error.
 
-        The default ``imageModel`` is "dall-e-3", which LiteLLM places on
-        openai, so OPENAI_API_KEY is what this guard reads.
+        An xai/ ``imageModel`` makes XAI_API_KEY the variable this guard reads.
         """
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        service, _ = self.make_service()
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        service, _ = self.make_service(imageModel="xai/grok-imagine-image")
 
         result = service.image_generation("A beautiful sunset")
 
         assert result.error is not None
-        assert "OPENAI_API_KEY" in result.content
+        assert "XAI_API_KEY" in result.content
 
 
 class TestImageGenerationPaths:
@@ -1172,8 +845,8 @@ class TestImageGenerationPaths:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            imageModel="dall-e-3",
-            assistantModel="gemini/gemini-flash-latest",
+            imageModel="xai/grok-imagine-image",
+            assistantModel="xai/grok-4.3",
             timeout=30,
             drawTimeout=30,
             maxPromptLength=10000,
@@ -1184,34 +857,24 @@ class TestImageGenerationPaths:
 
     def test_rewrite_empty_response(self) -> None:
         """GIVEN LLM returns empty content WHEN _rewrite_prompt_for_safety called THEN returns None tuple."""
-        response = self.mocker.Mock()
-        response.choices = [self.mocker.Mock(message=self.mocker.Mock(content=""))]
-
-        self.mocker.patch("llm.service.litellm.completion", return_value=response)
+        self.mocker.patch("llm.service.provider.chat", return_value=make_completion_response(""))
 
         result = self.service._rewrite_prompt_for_safety("bad prompt", "blocked", [], "#chan")
 
         assert result == (None, 0, 0, 0.0)
 
     def test_xai_model_kwargs(self) -> None:
-        """GIVEN xai model WHEN _attempt_image_generation called THEN passes extra kwargs."""
-        mock_response = self.mocker.Mock()
-        mock_response.data = [self.mocker.Mock(url="http://img.png", b64_json=None)]
+        """GIVEN xai model WHEN _attempt_image_generation called THEN asks for high quality."""
+        mock_img_gen = self.mocker.patch("llm.service.provider.draw", return_value=_picture())
+        self.mocker.patch.object(self.service, "_save_image_bytes", return_value=None)
 
-        mock_img_gen = self.mocker.patch(
-            "llm.service.litellm.image_generation", return_value=mock_response
-        )
-        self.mocker.patch.object(self.service, "_extract_usage", return_value=(0, 0, 0.0))
-        self.mocker.patch.object(self.service, "_download_and_save_image", return_value=None)
+        self.service._attempt_image_generation("cat", "xai/grok-imagine-image", 30)
 
-        self.service._attempt_image_generation("cat", "xai/grok-2-image", 30)
-
-        call_kwargs = mock_img_gen.call_args
-        assert call_kwargs[1]["quality"] == "high"
-        assert call_kwargs[1]["resolution"] == "2k"
+        call_kwargs = mock_img_gen.call_args.kwargs
+        assert call_kwargs["hires"] is True
         # No aspect_ratio: xAI's default is `auto`, the best ratio for the
         # prompt. A pinned 9:16 made every draw portrait.
-        assert "aspect_ratio" not in call_kwargs[1]
+        assert call_kwargs["aspect_ratio"] is None
 
     @pytest.mark.parametrize(
         ("aspect", "ratio"),
@@ -1223,31 +886,21 @@ class TestImageGenerationPaths:
         `auto` reads the prompt as a scene: a 1950s cinema poster came back
         16:9 (2026-09-19). The planner knows it is a poster; it says so.
         """
-        mock_response = self.mocker.Mock()
-        mock_response.data = [self.mocker.Mock(url="http://img.png", b64_json=None)]
-        mock_img_gen = self.mocker.patch(
-            "llm.service.litellm.image_generation", return_value=mock_response
-        )
-        self.mocker.patch.object(self.service, "_extract_usage", return_value=(0, 0, 0.0))
-        self.mocker.patch.object(self.service, "_download_and_save_image", return_value=None)
+        mock_img_gen = self.mocker.patch("llm.service.provider.draw", return_value=_picture())
+        self.mocker.patch.object(self.service, "_save_image_bytes", return_value=None)
 
-        self.service._attempt_image_generation("cat", "xai/grok-2-image", 30, aspect=aspect)
+        self.service._attempt_image_generation("cat", "xai/grok-imagine-image", 30, aspect=aspect)
 
-        assert mock_img_gen.call_args[1]["aspect_ratio"] == ratio
+        assert mock_img_gen.call_args.kwargs["aspect_ratio"] == ratio
 
     def test_unknown_aspect_is_ignored(self) -> None:
         """GIVEN a shape the map does not know WHEN drawing THEN xAI keeps `auto`."""
-        mock_response = self.mocker.Mock()
-        mock_response.data = [self.mocker.Mock(url="http://img.png", b64_json=None)]
-        mock_img_gen = self.mocker.patch(
-            "llm.service.litellm.image_generation", return_value=mock_response
-        )
-        self.mocker.patch.object(self.service, "_extract_usage", return_value=(0, 0, 0.0))
-        self.mocker.patch.object(self.service, "_download_and_save_image", return_value=None)
+        mock_img_gen = self.mocker.patch("llm.service.provider.draw", return_value=_picture())
+        self.mocker.patch.object(self.service, "_save_image_bytes", return_value=None)
 
-        self.service._attempt_image_generation("cat", "xai/grok-2-image", 30, aspect="wide")
+        self.service._attempt_image_generation("cat", "xai/grok-imagine-image", 30, aspect="wide")
 
-        assert "aspect_ratio" not in mock_img_gen.call_args[1]
+        assert mock_img_gen.call_args.kwargs["aspect_ratio"] is None
 
     def test_image_generation_threads_aspect_to_the_attempt(self) -> None:
         """GIVEN an aspect WHEN image_generation runs THEN the attempt receives it."""
@@ -1259,42 +912,30 @@ class TestImageGenerationPaths:
             return_value=ImageResult(content="http://img.png"),
         )
         self.mocker.patch.object(self.service, "validate_prompt", return_value=(True, ""))
-        self.mocker.patch.object(self.service, "_missing_image_key_error", return_value=None)
 
         self.service.image_generation("a poster", aspect="portrait")
 
         assert attempt.call_args.kwargs["aspect"] == "portrait"
 
-    def test_b64_json_save_failure(self) -> None:
-        """GIVEN b64_json data but save fails WHEN _attempt_image_generation called
+    def test_save_failure(self) -> None:
+        """GIVEN a picture but save fails WHEN _attempt_image_generation called
         THEN returns error, still carrying the generation the provider billed."""
-        image_data = self.mocker.Mock()
-        image_data.url = None
-        image_data.b64_json = "base64data"
+        self.mocker.patch("llm.service.provider.draw", return_value=_picture(cost=0.07))
+        self.mocker.patch.object(self.service, "_save_image_bytes", return_value=None)
 
-        mock_response = self.mocker.Mock()
-        mock_response.data = [image_data]
-
-        self.mocker.patch("llm.service.litellm.image_generation", return_value=mock_response)
-        self.mocker.patch.object(self.service, "_extract_usage", return_value=(3, 4, 0.07))
-        self.mocker.patch.object(self.service, "save_image_to_http", return_value=None)
-
-        result = self.service._attempt_image_generation("cat", "dall-e-3", 30)
+        result = self.service._attempt_image_generation("cat", "xai/grok-imagine-image", 30)
 
         assert result is not None
         assert result.error is not None
         assert result.cost == pytest.approx(0.07)
-        assert (result.prompt_tokens, result.completion_tokens) == (3, 4)
-        assert result.model == "dall-e-3"
+        assert result.model == "xai/grok-imagine-image"
 
     def test_timeout_not_stashed(self) -> None:
         """GIVEN image_generation times out and stashing fails WHEN called THEN returns error."""
-        import litellm as litellm_module
-
         self.mocker.patch(
-            "llm.service.litellm.image_generation",
-            side_effect=litellm_module.Timeout(
-                message="Request timed out", model="dall-e-3", llm_provider="openai"
+            "llm.service.provider.draw",
+            side_effect=provider.RequestTimeoutError(
+                "Request timed out", model="xai/grok-imagine-image", provider="xai"
             ),
         )
         self.mocker.patch.object(self.service, "_stash_timeout", return_value=False)
@@ -1314,11 +955,6 @@ class TestImageGenerationPaths:
             self.service,
             "_rewrite_prompt_for_safety",
             return_value=("rewritten", 10, 5, 0.01),
-        )
-        self.mocker.patch.object(
-            self.service,
-            "_is_content_safety_error",
-            return_value=False,
         )
 
         result = self.service.image_generation("a cat")
@@ -1358,7 +994,7 @@ class TestRetryImage:
             "reply_target": "#chan",
             "is_channel": 1,
             "prompt_preview": "test",
-            "model": "dall-e-3",
+            "model": "xai/grok-imagine-image",
             "request_data": '{"prompt": "cat"}',
             "submitted_at": 100.0,
             "expires_at": 200.0,
@@ -1388,23 +1024,22 @@ class TestRetryImage:
     def test_retry_image_no_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """GIVEN no key for the stashed model's provider THEN failed_terminal.
 
-        The retry resolves from ``task.model`` ("dall-e-3" -> openai), not from
+        The retry resolves from ``task.model`` ("xai/..." -> xai), not from
         a per-command registry key that could name a different provider.
         """
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
         task = self._make_task()
 
         result = self.service._retry_image(task, {"prompt": "cat"})
 
         assert result.status == "failed_terminal"
-        assert "OPENAI_API_KEY" in result.reason
+        assert "XAI_API_KEY" in result.reason
 
     def test_retry_image_carries_the_aspect(self) -> None:
         """GIVEN a stashed draw with an aspect WHEN retried THEN the shape survives the stash."""
         from llm.service import ImageResult
 
         task = self._make_task(model="xai/grok-imagine-image")
-        self.mocker.patch.object(self.service, "_missing_image_key_error", return_value=None)
         attempt = self.mocker.patch.object(
             self.service,
             "_attempt_image_generation",
@@ -1619,114 +1254,31 @@ class TestExternalImageUpload:
         assert self.service._restrict_img_srcs(html, "https://example.com/llm") == ""
 
 
-class TestImageBoundaryKeyResolution:
-    """The key litellm.image_generation receives follows the image model.
-
-    Draw is the one outbound boundary whose kwargs nothing else asserts on:
-    before these tests, deleting ``api_key=apikeys.api_key_for(model)`` from the
-    ``litellm.image_generation`` call left the whole suite green.
-    """
-
-    @pytest.mark.parametrize(
-        ("image_model", "expected_env"),
-        [
-            ("xai/grok-2-image", "XAI_API_KEY"),
-            ("dall-e-3", "OPENAI_API_KEY"),
-            ("gemini/imagen-4.0-generate-001", "GEMINI_API_KEY"),
-        ],
-    )
-    def test_managed_image_model_gets_its_own_provider_key(
-        self, make_service, mocker: MockerFixture, image_model: str, expected_env: str
-    ) -> None:
-        """GIVEN an image model WHEN drawing THEN that provider's variable is sent."""
-        service, _ = make_service(imageModel=image_model, drawAutoRewriteMax=0)
-        response = mocker.Mock()
-        response.data = [mocker.Mock(url="https://provider.com/image.png", b64_json=None)]
-        image_generation = mocker.patch(
-            "llm.service.litellm.image_generation", return_value=response
-        )
-        mocker.patch.object(service, "_download_and_save_image", return_value=None)
-
-        service.image_generation("a cat")
-
-        kwargs = image_generation.call_args.kwargs
-        assert kwargs["model"] == image_model
-        assert kwargs["api_key"] == FAKE_PROVIDER_KEYS[expected_env]
-
-    def test_unmanaged_image_model_passes_none(self, make_service, mocker: MockerFixture) -> None:
-        """GIVEN a vertex_ai image model WHEN drawing THEN api_key is None.
-
-        vertex_ai is unmanaged regardless of what imageModel is configured to
-        (shipped default is gemini; prod sets xai/grok-imagine-image
-        explicitly) — None is what makes LiteLLM fall back to ADC for it, and
-        a mapped key here would break service-account auth on the draw path.
-        """
-        service, _ = make_service(
-            imageModel="vertex_ai/imagen-4.0-generate-001", drawAutoRewriteMax=0
-        )
-        response = mocker.Mock()
-        response.data = [mocker.Mock(url="https://provider.com/image.png", b64_json=None)]
-        image_generation = mocker.patch(
-            "llm.service.litellm.image_generation", return_value=response
-        )
-        mocker.patch.object(service, "_download_and_save_image", return_value=None)
-
-        service.image_generation("a cat")
-
-        assert image_generation.call_args.kwargs["api_key"] is None
-
-
 class TestXaiModerationArmsTheRewrite:
     """The auto-rewrite loop must fire on xAI's moderation refusal.
 
-    It did not, for as long as prod has been drawing on grok-imagine.
-    ``_is_content_safety_error`` knew OpenAI's and Google's phrasing only, so
+    It did not, for as long as prod has been drawing on grok-imagine:
     ``imagine:content-moderated`` was classified as an ordinary bad request and
     ``image_generation`` returned without retrying. Measured over six hours on
     2026-08-15: 18 draws, 10 refused, zero rewrites attempted, with
-    ``drawAutoRewriteMax`` set to 3 the whole time.
+    ``drawAutoRewriteMax`` set to 3 the whole time. The classification now
+    lives in provider.py (test_provider.py); this pins what the service does
+    with the result.
     """
 
-    # Verbatim from prod, 2026-08-15T22:25:59Z. Pinned rather than paraphrased:
-    # the whole defect was a keyword list that did not match reality, so the
-    # test is only worth anything if it carries the real string.
     XAI_MODERATION_ERROR = (
-        "litellm.BadRequestError: XaiException - Error code: 400 - "
         "{'code': 'imagine:content-moderated', 'error': 'Generated image "
         "rejected by content moderation.', 'usage': {'cost_in_usd_ticks': 200000000}}"
     )
 
     def _xai_error(self) -> Exception:
-        import litellm as litellm_module
-
-        return litellm_module.BadRequestError(
-            message=self.XAI_MODERATION_ERROR,
+        return provider.ContentPolicyViolationError(
+            self.XAI_MODERATION_ERROR,
             model="xai/grok-imagine-image",
-            llm_provider="xai",
+            provider="xai",
+            status_code=400,
+            billed=True,
         )
-
-    def test_classifier_recognises_the_refusal(self, make_service) -> None:  # type: ignore[no-untyped-def]
-        """The exact prod error is a content block, not a generic bad request."""
-        service, _ = make_service()
-        assert service._is_content_safety_error(self._xai_error()) is True
-
-    def test_a_real_bad_request_is_still_not_a_content_block(self, make_service) -> None:  # type: ignore[no-untyped-def]
-        """Widening the list must not swallow ordinary 400s.
-
-        A malformed request has to keep returning immediately: retrying it
-        spends a rewrite completion and another billed image call on something
-        no wording change can fix.
-        """
-        import litellm as litellm_module
-
-        service, _ = make_service()
-        error = litellm_module.BadRequestError(
-            message="litellm.BadRequestError: XaiException - Error code: 400 - "
-            "{'error': 'Invalid value for parameter n'}",
-            model="xai/grok-imagine-image",
-            llm_provider="xai",
-        )
-        assert service._is_content_safety_error(error) is False
 
     def test_refusal_now_gets_one_rewrite_and_recovers(
         self, make_service, mocker: MockerFixture
@@ -1734,25 +1286,20 @@ class TestXaiModerationArmsTheRewrite:
         """End to end: refused draw -> rewritten prompt -> image delivered."""
         service, _ = make_service(
             imageModel="xai/grok-imagine-image",
-            assistantModel="gemini/gemini-flash-latest",
+            assistantModel="xai/grok-4.3",
             drawAutoRewriteMax=1,
             httpUrlBase="https://example.com/llm",
         )
-        success = mocker.Mock()
-        success.data = [mocker.Mock(url="https://provider.com/image.png", b64_json=None)]
-        success.usage = mocker.Mock(prompt_tokens=5, completion_tokens=0)
-
         image_generation = mocker.patch(
-            "llm.service.litellm.image_generation",
-            side_effect=[self._xai_error(), success],
+            "llm.service.provider.draw",
+            side_effect=[self._xai_error(), _picture()],
         )
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             return_value=make_completion_response("a tasteful party scene"),
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
         mocker.patch.object(
-            service, "_download_and_save_image", return_value="https://example.com/llm/img_a.png"
+            service, "_save_image_bytes", return_value="https://example.com/llm/img_a.png"
         )
 
         result = service.image_generation("bunga bunga party")
@@ -1770,19 +1317,18 @@ class TestXaiModerationArmsTheRewrite:
         """
         service, _ = make_service(
             imageModel="xai/grok-imagine-image",
-            assistantModel="gemini/gemini-flash-latest",
+            assistantModel="xai/grok-4.3",
             drawAutoRewriteMax=1,
             httpUrlBase="https://example.com/llm",
         )
         image_generation = mocker.patch(
-            "llm.service.litellm.image_generation",
+            "llm.service.provider.draw",
             side_effect=[self._xai_error(), self._xai_error()],
         )
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             return_value=make_completion_response("something milder"),
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         result = service.image_generation("bunga bunga party")
 
@@ -1810,18 +1356,17 @@ class TestRewriteFidelity:
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
             imageModel="xai/grok-imagine-image",
-            assistantModel="gemini/gemini-flash-latest",
+            assistantModel="xai/grok-4.3",
             httpUrlBase="https://example.com/llm",
             drawAutoRewriteMax=1,
         )
 
     def _rewrite(self, returned: str, original: str = "a cat on fire in a burning house"):
         """Run one rewrite, return the (messages, result) the call produced."""
-        response = self.mocker.Mock()
-        response.choices = [self.mocker.Mock(message=self.mocker.Mock(content=returned))]
-        response.usage = self.mocker.Mock(prompt_tokens=10, completion_tokens=5)
-        completion = self.mocker.patch("llm.service.litellm.completion", return_value=response)
-        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        completion = self.mocker.patch(
+            "llm.service.provider.chat",
+            return_value=make_completion_response(returned, prompt_tokens=10, completion_tokens=5),
+        )
         result = self.service._rewrite_prompt_for_safety(original, "content moderation", [], None)
         return completion.call_args[1]["messages"], result
 
@@ -1944,25 +1489,29 @@ class TestRefusalMessagesSayWhatHappened:
     log. The user cannot tell "reword this" from "the bot is broken", and the
     two need opposite responses.
 
-    Deliberately NOT fixed by teaching `_is_content_safety_error` this shape:
-    that switch arms the rewrite loop, and a prompt that tripped a hard safety
-    check is the one thing the loop must not go back and reword. Classify for
-    the message, not for the retry.
+    Deliberately a RefusalError, not a ContentPolicyViolationError: the latter
+    arms the rewrite loop, and a prompt that tripped a hard safety check is the
+    one thing the loop must not go back and reword. Classify for the message,
+    not for the retry. (Telling the two apart from the body is provider.py's
+    job; see test_provider.py.)
     """
 
     XAI_HARD_REFUSAL = (
-        'litellm.APIError: APIError: XaiException - {"code":"permission-denied",'
+        '{"code":"permission-denied",'
         '"error":"Content violates usage guidelines. Failed check: '
         'SAFETY_CHECK_TYPE_EXAMPLE"}'
     )
+
+    def _refusal(self) -> provider.RefusalError:
+        return provider.RefusalError(
+            self.XAI_HARD_REFUSAL, model="xai/grok-4.3", provider="xai", status_code=403
+        )
 
     def test_a_refusal_is_named_as_one(self, make_service) -> None:  # type: ignore[no-untyped-def]
         """The one thing the user needs: it was the content, not the bot."""
         service, _plugin = make_service()
 
-        message = service._handle_llm_error(
-            openai.APIError(self.XAI_HARD_REFUSAL, None, body=None), "chat"
-        )
+        message = service._handle_llm_error(self._refusal(), "chat")
 
         assert message in service_module._CHAT_REFUSED_LINES
         assert "check logs" not in message.lower()
@@ -1975,31 +1524,10 @@ class TestRefusalMessagesSayWhatHappened:
         """
         service, _plugin = make_service()
 
-        message = service._handle_llm_error(
-            openai.APIError(self.XAI_HARD_REFUSAL, None, body=None), "chat"
-        )
+        message = service._handle_llm_error(self._refusal(), "chat")
 
         assert "SAFETY_CHECK" not in message
         assert "permission-denied" not in message
-
-    def test_a_permission_error_that_is_not_about_content_is_not_a_refusal(
-        self,
-        make_service,  # type: ignore[no-untyped-def]
-    ) -> None:
-        """A key without access to a model is a config bug, not the user's fault.
-
-        Keying on the bare "permission-denied" code would tell the channel to
-        reword a perfectly good prompt forever.
-        """
-        service, _plugin = make_service()
-        not_entitled = (
-            'litellm.APIError: APIError: XaiException - {"code":"permission-denied",'
-            '"error":"The API key does not have access to model grok-9"}'
-        )
-
-        message = service._handle_llm_error(openai.APIError(not_entitled, None, body=None), "chat")
-
-        assert message not in service_module._CHAT_REFUSED_LINES
 
     def test_assistant_completion_stops_saying_something_went_wrong(
         self,
@@ -2009,8 +1537,8 @@ class TestRefusalMessagesSayWhatHappened:
         """End to end on the path that produced the line in the channel."""
         service, _plugin = make_service(assistantModel="xai/grok-4-1-fast-non-reasoning")
         mocker.patch(
-            "llm.service.litellm.completion",
-            side_effect=openai.APIError(self.XAI_HARD_REFUSAL, None, body=None),
+            "llm.service.provider.chat",
+            side_effect=self._refusal(),
         )
 
         result = service.assistant_completion(
@@ -2032,7 +1560,7 @@ class TestRefusalMessagesSayWhatHappened:
     ) -> None:
         """Classifying the known shapes must not invent a diagnosis for the rest."""
         service, _plugin = make_service()
-        mocker.patch("llm.service.litellm.completion", side_effect=RuntimeError("disk on fire"))
+        mocker.patch("llm.service.provider.chat", side_effect=RuntimeError("disk on fire"))
 
         result = service.assistant_completion(
             prompt="hello",
@@ -2057,28 +1585,23 @@ class TestExhaustedRewriteMessage:
     """
 
     def test_it_says_the_reword_was_tried_too(self, make_service, mocker: MockerFixture) -> None:
-        import litellm as litellm_module
-
         service, _plugin = make_service(
             imageModel="xai/grok-imagine-image",
-            assistantModel="gemini/gemini-flash-latest",
+            assistantModel="xai/grok-4.3",
             drawAutoRewriteMax=1,
             httpUrlBase="https://example.com/llm",
         )
-        refusal = litellm_module.BadRequestError(
-            message=(
-                "litellm.BadRequestError: XaiException - {'code': 'imagine:content-moderated', "
-                "'error': 'Generated image rejected by content moderation.'}"
-            ),
+        refusal = provider.ContentPolicyViolationError(
+            "{'code': 'imagine:content-moderated', "
+            "'error': 'Generated image rejected by content moderation.'}",
             model="xai/grok-imagine-image",
-            llm_provider="xai",
+            provider="xai",
         )
-        mocker.patch("llm.service.litellm.image_generation", side_effect=[refusal, refusal])
+        mocker.patch("llm.service.provider.draw", side_effect=[refusal, refusal])
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             return_value=make_completion_response("something milder"),
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         result = service.image_generation("bunga bunga party")
 
@@ -2086,30 +1609,23 @@ class TestExhaustedRewriteMessage:
         assert result.content in service_module._DRAW_REWORDED_LINES
 
     def test_more_than_one_reword_is_counted(self, make_service, mocker: MockerFixture) -> None:
-        import litellm as litellm_module
-
         service, _plugin = make_service(
             imageModel="xai/grok-imagine-image",
-            assistantModel="gemini/gemini-flash-latest",
+            assistantModel="xai/grok-4.3",
             drawAutoRewriteMax=2,
             httpUrlBase="https://example.com/llm",
         )
-        refusal = litellm_module.BadRequestError(
-            message=(
-                "litellm.BadRequestError: XaiException - {'code': 'imagine:content-moderated', "
-                "'error': 'Generated image rejected by content moderation.'}"
-            ),
+        refusal = provider.ContentPolicyViolationError(
+            "{'code': 'imagine:content-moderated', "
+            "'error': 'Generated image rejected by content moderation.'}",
             model="xai/grok-imagine-image",
-            llm_provider="xai",
+            provider="xai",
         )
+        mocker.patch("llm.service.provider.draw", side_effect=[refusal, refusal, refusal])
         mocker.patch(
-            "llm.service.litellm.image_generation", side_effect=[refusal, refusal, refusal]
-        )
-        mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             return_value=make_completion_response("something milder"),
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         result = service.image_generation("bunga bunga party")
 
@@ -2154,9 +1670,7 @@ class TestRefusalCopyHasSomeLifeInIt:
         chosen = mocker.patch("llm.service.random.choice", side_effect=lambda seq: seq[-1])
 
         message = service._handle_llm_error(
-            openai.APIError(
-                'XaiException - {"error":"Content violates usage guidelines."}', None, body=None
-            ),
+            provider.RefusalError('{"error":"Content violates usage guidelines."}'),
             "chat",
         )
 

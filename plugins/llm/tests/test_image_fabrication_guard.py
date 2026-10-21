@@ -96,7 +96,7 @@ class TestFabricationForcesTheTool:
     @pytest.fixture
     def service(self, make_service) -> LLMService:  # type: ignore[no-untyped-def]
         svc, _plugin = make_service(
-            assistantModel="gpt-4", httpUrlBase="https://irc.rdrake.org/llm"
+            assistantModel="xai/grok-4.3", httpUrlBase="https://irc.rdrake.org/llm"
         )
         return svc
 
@@ -119,8 +119,7 @@ class TestFabricationForcesTheTool:
             captured_kwargs.append(kwargs)
             return responses[len(captured_kwargs) - 1]
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         result = service.assistant_completion(
             prompt="draw rdrake dismantling you",
@@ -151,10 +150,9 @@ class TestFabricationForcesTheTool:
         nothing about the reply looks wrong to the user.
         """
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=lambda **_: make_completion_response(FABRICATED),
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         result = service.assistant_completion(
             prompt="draw rdrake dismantling you",
@@ -185,8 +183,7 @@ class TestFabricationForcesTheTool:
             calls.append(kwargs)
             return responses[len(calls) - 1]
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         result = service.assistant_completion(
             prompt="draw a wizard",

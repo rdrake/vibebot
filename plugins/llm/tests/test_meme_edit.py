@@ -93,12 +93,12 @@ class TestImageEdit:
         assert result.error == "The image model failed." and result.cost == 0.0
 
     def test_non_xai_model_is_refused_before_any_call(self, make_service, mocker) -> None:
-        svc, _ = make_service(memeEditModel="gemini/gemini-2.5-flash-image")
+        svc, _ = make_service(memeEditModel="anthropic/claude-haiku-5-5")
         opened = mocker.patch("urllib.request.urlopen")
 
         result = svc.image_edit(CAPTIONED, "x")
 
-        assert "xai/" in result.error
+        assert result.url is None and result.error
         opened.assert_not_called()
 
 
@@ -450,7 +450,7 @@ class TestImageGenerate:
         assert "No text" in body["prompt"]
 
     def test_non_xai_model_is_refused(self, make_service, mocker) -> None:
-        svc, _ = make_service(memeEditModel="gemini/gemini-2.5-flash-image")
+        svc, _ = make_service(memeEditModel="anthropic/claude-haiku-5-5")
         opened = mocker.patch("urllib.request.urlopen")
 
         result = svc.image_generate("x")

@@ -16,39 +16,25 @@ import logging
 import os
 from collections.abc import Mapping
 
-import litellm
-
-# The providers this deployment pays for directly. Anything else LiteLLM
-# recognises — vertex_ai, openrouter, azure, bedrock — resolves to None so
-# LiteLLM uses its own native credential mechanism (ADC, IAM, its own env vars).
-# Narrowing that to an allowlist would turn a multi-provider plugin into a
-# four-provider one.
+# The providers this deployment pays for: ``provider/name`` model strings
+# with any other prefix have no key and no client (see provider.py).
 PROVIDER_ENV_VARS: dict[str, str] = {
     "xai": "XAI_API_KEY",
-    "gemini": "GEMINI_API_KEY",
-    "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
 }
 
 
 def provider_of(model: str) -> str:
-    """Return the LiteLLM provider for ``model``, or "" if unresolvable.
+    """Return the provider prefix of ``model``, or "" if it names none we call.
 
-    Uses ``litellm.get_llm_provider`` rather than splitting on "/" because
-    unprefixed model names are legal — LiteLLM resolves ``gpt-4`` and
-    ``dall-e-3`` to openai — and this plugin's config validator accepts anything
-    LiteLLM accepts.
-
-    Never raises. LiteLLM raises ``BadRequestError`` for names it cannot place,
-    and callers sit inside failure handlers where a new exception type would
-    surface as an unhandled crash rather than a configuration error.
+    Never raises: callers sit inside failure handlers, where a new exception
+    type would surface as a crash rather than a configuration error.
     """
-    try:
-        if not model or not model.strip():
-            return ""
-        return str(litellm.get_llm_provider(model)[1])
-    except Exception:  # noqa: BLE001 — an unplaceable model is a config error, not a crash
+    prefix, sep, name = (model or "").strip().partition("/")
+    if not sep or not name:
         return ""
+    prefix = prefix.lower()
+    return prefix if prefix in PROVIDER_ENV_VARS else ""
 
 
 def env_var_for(model: str) -> str | None:
@@ -61,11 +47,7 @@ def env_var_for(model: str) -> str | None:
 
 
 def is_managed(model: str) -> bool:
-    """True if this deployment supplies ``model``'s credential directly.
-
-    False means "pass None and let LiteLLM resolve" — the path that keeps
-    vertex_ai (ADC), openrouter, azure and bedrock working.
-    """
+    """True if ``model`` names a provider this deployment has a key for."""
     return provider_of(model) in PROVIDER_ENV_VARS
 
 
@@ -81,8 +63,8 @@ def api_key_for(model: str) -> str | None:
     return os.environ.get(name, "").strip() or None
 
 
-# Self-hosted endpoints are not LiteLLM providers, so provider_of() cannot
-# place them and PROVIDER_ENV_VARS has nothing to say about them. They still
+# Self-hosted endpoints are reached by api_base, not by a provider prefix, so
+# PROVIDER_ENV_VARS has nothing to say about them. They still
 # belong here rather than in service.py: this module is where a credential is
 # turned from a name into a value, and the _API_KEY suffix below is what puts
 # the value inside log redaction.
@@ -235,15 +217,6 @@ def install_secret_filter() -> int:
     ``logging.lastResort`` here closes that path regardless of whether a real
     handler ever gets attached to ``llm`` later.
 
-    ``import litellm`` additionally creates three loggers of its own —
-    ``LiteLLM``, ``LiteLLM Proxy``, ``LiteLLM Router`` — each with its own
-    ``StreamHandler(stderr)`` attached directly, at effective level WARNING.
-    A logger's own handler runs before propagation to any ancestor, so a
-    record on one of these reaches stderr (and therefore ``docker logs``)
-    through that handler regardless of what is or isn't attached to root,
-    ``supybot`` or ``llm``. They are covered by name below for that reason,
-    not because they sit in either hierarchy.
-
     Handlers created later — supybot adds per-plugin file handlers when
     ``individualLogfiles`` is true; prod has it false — are not covered. Calling
     this again picks them up.
@@ -255,9 +228,6 @@ def install_secret_filter() -> int:
         logging.getLogger(),
         logging.getLogger("supybot"),
         logging.getLogger("llm"),
-        logging.getLogger("LiteLLM"),
-        logging.getLogger("LiteLLM Proxy"),
-        logging.getLogger("LiteLLM Router"),
     ]
     handlers = [handler for logger in targets for handler in logger.handlers]
     if logging.lastResort is not None:

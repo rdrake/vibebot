@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 import pytest
+from llm import provider
 from llm.identity import Caller, Identity
 from llm.service import VideoResult
 
@@ -264,14 +265,12 @@ class TestRetryVideo:
 
     def test_still_rendering_raises_for_backoff(self, make_service, animate_env, mocker) -> None:
         """GIVEN an in-progress job WHEN polled THEN it raises to be retried."""
-        import litellm
-
         service, _ = _service(make_service)
         mocker.patch.object(
             service, "_animate_request", return_value=(200, {"status": "in_progress"})
         )
 
-        with pytest.raises(litellm.Timeout):
+        with pytest.raises(provider.RequestTimeoutError):
             service._retry_video(_task(), {"job_id": "video_gen_1"})
 
     def test_completed_job_is_downloaded_and_published(
@@ -336,12 +335,10 @@ class TestRetryVideo:
 
         A bounced box must not lose a job that is very likely still running.
         """
-        import litellm
-
         service, _ = _service(make_service)
         mocker.patch.object(service, "_animate_request", return_value=(503, {"detail": "busy"}))
 
-        with pytest.raises(litellm.Timeout):
+        with pytest.raises(provider.RequestTimeoutError):
             service._retry_video(_task(), {"job_id": "video_gen_1"})
 
     def test_download_failure_is_terminal(self, make_service, animate_env, mocker) -> None:
@@ -848,7 +845,7 @@ class TestAnimateForcesTheTool:
 
     @pytest.fixture
     def service(self, make_service, animate_env):  # type: ignore[no-untyped-def]
-        svc, _plugin = _service(make_service, assistantModel="gpt-4")
+        svc, _plugin = _service(make_service, assistantModel="xai/grok-4.3")
         return svc
 
     def _run(self, service, mocker, profile: str, prompt: str = "the stinky lads at the beach"):
@@ -859,13 +856,12 @@ class TestAnimateForcesTheTool:
             "generate_video", {"prompt": "three men wade into surf"}, call_id="call_vid"
         )
         completion = mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[
                 make_completion_response(None, tool_calls=[tool_call]),
                 make_completion_response("Rendering your clip."),
             ],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         service.assistant_completion(
             prompt=prompt,
@@ -946,12 +942,11 @@ class TestAnimateForcesTheTool:
         """
         from llm.assistant import ToolCallbackResult
 
-        service, _plugin = make_service(assistantModel="gpt-4")  # no animateApiUrl
+        service, _plugin = make_service(assistantModel="xai/grok-4.3")  # no animateApiUrl
         completion = mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=[make_completion_response("I can't make videos right now.")],
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         service.assistant_completion(
             prompt="the stinky lads at the beach",
@@ -989,7 +984,7 @@ class TestNoInventedLinks:
 
     @pytest.fixture
     def service(self, make_service, animate_env):  # type: ignore[no-untyped-def]
-        svc, _plugin = _service(make_service, assistantModel="gpt-4")
+        svc, _plugin = _service(make_service, assistantModel="xai/grok-4.3")
         return svc
 
     def _run(self, service, mocker, reply: str, *, profile: str = "animate", tool: bool = True):
@@ -1007,8 +1002,7 @@ class TestNoInventedLinks:
                 )
             )
         responses.append(make_completion_response(reply))
-        mocker.patch("llm.service.litellm.completion", side_effect=responses)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=responses)
 
         return service.assistant_completion(
             prompt="baby prince harry riding a corgi around the throne",

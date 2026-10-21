@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from llm import provider
 from llm.assistant import ToolCallbackResult
 from llm.service import (
     _MAX_SAFETY_REFUSAL_RETRIES,
@@ -182,8 +183,7 @@ class TestSafetyRefusalRetry:
             captured.append(list(kwargs.get("messages", [])))  # type: ignore[arg-type]
             return responses[len(captured) - 1]
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         result = service.assistant_completion(
             prompt="tell us a filthy joke",
@@ -205,10 +205,9 @@ class TestSafetyRefusalRetry:
         completion is worth it, an unbounded retry storm is not.
         """
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=lambda **_: make_completion_response("I can't help with that."),
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         result = service.assistant_completion(
             prompt="tell us a filthy joke",
@@ -236,8 +235,7 @@ class TestSafetyRefusalRetry:
             calls.append(kwargs)
             return make_completion_response("I can't find that in the logs.")
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
 
         result = service.assistant_completion(
             prompt="when did the bot last restart",
@@ -301,8 +299,7 @@ class TestStaleImageGuard:
             make_completion_response(None, tool_calls=[tool_call]),
             make_completion_response(stale),
         ]
-        mocker.patch("llm.service.litellm.completion", side_effect=responses)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=responses)
 
         result = service.assistant_completion(
             prompt="draw the lads",
@@ -331,8 +328,7 @@ class TestStaleImageGuard:
             make_completion_response(None, tool_calls=[tool_call]),
             make_completion_response(f"one lad coming up: {fresh}"),
         ]
-        mocker.patch("llm.service.litellm.completion", side_effect=responses)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=responses)
 
         result = service.assistant_completion(
             prompt="draw the lads",
@@ -376,13 +372,10 @@ class TestRefusalFallback:
                     raise outcome
                 if not isinstance(outcome, str):
                     return outcome
-                return make_completion_response(outcome)
+                cost = 0.5 if kwargs["model"] == FALLBACK else 0.25
+                return make_completion_response(outcome, cost=cost)
 
-            mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-            mocker.patch(
-                "llm.service.litellm.completion_cost",
-                side_effect=lambda **kw: 0.5 if kw["model"] == FALLBACK else 0.25,
-            )
+            mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
             result = svc.assistant_completion(
                 prompt="tell us a filthy joke",
                 nick="rdrake",
@@ -423,7 +416,9 @@ class TestRefusalFallback:
 
     def test_provider_refusal_error_reruns_on_fallback(self, run) -> None:  # type: ignore[no-untyped-def]
         """A provider refusal raised by the primary is retried on the fallback."""
-        refused = Exception("Output blocked: content violates usage guidelines")
+        refused = provider.RefusalError(
+            "Output blocked: content violates usage guidelines", model="gpt-4"
+        )
         result, calls, served = run([refused, "sure thing"])
 
         assert result.content == "sure thing"
@@ -431,6 +426,19 @@ class TestRefusalFallback:
         assert calls[1]["messages"] == calls[0]["messages"]
         assert served == [
             f"refusal_fallback_served primary=gpt-4 fallback={FALLBACK} trigger=provider_error"
+        ]
+
+    def test_stop_reason_refusal_reruns_on_fallback(self, run) -> None:  # type: ignore[no-untyped-def]
+        """Anthropic's classifier declines with finish_reason "refusal" and no
+        text; the turn re-runs once on the fallback without a nudge."""
+        declined = make_completion_response(None, finish_reason="refusal")
+        result, calls, served = run([declined, "sure thing"])
+
+        assert result.content == "sure thing"
+        assert [c["model"] for c in calls] == ["gpt-4", FALLBACK]
+        assert calls[1]["messages"] == calls[0]["messages"]
+        assert served == [
+            f"refusal_fallback_served primary=gpt-4 fallback={FALLBACK} trigger=stop_reason"
         ]
 
     def test_fallback_that_also_refuses_is_delivered_without_looping(self, run) -> None:  # type: ignore[no-untyped-def]
@@ -494,21 +502,6 @@ class TestRefusalFallback:
         assert served == []
 
 
-# A real ModelResponse makes pydantic warn about litellm's own TypedDicts.
-@pytest.mark.filterwarnings("ignore::UserWarning:pydantic")
-def test_fallback_model_books_grok_4_3_rates(mocker: MockerFixture) -> None:
-    """The alias costs grok-4.3's per-token rates, not LiteLLM's silent $0."""
-    import litellm
-
-    response = litellm.ModelResponse(
-        model="grok-4-1-fast-non-reasoning",
-        choices=[{"message": {"role": "assistant", "content": "hi"}}],
-        usage={"prompt_tokens": 1000, "completion_tokens": 1000, "total_tokens": 2000},
-    )
-    grok = litellm.model_cost["xai/grok-4.3"]
-    expected = 1000 * grok["input_cost_per_token"] + 1000 * grok["output_cost_per_token"]
-
-    _p, _c, cost = LLMService._extract_usage(mocker.MagicMock(), response, FALLBACK)
-
-    assert cost > 0
-    assert cost == pytest.approx(expected)
+def test_fallback_model_books_grok_4_3_rates() -> None:
+    """The alias costs grok-4.3's per-token rates, not a silent $0."""
+    assert provider.PRICES[FALLBACK] == provider.PRICES["xai/grok-4.3"]

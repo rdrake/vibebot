@@ -258,12 +258,12 @@ class VerseModelClient(Protocol):
     ) -> tuple[str, VerseCallUsage]: ...
 
 
-class LiteLLMVerseClient:
+class ProviderVerseClient:
     """Default verse completion client (used by retention compaction).
 
-    Calls ``litellm.completion`` synchronously (already on a worker thread
-    by the time this runs) and returns the content string plus a
-    ``VerseCallUsage``. Errors propagate to the caller.
+    Calls ``provider.chat`` synchronously (already on a worker thread by the
+    time this runs) and returns the content string plus a ``VerseCallUsage``.
+    Errors propagate to the caller.
     """
 
     def __init__(
@@ -275,43 +275,13 @@ class LiteLLMVerseClient:
     def call(
         self, *, op: str, model: str, messages: list[dict[str, str]]
     ) -> tuple[str, VerseCallUsage]:
-        import litellm
-
-        from .. import apikeys
+        from .. import provider
 
         t0 = time.monotonic()
-        kwargs: dict[str, Any] = {}
-        kwargs["api_key"] = apikeys.api_key_for(model)
-        response = litellm.completion(model=model, messages=messages, **kwargs)
+        reply = provider.chat(model, list(messages), timeout=120)
         elapsed_ms = (time.monotonic() - t0) * 1000.0
-        try:
-            content = response.choices[0].message.content or ""
-        except (AttributeError, IndexError):
-            content = ""
-        try:
-            usage = response.usage
-            pt = int(getattr(usage, "prompt_tokens", 0) or 0)
-            ct = int(getattr(usage, "completion_tokens", 0) or 0)
-        except AttributeError:
-            pt = ct = 0
-        try:
-            cost = float(litellm.completion_cost(completion_response=response, model=model) or 0.0)
-        except Exception:
-            cost = 0.0
-        # Sanity clamp: litellm.completion_cost falls back to a token count
-        # for models without pricing data (observed in prod for
-        # gemini-flash-lite-latest, returning ~365). Anything over $1 for a
-        # single short cheap-model call is implausible — assume the
-        # accounting is wrong and zero it out so @usage isn't polluted with
-        # nonsense. This is a soft clamp; remove once litellm pricing
-        # catches up or once we add explicit pricing tables.
-        if cost > 1.0:
-            self._log.warning(
-                f"compaction completion_cost returned implausible value {cost!r} "
-                f"for model={model}; clamping to 0.0 (likely missing "
-                "pricing data in litellm)"
-            )
-            cost = 0.0
+        content = reply.text
+        pt, ct, cost = reply.usage.input_tokens, reply.usage.output_tokens, reply.cost
         # "compaction:" replaced the deleted loom subsystem's "loom:" op-prefix;
         # historical usage rows were re-keyed in the same deploy.
         # Match service.py:_log_completion_timing's f-string convention.

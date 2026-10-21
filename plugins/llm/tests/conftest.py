@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
+from llm import provider
 from llm.identity import Caller, Identity
 from llm.persistence import LLMDatabase, ReminderRow
 from llm.plugin import LLM
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
 # Test constants
 # =============================================================================
 
-TEST_MODEL = "gpt-4"
+TEST_MODEL = "xai/grok-4.3"
 TEST_URL_BASE = "https://example.com/llm"
 
 # Fake values, each comfortably over apikeys.MIN_REDACTABLE_LEN.
@@ -56,10 +57,9 @@ _SECRET_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_CREDENTIALS")
 def _isolate_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Give every test a known, fake set of provider credentials.
 
-    LiteLLM calls load_dotenv() at import, so a developer's real .env is in
-    os.environ before collection. Without this, tests can pass locally against
-    real keys, fail in CI, print real keys into a failure diff, or reach the
-    network.
+    A developer's shell may carry real keys. Without this, tests can pass
+    locally against real keys, fail in CI, print real keys into a failure
+    diff, or reach the network.
     """
     for name in list(os.environ):
         if name.upper().endswith(_SECRET_SUFFIXES):
@@ -84,8 +84,8 @@ def _restore_global_logging_filters() -> Generator[None]:
     """Undo any ``SecretFilter`` installation left on process-global logging state.
 
     ``apikeys.install_secret_filter()`` (installed from ``LLM.__init__`` as of
-    Task 4) attaches to handlers already sitting on root/``supybot``/``llm``/
-    ``LiteLLM``/``LiteLLM Proxy``/``LiteLLM Router``, plus
+    Task 4) attaches to handlers already sitting on root/``supybot``/``llm``,
+    plus
     ``logging.lastResort`` — real, process-global state, not anything scoped
     to a single test. Any test that constructs a real plugin (``LLM(mock_irc)``,
     not just ``make_service()``) triggers this via ``__init__``. pytest reuses
@@ -95,20 +95,14 @@ def _restore_global_logging_filters() -> Generator[None]:
     ``[REDACTED]`` in unrelated assertions, well after the test that
     installed the filter has finished. Snapshotting and restoring
     ``handler.filters`` here, for every test in the suite, confines
-    installation to the test that triggered it. The three ``LiteLLM*`` loggers
-    are covered too — ``import litellm`` gives each its own stderr handler
-    that install_secret_filter() reaches directly; missing them here would
-    leak a filter onto those handlers across the whole remaining test run.
+    installation to the test that triggered it.
 
     Generalized from the equivalent class-local fixture this module used to
     carry only for ``TestInstallSecretFilter`` in ``test_apikeys.py`` — every
     test that builds a real plugin needs the same protection, not just the
     tests that exercise ``install_secret_filter`` directly.
     """
-    loggers = [
-        logging.getLogger(name)
-        for name in ("", "supybot", "llm", "LiteLLM", "LiteLLM Proxy", "LiteLLM Router")
-    ]
+    loggers = [logging.getLogger(name) for name in ("", "supybot", "llm")]
     handler_snapshot = {
         handler: list(handler.filters) for logger in loggers for handler in logger.handlers
     }
@@ -445,7 +439,7 @@ def reminder_names(plugin: Any) -> set[str]:
 
 
 # =============================================================================
-# litellm completion-response builders
+# provider reply builders
 # =============================================================================
 
 
@@ -483,80 +477,37 @@ def make_tool_call(
     arguments: dict[str, Any] | str | None = None,
     *,
     call_id: str = "call_0",
-) -> MagicMock:
-    """Build a mock litellm tool_call.
+) -> provider.ToolCall:
+    """Build a tool call as provider.chat returns it.
 
-    Produces the ``.id`` / ``.type`` / ``.function.name`` / ``.function.arguments``
-    shape that the assistant tool loop reads (service.py:assistant_completion).
     ``arguments`` may be a dict (JSON-encoded for you) or a raw string (passed
-    through verbatim — useful for exercising malformed-JSON handling). Centralizes
-    the litellm object layout that the tool-loop tests otherwise hand-roll, so a
-    litellm shape change is absorbed in one place.
+    through verbatim — useful for exercising malformed-JSON handling).
     """
     if arguments is None:
         arguments = {}
     arguments_str = arguments if isinstance(arguments, str) else json.dumps(arguments)
-
-    tool_call = MagicMock()
-    tool_call.id = call_id
-    tool_call.type = "function"
-    tool_call.function.name = name
-    tool_call.function.arguments = arguments_str
-    return tool_call
+    return provider.ToolCall(id=call_id, name=name, arguments=arguments_str)
 
 
 def make_completion_response(
     content: str | None = "response text",
     *,
-    tool_calls: list[Any] | None = None,
+    tool_calls: list[provider.ToolCall] | None = None,
     prompt_tokens: int = 10,
     completion_tokens: int = 20,
-    model: str = TEST_MODEL,
-    grounding: bool = False,
     finish_reason: str = "stop",
-) -> MagicMock:
-    """Build a mock that mimics a litellm chat-completion response.
-
-    Mirrors the shape hand-rolled across test_service / test_assistant /
-    test_reminders: ``r.choices[0].message.content`` / ``.tool_calls`` and
-    ``r.usage.prompt_tokens`` / ``.completion_tokens``. Pass ``tool_calls`` built
-    with :func:`make_tool_call` for tool-loop tests; ``grounding=True`` attaches
-    the vertex grounding marker in ``_hidden_params``. Keeping this in one place
-    confines litellm-response coupling so a shape change touches one builder
-    rather than hundreds of call sites.
-
-    ``finish_reason`` defaults to ``"stop"`` and must be set explicitly rather
-    than left to MagicMock's auto-attribute: a bare mock answers every
-    ``finish_reason`` comparison with a truthy sentinel that equals nothing, so
-    a caller that rejects truncated output would reject every mocked response
-    in the suite. Pass ``"length"`` to model a completion the provider cut off
-    at ``max_tokens``.
-    """
-    message = MagicMock()
-    message.content = content
-    message.tool_calls = tool_calls
-    message.role = "assistant"
-
-    choice = MagicMock()
-    choice.message = message
-    choice.grounding_metadata = None
-    choice.finish_reason = finish_reason
-
-    response = MagicMock()
-    response.choices = [choice]
-    response.model = model
-    response.model_extra = {}
-    response._hidden_params = (
-        {"vertex_ai_grounding_metadata": {"search_queries": ["q"]}} if grounding else {}
+    cost: float = 0.0,
+    thinking: tuple[dict[str, Any], ...] = (),
+) -> provider.Reply:
+    """Build a provider.Reply, the one shape every chat call returns."""
+    return provider.Reply(
+        text=content or "",
+        tool_calls=tuple(tool_calls or ()),
+        finish_reason=finish_reason,
+        usage=provider.Usage(input_tokens=prompt_tokens, output_tokens=completion_tokens),
+        cost=cost,
+        thinking=thinking,
     )
-
-    usage = MagicMock()
-    usage.prompt_tokens = prompt_tokens
-    usage.completion_tokens = completion_tokens
-    usage.total_tokens = prompt_tokens + completion_tokens
-    response.usage = usage
-
-    return response
 
 
 # =============================================================================
@@ -780,7 +731,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         # Capability-based settings (Phase 2 Task 5a/5b — sole surface).
         "assistantModel": TEST_MODEL,
         "assistantSystemPrompt": "You are helpful.",
-        "imageModel": "dall-e-3",
+        "imageModel": "xai/grok-imagine-image",
         # Plugin-level init config
         "httpRoot": "",
         "databasePath": "",

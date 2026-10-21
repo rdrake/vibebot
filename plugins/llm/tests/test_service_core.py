@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 from hypothesis import given
 from hypothesis.strategies import characters, ip_addresses, lists, sampled_from, text, tuples
+from llm import provider
 from llm.service import (
     LLMService,
     validate_external_url,
@@ -169,7 +170,7 @@ class TestLLMService:
             }.get(key)
         )
 
-        self.mocker.patch("llm.service.litellm.completion", side_effect=mock_completion)
+        self.mocker.patch("llm.service.provider.chat", side_effect=mock_completion)
         self.service.completion("Hello", command="ask")
 
         assert len(messages_sent) == 2
@@ -197,7 +198,7 @@ class TestLLMService:
             }.get(key)
         )
 
-        self.mocker.patch("llm.service.litellm.completion", side_effect=mock_completion)
+        self.mocker.patch("llm.service.provider.chat", side_effect=mock_completion)
         self.service.completion("Hello", command="ask")
 
         # Still includes system message with anti-injection preamble
@@ -229,7 +230,7 @@ class TestLLMService:
             {"role": "assistant", "content": "Hi there!"},
         ]
 
-        self.mocker.patch("llm.service.litellm.completion", side_effect=mock_completion)
+        self.mocker.patch("llm.service.provider.chat", side_effect=mock_completion)
         self.service.completion("How are you?", command="ask", history=history)
 
         # Should have system prompt + history + new message
@@ -241,45 +242,6 @@ class TestLLMService:
         assert messages_sent[1]["content"] == "Hello"
         assert messages_sent[2]["content"] == "Hi there!"
         assert messages_sent[3]["content"] == "How are you?"
-
-    @pytest.mark.parametrize(
-        "model",
-        [
-            "gemini/gemini-2.0-flash",
-            "gemini/gemini-2.5-flash",
-            "gemini/gemini-2.5-pro",
-            "gemini/gemini-flash-latest",
-            "GEMINI/GEMINI-2.5-FLASH",
-            "vertex_ai/gemini-2.5-flash",
-            "vertex_ai_beta/gemini-2.5-pro",
-            "gemini/gemini-2.5-flash-preview-05-20",
-        ],
-    )
-    def test_get_gemini_tools_returns_tools_for_supported_models(self, model: str) -> None:
-        """GIVEN supported Gemini model WHEN _get_gemini_tools THEN returns tools."""
-        tools = self.service._get_gemini_tools(model)
-        assert tools is not None
-        assert len(tools) == 2
-        assert {"googleSearch": {}} in tools
-        assert {"urlContext": {}} in tools
-
-    @pytest.mark.parametrize(
-        "model",
-        [
-            "gemini/gemini-1.5-flash",
-            "gpt-4",
-            "claude-3-opus",
-            "anthropic/claude-3-sonnet",
-            "vertex_ai/imagen-4.0-generate-001",
-            "gemini/imagen-3.0-generate-001",
-            "openai/gemini-2.5-flash",
-            "anthropic/gemini-2.5-pro",
-            "gemini/not-gemini-2.5-flash",
-        ],
-    )
-    def test_get_gemini_tools_returns_none_for_unsupported_models(self, model: str) -> None:
-        """GIVEN unsupported model WHEN _get_gemini_tools THEN returns None."""
-        assert self.service._get_gemini_tools(model) is None
 
 
 class TestBuildSystemPrompt:
@@ -1574,18 +1536,14 @@ class TestTimeoutStashing:
 
     def test_completion_timeout_stashes_ask(self) -> None:
         """GIVEN ask completion times out WHEN called THEN stashes with messages."""
-        import litellm as litellm_module
-
         mock_msg = self.mocker.MagicMock()
         mock_msg.nick = "alice"
         mock_msg.args = ("#general", ".ask hello")
 
         self.mocker.patch(
-            "llm.service.litellm.completion",
-            side_effect=litellm_module.Timeout(
-                message="Request timed out",
-                model="gpt-4",
-                llm_provider="openai",
+            "llm.service.provider.chat",
+            side_effect=provider.RequestTimeoutError(
+                "Request timed out", model="gpt-4", provider="openai"
             ),
         )
 
@@ -1602,18 +1560,14 @@ class TestTimeoutStashing:
 
     def test_completion_timeout_stashes_code(self) -> None:
         """GIVEN code completion times out WHEN called THEN stashes with messages."""
-        import litellm as litellm_module
-
         mock_msg = self.mocker.MagicMock()
         mock_msg.nick = "bob"
         mock_msg.args = ("bob", ".code sort")
 
         self.mocker.patch(
-            "llm.service.litellm.completion",
-            side_effect=litellm_module.Timeout(
-                message="Request timed out",
-                model="gpt-4",
-                llm_provider="openai",
+            "llm.service.provider.chat",
+            side_effect=provider.RequestTimeoutError(
+                "Request timed out", model="gpt-4", provider="openai"
             ),
         )
 
@@ -1626,18 +1580,14 @@ class TestTimeoutStashing:
 
     def test_image_generation_timeout_stashes_draw(self) -> None:
         """GIVEN first-attempt image generation times out WHEN called THEN stashes prompt."""
-        import litellm as litellm_module
-
         mock_msg = self.mocker.MagicMock()
         mock_msg.nick = "charlie"
         mock_msg.args = ("#art", ".draw cat")
 
         self.mocker.patch(
-            "llm.service.litellm.image_generation",
-            side_effect=litellm_module.Timeout(
-                message="Request timed out",
-                model="dall-e-3",
-                llm_provider="openai",
+            "llm.service.provider.draw",
+            side_effect=provider.RequestTimeoutError(
+                "Request timed out", model="dall-e-3", provider="openai"
             ),
         )
 
@@ -1650,8 +1600,6 @@ class TestTimeoutStashing:
 
     def test_stashing_disabled_when_expiry_zero(self) -> None:
         """GIVEN askExpiry=0 WHEN completion times out THEN not stashed."""
-        import litellm as litellm_module
-
         from .conftest import make_registry_side_effect
 
         self.mock_plugin.registryValue = self.mocker.Mock(
@@ -1665,11 +1613,9 @@ class TestTimeoutStashing:
         mock_msg.args = ("#test", ".ask hello")
 
         self.mocker.patch(
-            "llm.service.litellm.completion",
-            side_effect=litellm_module.Timeout(
-                message="Request timed out",
-                model="gpt-4",
-                llm_provider="openai",
+            "llm.service.provider.chat",
+            side_effect=provider.RequestTimeoutError(
+                "Request timed out", model="gpt-4", provider="openai"
             ),
         )
 
@@ -1807,8 +1753,6 @@ class TestCheckPendingTasks:
 
     def test_terminal_error_stored_for_delivery(self) -> None:
         """GIVEN retry raises AuthenticationError WHEN checked THEN stored for delivery."""
-        import litellm as litellm_module
-
         task = self._make_task_row()
         self.mock_db.delete_expired_pending_tasks.return_value = []
         self.mock_db.claim_due_pending_tasks.side_effect = [
@@ -1817,11 +1761,9 @@ class TestCheckPendingTasks:
         ]
 
         self.mocker.patch(
-            "llm.service.litellm.completion",
-            side_effect=litellm_module.AuthenticationError(
-                message="Invalid key",
-                llm_provider="openai",
-                model="gpt-4",
+            "llm.service.provider.chat",
+            side_effect=provider.AuthenticationError(
+                "Invalid key", model="gpt-4", provider="openai"
             ),
         )
 
@@ -1832,8 +1774,6 @@ class TestCheckPendingTasks:
 
     def test_transient_error_releases_with_backoff(self) -> None:
         """GIVEN retry raises Timeout WHEN checked THEN task released with backoff."""
-        import litellm as litellm_module
-
         task = self._make_task_row(attempt_count=1)
         self.mock_db.delete_expired_pending_tasks.return_value = []
         self.mock_db.claim_due_pending_tasks.side_effect = [
@@ -1842,12 +1782,8 @@ class TestCheckPendingTasks:
         ]
 
         self.mocker.patch(
-            "llm.service.litellm.completion",
-            side_effect=litellm_module.Timeout(
-                message="timed out",
-                model="gpt-4",
-                llm_provider="openai",
-            ),
+            "llm.service.provider.chat",
+            side_effect=provider.RequestTimeoutError("timed out", model="gpt-4", provider="openai"),
         )
 
         results = self.service.check_pending_tasks({"#test"})
@@ -1869,8 +1805,6 @@ class TestCheckPendingTasks:
         the past), causing premature re-polling. Asserts the backoff is anchored
         to the post-work clock.
         """
-        import litellm as litellm_module
-
         clock = {"t": self.now}
         slow_work_seconds = 45.0  # provider call outlasts part of the 60s backoff
 
@@ -1887,9 +1821,9 @@ class TestCheckPendingTasks:
 
         def slow_then_fail(*args, **kwargs):
             clock["t"] += slow_work_seconds  # provider call burns wall time
-            raise litellm_module.Timeout(message="timed out", model="gpt-4", llm_provider="openai")
+            raise provider.RequestTimeoutError("timed out", model="gpt-4", provider="openai")
 
-        self.mocker.patch("llm.service.litellm.completion", side_effect=slow_then_fail)
+        self.mocker.patch("llm.service.provider.chat", side_effect=slow_then_fail)
 
         self.service.check_pending_tasks({"#test"})
 
@@ -1910,11 +1844,10 @@ class TestCheckPendingTasks:
         ]
 
         mock_response = make_completion_response(
-            "The answer is 42", prompt_tokens=100, completion_tokens=50, model="gpt-4"
+            "The answer is 42", prompt_tokens=100, completion_tokens=50, cost=0.01
         )
 
-        self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
-        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.01)
+        self.mocker.patch("llm.service.provider.chat", return_value=mock_response)
 
         self.service.check_pending_tasks({"#test"})
 
@@ -1976,11 +1909,10 @@ class TestProviderDeliverySplit:
         ]
 
         mock_response = make_completion_response(
-            "The answer is 42", prompt_tokens=100, completion_tokens=50, model="gpt-4"
+            "The answer is 42", prompt_tokens=100, completion_tokens=50, cost=0.01
         )
 
-        self.mocker.patch("llm.service.litellm.completion", return_value=mock_response)
-        self.mocker.patch("llm.service.litellm.completion_cost", return_value=0.01)
+        self.mocker.patch("llm.service.provider.chat", return_value=mock_response)
 
         self.service.check_pending_tasks({"#test"})
 
@@ -1993,8 +1925,6 @@ class TestProviderDeliverySplit:
 
     def test_terminal_error_stores_result_for_delivery(self) -> None:
         """GIVEN provider raises terminal error WHEN checked THEN stores failure result for delivery."""
-        import litellm as litellm_module
-
         task = self._make_task_row()
         self.mock_db.delete_expired_pending_tasks.return_value = []
         self.mock_db.claim_due_pending_tasks.side_effect = [
@@ -2003,11 +1933,9 @@ class TestProviderDeliverySplit:
         ]
 
         self.mocker.patch(
-            "llm.service.litellm.completion",
-            side_effect=litellm_module.AuthenticationError(
-                message="Invalid key",
-                llm_provider="openai",
-                model="gpt-4",
+            "llm.service.provider.chat",
+            side_effect=provider.AuthenticationError(
+                "Invalid key", model="gpt-4", provider="openai"
             ),
         )
 
@@ -2109,7 +2037,7 @@ class TestStashTimeout:
         """GIVEN save_pending_task raises WHEN _stash_timeout called THEN returns False, no raise.
 
         A DB write failure while stashing must degrade gracefully. The bug: the
-        write escaped the caller's ``except litellm.Timeout`` handler, so a
+        write escaped the caller's ``except provider.RequestTimeoutError`` handler, so a
         timeout under DB contention left the user with no reply AND no stashed
         retry. Returning False lets the caller fall through to a normal timeout
         error instead.

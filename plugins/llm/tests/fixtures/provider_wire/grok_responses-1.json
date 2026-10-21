@@ -1,0 +1,27 @@
+{
+  "url": "https://api.x.ai/v1/responses",
+  "headers": {
+    "host": "api.x.ai",
+    "accept": "*/*",
+    "accept-encoding": "gzip, deflate",
+    "connection": "keep-alive",
+    "user-agent": "litellm/1.103.0",
+    "content-length": "126",
+    "content-type": "application/json"
+  },
+  "body": {
+    "model": "grok-4.3",
+    "input": [
+      {
+        "role": "user",
+        "content": "news today"
+      }
+    ],
+    "tools": [
+      {
+        "type": "web_search"
+      }
+    ],
+    "prompt_cache_key": "abc"
+  }
+}

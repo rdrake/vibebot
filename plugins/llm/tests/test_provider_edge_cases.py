@@ -1,7 +1,8 @@
 """Tests for API provider edge cases.
 
-These tests verify handling of provider-specific behaviors, error conditions,
-and edge cases that may occur with different LLM providers.
+These tests verify how LLMService handles provider error conditions, partial
+replies and key checks: the user-facing message for each provider exception,
+key sanitization, and the pre-flight key guard.
 """
 
 from __future__ import annotations
@@ -9,19 +10,14 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-import litellm
 import pytest
+from llm import provider
 from llm.service import LLMService
 
 from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
-
-
-def _stub_response():
-    """A litellm-shaped chat-completion response, for kwarg-capture stubs."""
-    return make_completion_response()
 
 
 class TestProviderSpecificErrors:
@@ -36,9 +32,9 @@ class TestProviderSpecificErrors:
     def test_handles_timeout_error(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN timeout error WHEN completing THEN returns user-friendly message."""
         mocker.patch(
-            "llm.service.litellm.completion",
-            side_effect=litellm.Timeout(
-                message="Request timed out", model="gpt-4", llm_provider="openai"
+            "llm.service.provider.chat",
+            side_effect=provider.RequestTimeoutError(
+                "Request timed out", model="xai/grok-4.3", provider="xai"
             ),
         )
         result = service.completion("test", command="ask")
@@ -49,11 +45,9 @@ class TestProviderSpecificErrors:
     def test_handles_rate_limit_error(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN rate limit error WHEN completing THEN returns user-friendly message."""
         mocker.patch(
-            "llm.service.litellm.completion",
-            side_effect=litellm.RateLimitError(
-                message="Rate limit exceeded",
-                model="gpt-4",
-                llm_provider="openai",
+            "llm.service.provider.chat",
+            side_effect=provider.RateLimitError(
+                "Rate limit exceeded", model="xai/grok-4.3", provider="xai"
             ),
         )
         result = service.completion("test", command="ask")
@@ -64,11 +58,9 @@ class TestProviderSpecificErrors:
     def test_handles_authentication_error(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN auth error WHEN completing THEN returns user-friendly message."""
         mocker.patch(
-            "llm.service.litellm.completion",
-            side_effect=litellm.AuthenticationError(
-                message="Invalid API key",
-                model="gpt-4",
-                llm_provider="openai",
+            "llm.service.provider.chat",
+            side_effect=provider.AuthenticationError(
+                "Invalid API key", model="xai/grok-4.3", provider="xai"
             ),
         )
         result = service.completion("test", command="ask")
@@ -76,61 +68,43 @@ class TestProviderSpecificErrors:
         assert "api key" in result.content.lower() or "invalid" in result.content.lower()
         assert "Error" in result.content
 
-    @pytest.mark.parametrize(
-        ("error_class", "error_kwargs", "expected_words"),
-        [
-            (
-                litellm.ContentPolicyViolationError,
-                {"message": "Content violates policy", "model": "gpt-4", "llm_provider": "openai"},
-                ["safety", "policy"],
+    def test_handles_content_policy_error(self, service: LLMService, mocker: MockerFixture) -> None:
+        """GIVEN content policy error WHEN completing THEN returns user-friendly message."""
+        mocker.patch(
+            "llm.service.provider.chat",
+            side_effect=provider.ContentPolicyViolationError(
+                "Content violates policy", model="xai/grok-4.3", provider="xai"
             ),
-            (
-                litellm.BadRequestError,
-                {
-                    "message": "moderation_blocked: content was flagged",
-                    "model": "gpt-4",
-                    "llm_provider": "openai",
-                },
-                ["safety", "policy"],
-            ),
-            (
-                litellm.BadRequestError,
-                {
-                    "message": "Blocked by safety system filters",
-                    "model": "gpt-4",
-                    "llm_provider": "openai",
-                },
-                ["safety", "policy"],
-            ),
-        ],
-        ids=[
-            "content_policy_violation",
-            "bad_request_moderation_blocked",
-            "bad_request_safety_system",
-        ],
-    )
-    def test_handles_content_safety_errors(
-        self,
-        service: LLMService,
-        mocker: MockerFixture,
-        error_class,
-        error_kwargs,
-        expected_words,
-    ) -> None:
-        """GIVEN content safety error WHEN completing THEN returns user-friendly message."""
-        mocker.patch("llm.service.litellm.completion", side_effect=error_class(**error_kwargs))
+        )
         result = service.completion("test", command="ask")
-        assert any(word in result.content.lower() for word in expected_words)
+        assert any(word in result.content.lower() for word in ("safety", "policy"))
         assert "Error" in result.content
+
+    def test_refusal_text_never_reaches_the_channel(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a provider refusal WHEN completing THEN the provider's wording stays in the log."""
+        mocker.patch(
+            "llm.service.provider.chat",
+            side_effect=provider.RefusalError(
+                "Content violates usage guidelines. Team: abc, category: harassment",
+                model="xai/grok-4.3",
+                provider="xai",
+            ),
+        )
+        result = service.completion("test", command="ask")
+        assert result.error is not None
+        assert "harassment" not in result.content
+        assert "usage guidelines" not in result.content
 
     def test_handles_generic_api_error(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN generic API error WHEN completing THEN returns sanitized message."""
         mocker.patch(
-            "llm.service.litellm.completion",
-            side_effect=litellm.APIError(
-                message="API error with key sk-secret123456789",
-                model="gpt-4",
-                llm_provider="openai",
+            "llm.service.provider.chat",
+            side_effect=provider.ProviderError(
+                "API error with key sk-secret123456789",
+                model="xai/grok-4.3",
+                provider="xai",
                 status_code=500,
             ),
         )
@@ -143,7 +117,7 @@ class TestProviderSpecificErrors:
     def test_handles_unknown_exception(self, service: LLMService, mocker: MockerFixture) -> None:
         """GIVEN unknown exception WHEN completing THEN returns generic message."""
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             side_effect=RuntimeError("Unexpected internal error"),
         )
         result = service.completion("test", command="ask")
@@ -158,38 +132,25 @@ class TestImageGenerationErrors:
     @pytest.fixture
     def service(self, make_service) -> LLMService:
         """Create service with draw config."""
-        service, _ = make_service(imageModel="dall-e-3", drawAutoRewriteMax=0)
+        service, _ = make_service(imageModel="xai/grok-imagine-image", drawAutoRewriteMax=0)
         return service
 
-    def test_handles_empty_response_data(self, service: LLMService, mocker: MockerFixture) -> None:
-        """GIVEN empty response data WHEN generating image THEN returns content filter message."""
-        mock_response = mocker.Mock()
-        mock_response.data = []
-
-        mocker.patch("llm.service.litellm.image_generation", return_value=mock_response)
+    def test_handles_no_picture(self, service: LLMService, mocker: MockerFixture) -> None:
+        """GIVEN the provider returns no picture WHEN generating image THEN returns content filter message."""
+        mocker.patch("llm.service.provider.draw", return_value=provider.Picture(data=None))
         result = service.image_generation("test prompt")
 
         assert "No image generated" in result.content
         assert "content safety" in result.content.lower()
-
-    def test_handles_none_url_and_b64(self, service: LLMService, mocker: MockerFixture) -> None:
-        """GIVEN response with neither URL nor base64 WHEN generating THEN returns error."""
-        mock_response = mocker.Mock()
-        mock_response.data = [mocker.Mock(url=None, b64_json=None)]
-
-        mocker.patch("llm.service.litellm.image_generation", return_value=mock_response)
-        result = service.image_generation("test prompt")
-
-        assert "No image generated" in result.content
 
     def test_handles_timeout_during_generation(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
         """GIVEN timeout WHEN generating image THEN returns timeout message."""
         mocker.patch(
-            "llm.service.litellm.image_generation",
-            side_effect=litellm.Timeout(
-                message="Generation timed out", model="dall-e-3", llm_provider="openai"
+            "llm.service.provider.draw",
+            side_effect=provider.RequestTimeoutError(
+                "Generation timed out", model="xai/grok-imagine-image", provider="xai"
             ),
         )
         result = service.image_generation("test prompt")
@@ -208,7 +169,7 @@ class TestImageGenerationErrors:
         mock_msg.prefix = "testnick!user@host"
 
         mocker.patch(
-            "llm.service.litellm.image_generation",
+            "llm.service.provider.draw",
             side_effect=Exception("API error"),
         )
         service.image_generation("test", irc=mock_irc, msg=mock_msg)
@@ -233,167 +194,23 @@ class TestPartialResponseHandling:
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
         """GIVEN response with empty content WHEN completing THEN handles gracefully."""
-        mock_response = mocker.Mock()
-        mock_response.choices = [mocker.Mock()]
-        mock_response.choices[0].message = mocker.Mock()
-        mock_response.choices[0].message.content = ""
-        mock_response.choices[0].message.tool_calls = None
-
-        mocker.patch("llm.service.litellm.completion", return_value=mock_response)
+        mocker.patch("llm.service.provider.chat", return_value=make_completion_response(""))
         result = service.completion("test", command="ask")
 
         # Should return empty string, not crash
         assert result.content == ""
 
-    def test_handles_none_content_response(
-        self, service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """GIVEN response with None content WHEN completing THEN handles gracefully."""
-        mock_response = mocker.Mock()
-        mock_response.choices = [mocker.Mock()]
-        mock_response.choices[0].message = mocker.Mock()
-        mock_response.choices[0].message.content = None
-        mock_response.choices[0].message.tool_calls = None
-
-        mocker.patch("llm.service.litellm.completion", return_value=mock_response)
-        result = service.completion("test", command="ask")
-
-        # Should normalize None to empty string
-        assert result.content == ""
-
-    def test_handles_no_choices_response(self, service: LLMService, mocker: MockerFixture) -> None:
-        """GIVEN response with no choices WHEN completing THEN handles gracefully."""
-        mock_response = mocker.Mock()
-        mock_response.choices = []
-
-        mocker.patch("llm.service.litellm.completion", return_value=mock_response)
-        # Should raise IndexError which gets caught
-        result = service.completion("test", command="ask")
-
-        assert "Error" in result.content
-
     def test_handles_whitespace_only_content(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
         """GIVEN response with only whitespace WHEN completing THEN returns as-is."""
-        mock_response = mocker.Mock()
-        mock_response.choices = [mocker.Mock()]
-        mock_response.choices[0].message = mocker.Mock()
-        mock_response.choices[0].message.content = "   \n\t  "
-        mock_response.choices[0].message.tool_calls = None
-
-        mocker.patch("llm.service.litellm.completion", return_value=mock_response)
+        mocker.patch(
+            "llm.service.provider.chat", return_value=make_completion_response("   \n\t  ")
+        )
         result = service.completion("test", command="ask")
 
         # Should return the whitespace (sanitized)
         assert result.content.strip() == ""
-
-
-class TestGeminiSpecificBehaviors:
-    """Test Gemini-specific features and behaviors."""
-
-    @pytest.fixture
-    def gemini_service(self, make_service) -> LLMService:
-        """Create service configured for Gemini."""
-        service, _ = make_service(assistantModel="gemini/gemini-2.0-flash")
-        return service
-
-    def test_gemini_tools_included_for_2x_models(self, gemini_service: LLMService) -> None:
-        """GIVEN Gemini 2.x model WHEN getting tools THEN returns search tools."""
-        tools = gemini_service._get_gemini_tools("gemini/gemini-2.0-flash")
-        assert tools is not None
-        assert len(tools) == 2
-        assert {"googleSearch": {}} in tools
-        assert {"urlContext": {}} in tools
-
-    def test_gemini_tools_included_for_25_models(self, gemini_service: LLMService) -> None:
-        """GIVEN Gemini 2.5 model WHEN getting tools THEN returns search tools."""
-        tools = gemini_service._get_gemini_tools("gemini/gemini-2.5-pro")
-        assert tools is not None
-        assert len(tools) == 2
-
-    def test_gemini_tools_not_included_for_15_models(self, gemini_service: LLMService) -> None:
-        """GIVEN Gemini 1.5 model WHEN getting tools THEN returns None."""
-        tools = gemini_service._get_gemini_tools("gemini/gemini-1.5-flash")
-        assert tools is None
-
-    def test_gemini_tools_not_included_for_imagen(self, gemini_service: LLMService) -> None:
-        """GIVEN Imagen model WHEN getting tools THEN returns None."""
-        tools = gemini_service._get_gemini_tools("vertex_ai/imagen-4.0-generate-001")
-        assert tools is None
-
-    def test_gemini_safety_settings_applied(self, gemini_service: LLMService) -> None:
-        """GIVEN Gemini model WHEN getting safety settings THEN all categories set."""
-        settings = gemini_service._get_safety_settings()
-
-        expected_categories = [
-            "HARM_CATEGORY_HARASSMENT",
-            "HARM_CATEGORY_HATE_SPEECH",
-            "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-            "HARM_CATEGORY_DANGEROUS_CONTENT",
-            "HARM_CATEGORY_CIVIC_INTEGRITY",
-        ]
-
-        assert len(settings) == len(expected_categories)
-        for setting in settings:
-            assert setting["category"] in expected_categories
-            assert setting["threshold"] == "BLOCK_NONE"
-
-    def test_completion_passes_gemini_tools(
-        self, gemini_service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """GIVEN Gemini model WHEN completing THEN tools passed to API."""
-        call_kwargs = {}
-
-        def capture_call(**kwargs):
-            call_kwargs.update(kwargs)
-            response = mocker.Mock()
-            response.choices = [mocker.Mock()]
-            response.choices[0].message = mocker.Mock()
-            response.choices[0].message.content = "Response"
-            return response
-
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_call)
-        gemini_service.completion("test", command="ask")
-
-        assert "tools" in call_kwargs
-        assert call_kwargs["tools"] is not None
-        assert "safety_settings" in call_kwargs
-        assert call_kwargs["safety_settings"] is not None
-
-
-class TestOpenAISpecificBehaviors:
-    """Test OpenAI-specific behaviors."""
-
-    @pytest.fixture
-    def openai_service(self, make_service) -> LLMService:
-        """Create service configured for OpenAI."""
-        service, _ = make_service()
-        return service
-
-    def test_no_gemini_tools_for_openai(self, openai_service: LLMService) -> None:
-        """GIVEN OpenAI model WHEN getting tools THEN returns None."""
-        tools = openai_service._get_gemini_tools("gpt-4")
-        assert tools is None
-
-    def test_no_safety_settings_for_openai(
-        self, openai_service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """GIVEN OpenAI model WHEN completing THEN no safety_settings passed."""
-        call_kwargs = {}
-
-        def capture_call(**kwargs):
-            call_kwargs.update(kwargs)
-            response = mocker.Mock()
-            response.choices = [mocker.Mock()]
-            response.choices[0].message = mocker.Mock()
-            response.choices[0].message.content = "Response"
-            return response
-
-        mocker.patch("llm.service.litellm.completion", side_effect=capture_call)
-        openai_service.completion("test", command="ask")
-
-        assert call_kwargs.get("safety_settings") is None
 
 
 class TestAnthropicSpecificBehaviors:
@@ -402,37 +219,33 @@ class TestAnthropicSpecificBehaviors:
     @pytest.fixture
     def anthropic_service(self, make_service) -> LLMService:
         """Create service configured for Anthropic."""
-        service, _ = make_service(assistantModel="anthropic/claude-3-opus")
+        service, _ = make_service(assistantModel="anthropic/claude-haiku-5-5")
         return service
-
-    def test_no_gemini_tools_for_anthropic(self, anthropic_service: LLMService) -> None:
-        """GIVEN Anthropic model WHEN getting tools THEN returns None."""
-        tools = anthropic_service._get_gemini_tools("anthropic/claude-3-opus")
-        assert tools is None
 
     @pytest.mark.parametrize(
         ("thinking_blocks", "expected"),
         [
-            ([{"type": "thinking", "thinking": "", "signature": "sig"}], True),
-            (None, False),
+            (({"type": "thinking", "thinking": "", "signature": "sig"},), True),
+            ((), False),
         ],
     )
     def test_tool_turn_carries_thinking_blocks_back(
         self,
         anthropic_service: LLMService,
         mocker: MockerFixture,
-        thinking_blocks: list | None,
+        thinking_blocks: tuple,
         expected: bool,
     ) -> None:
         """GIVEN a tool-call turn with thinking blocks WHEN the loop continues
         THEN the assistant turn sent back carries them; without any, the key
-        is absent so OpenAI-compatible providers never see it."""
+        is absent so other providers never see it."""
         from llm.assistant import ToolResult
 
         from .conftest import make_tool_call
 
-        first = make_completion_response(None, tool_calls=[make_tool_call("probe", {})])
-        first.choices[0].message.thinking_blocks = thinking_blocks
+        first = make_completion_response(
+            None, tool_calls=[make_tool_call("probe", {})], thinking=thinking_blocks
+        )
         responses = [first, make_completion_response("done")]
         calls: list[dict] = []
 
@@ -440,8 +253,7 @@ class TestAnthropicSpecificBehaviors:
             calls.append(kwargs)  # type: ignore[arg-type]
             return responses[len(calls) - 1]
 
-        mocker.patch("llm.service.litellm.completion", side_effect=fake_completion)
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
         anthropic_service.assistant_completion(
             prompt="probe it",
             nick="rdrake",
@@ -459,7 +271,7 @@ class TestAnthropicSpecificBehaviors:
         turn = next(m for m in calls[1]["messages"] if m.get("tool_calls"))
         assert ("thinking_blocks" in turn) is expected
         if expected:
-            assert turn["thinking_blocks"] == thinking_blocks
+            assert turn["thinking_blocks"] == list(thinking_blocks)
 
 
 class TestAPIKeyHandling:
@@ -468,17 +280,13 @@ class TestAPIKeyHandling:
     def test_missing_ask_key_returns_error(
         self, make_service, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """GIVEN no key for the ask model's provider WHEN completing THEN returns error.
-
-        The default ``assistantModel`` is TEST_MODEL ("gpt-4"), whose provider
-        is openai, so unsetting OPENAI_API_KEY is what makes the key missing.
-        """
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        service, _ = make_service()
+        """GIVEN no key for the ask model's provider WHEN completing THEN returns error."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        service, _ = make_service(assistantModel="anthropic/claude-haiku-5-5")
         result = service.completion("test", command="ask")
 
         assert "Error" in result.content
-        assert "OPENAI_API_KEY" in result.content
+        assert "ANTHROPIC_API_KEY" in result.content
 
     def test_empty_ask_key_returns_error(
         self, make_service, monkeypatch: pytest.MonkeyPatch
@@ -486,106 +294,65 @@ class TestAPIKeyHandling:
         """GIVEN an empty key for the ask model's provider THEN returns error.
 
         An empty value must be treated exactly like an unset one, otherwise ""
-        reaches litellm and the failure surfaces as a provider auth error.
+        reaches the provider and the failure surfaces as a provider auth error.
         """
-        monkeypatch.setenv("OPENAI_API_KEY", "")
-        service, _ = make_service()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        service, _ = make_service(assistantModel="anthropic/claude-haiku-5-5")
         result = service.completion("test", command="ask")
 
         assert "Error" in result.content
-        assert "OPENAI_API_KEY" in result.content
+        assert "ANTHROPIC_API_KEY" in result.content
 
+    @pytest.mark.parametrize(
+        "error_class",
+        [
+            provider.ProviderError,
+            provider.RateLimitError,
+            provider.AuthenticationError,
+            provider.BadRequestError,
+            provider.RefusalError,
+            RuntimeError,
+        ],
+    )
     def test_api_key_sanitized_in_errors(
-        self, make_service, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+        self,
+        make_service,
+        mocker: MockerFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        error_class: type[Exception],
     ) -> None:
-        """GIVEN API error containing key WHEN handling THEN key sanitized.
+        """GIVEN an error containing the key WHEN handling THEN key sanitized.
 
-        TEST_MODEL is "gpt-4", whose provider is openai, so `_sanitize` (now
-        environment-backed) needs the key in OPENAI_API_KEY, not the registry.
+        `_sanitize` is environment-backed, so the key lives in the model's
+        provider variable (ANTHROPIC_API_KEY), not the registry.
         """
-        fake_key = "sk-" + "x" * 25  # noqa: S105
-        monkeypatch.setenv("OPENAI_API_KEY", fake_key)
-        service, _ = make_service()
+        fake_key = "sk-ant-" + "x" * 25
+        monkeypatch.setenv("ANTHROPIC_API_KEY", fake_key)
+        service, _ = make_service(assistantModel="anthropic/claude-haiku-5-5")
+        log = mocker.patch.object(service, "log")
 
         mocker.patch(
-            "llm.service.litellm.completion",
-            side_effect=Exception(f"Error with key {fake_key}"),
+            "llm.service.provider.chat",
+            side_effect=error_class(f"Error with key {fake_key}"),
         )
         result = service.completion("test", command="ask")
 
-        # Key should not appear in result
+        # Key should not appear in the result or in anything logged
         assert fake_key not in str(result)
+        assert fake_key not in str(log.mock_calls)
 
 
-class TestAnthropicPromptCaching:
-    """Anthropic caches only marked prefixes; the boundary marks them."""
+class TestSearchToolDate:
+    """Anthropic calls with search_web carry today's date in its description."""
 
-    def _capture(self, make_service, monkeypatch: pytest.MonkeyPatch) -> tuple:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-key-for-tests-0000")
+    def _capture(self, make_service, mocker: MockerFixture) -> tuple:
         service, _ = make_service()
         seen: dict[str, object] = {}
-        monkeypatch.setattr(
-            "litellm.completion",
-            lambda **kwargs: seen.update(kwargs) or _stub_response(),
+        mocker.patch(
+            "llm.service.provider.chat",
+            side_effect=lambda **kwargs: seen.update(kwargs) or make_completion_response(),
         )
         return service, seen
-
-    def test_anthropic_call_marks_system_and_tail(
-        self, make_service, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """GIVEN an anthropic model WHEN completing THEN the first system message
-        carries a breakpoint, automatic caching is on, and the caller's list is
-        untouched (it is reused across tool-loop steps)."""
-        service, seen = self._capture(make_service, monkeypatch)
-        messages = [
-            {"role": "system", "content": "prompt"},
-            {"role": "user", "content": "hi"},
-            {"role": "system", "content": "late note"},
-        ]
-
-        service._timed_completion(
-            "ask", model="anthropic/claude-haiku-5-5", messages=messages, channel=None
-        )
-
-        sent = seen["messages"]
-        assert sent[0]["cache_control"] == {"type": "ephemeral"}
-        assert "cache_control" not in sent[2]
-        assert seen["cache_control"] == {"type": "ephemeral"}
-        assert "cache_control" not in messages[0]
-
-    def test_list_content_marks_the_last_block(
-        self, make_service, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """LiteLLM reads the marker per block when system content is a list."""
-        service, seen = self._capture(make_service, monkeypatch)
-        messages = [
-            {
-                "role": "system",
-                "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}],
-            },
-            {"role": "user", "content": "hi"},
-        ]
-
-        service._timed_completion(
-            "ask", model="anthropic/claude-haiku-5-5", messages=messages, channel=None
-        )
-
-        blocks = seen["messages"][0]["content"]
-        assert "cache_control" not in blocks[0]
-        assert blocks[1]["cache_control"] == {"type": "ephemeral"}
-
-    def test_other_providers_are_not_marked(
-        self, make_service, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """GIVEN an xai model WHEN completing THEN no Anthropic cache fields."""
-        monkeypatch.setenv("XAI_API_KEY", "xai-fake-key-for-tests-0000")
-        service, seen = self._capture(make_service, monkeypatch)
-        messages = [{"role": "system", "content": "prompt"}, {"role": "user", "content": "hi"}]
-
-        service._timed_completion("ask", model="xai/grok-4.3", messages=messages, channel=None)
-
-        assert "cache_control" not in seen
-        assert "cache_control" not in seen["messages"][0]
 
     @staticmethod
     def _search_tools() -> list[dict]:
@@ -595,12 +362,12 @@ class TestAnthropicPromptCaching:
         ]
 
     def test_anthropic_search_tool_carries_the_date(
-        self, make_service, monkeypatch: pytest.MonkeyPatch
+        self, make_service, mocker: MockerFixture
     ) -> None:
         """GIVEN an anthropic call with search_web WHEN completing THEN its
         description ends with today's date, other tools and the caller's
         schemas are untouched."""
-        service, seen = self._capture(make_service, monkeypatch)
+        service, seen = self._capture(make_service, mocker)
         tools = self._search_tools()
 
         service._timed_completion(
@@ -612,11 +379,8 @@ class TestAnthropicPromptCaching:
         assert sent["fetch_url"] == "Fetch."
         assert tools == self._search_tools()
 
-    def test_other_providers_get_no_date(
-        self, make_service, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("XAI_API_KEY", "xai-fake-key-for-tests-0000")
-        service, seen = self._capture(make_service, monkeypatch)
+    def test_other_providers_get_no_date(self, make_service, mocker: MockerFixture) -> None:
+        service, seen = self._capture(make_service, mocker)
 
         service._timed_completion(
             "ask", model="xai/grok-4.3", messages=[], channel=None, tools=self._search_tools()
@@ -625,56 +389,8 @@ class TestAnthropicPromptCaching:
         assert seen["tools"][0]["function"]["description"] == "Search."
 
 
-class TestBoundaryKeyResolution:
-    """The key litellm receives is the one the model's provider variable holds."""
-
-    def test_xai_model_gets_xai_key(self, make_service, monkeypatch: pytest.MonkeyPatch) -> None:
-        """GIVEN an xai model WHEN completing THEN XAI_API_KEY reaches litellm."""
-        monkeypatch.setenv("XAI_API_KEY", "xai-fake-key-for-tests-0000")
-        service, _ = make_service(assistantModel="xai/grok-4.3")
-        seen: dict[str, object] = {}
-        monkeypatch.setattr(
-            "litellm.completion",
-            lambda **kwargs: seen.update(kwargs) or _stub_response(),
-        )
-        service._timed_completion("ask", model="xai/grok-4.3", messages=[], channel=None)
-        assert seen["api_key"] == "xai-fake-key-for-tests-0000"
-
-    def test_gemini_model_gets_gemini_key(
-        self, make_service, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """GIVEN a gemini model WHEN completing THEN the gemini key, not the xai one."""
-        monkeypatch.setenv("XAI_API_KEY", "xai-fake-key-for-tests-0000")
-        monkeypatch.setenv("GEMINI_API_KEY", "AIza-fake-key-for-tests-0000")
-        service, _ = make_service()
-        seen: dict[str, object] = {}
-        monkeypatch.setattr(
-            "litellm.completion",
-            lambda **kwargs: seen.update(kwargs) or _stub_response(),
-        )
-        service._timed_completion(
-            "ask", model="gemini/gemini-3-flash-preview", messages=[], channel=None
-        )
-        assert seen["api_key"] == "AIza-fake-key-for-tests-0000"
-
-    def test_unmanaged_provider_passes_none(
-        self, make_service, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """GIVEN a vertex_ai model WHEN completing THEN api_key is None.
-
-        None is what makes LiteLLM fall back to ADC. Sending "" or a mapped
-        key here would break service-account auth.
-        """
-        service, _ = make_service()
-        seen: dict[str, object] = {}
-        monkeypatch.setattr(
-            "litellm.completion",
-            lambda **kwargs: seen.update(kwargs) or _stub_response(),
-        )
-        service._timed_completion(
-            "ask", model="vertex_ai/gemini-2.0-flash", messages=[], channel=None
-        )
-        assert seen["api_key"] is None
+class TestMissingKeyError:
+    """The pre-flight key check names the model's provider variable."""
 
     def test_missing_key_error_names_provider_and_variable(
         self, make_service, monkeypatch: pytest.MonkeyPatch
@@ -691,7 +407,7 @@ class TestBoundaryKeyResolution:
     def test_unmanaged_models_have_no_error(self, make_service, model: str) -> None:
         """GIVEN an unmanaged model WHEN building the error THEN None.
 
-        Unmanaged is not a failure — it is delegation to LiteLLM.
+        Unmanaged is not a failure here: the provider module reports it.
         """
         service, _ = make_service()
         assert service._missing_key_error(model) is None
@@ -737,8 +453,8 @@ class TestGuardsUseTheEffectiveModel:
         """GIVEN an override on an unconfigured provider THEN the error names it."""
         monkeypatch.delenv("XAI_API_KEY", raising=False)
         # The registry model's provider IS configured — only the override's is not.
-        service, _ = make_service(assistantModel="gemini/gemini-flash-latest")
-        completion = mocker.patch("llm.service.litellm.completion")
+        service, _ = make_service(assistantModel="anthropic/claude-haiku-5-5")
+        completion = mocker.patch("llm.service.provider.chat")
 
         result = service.completion("hi", command="ask", model_override="xai/grok-4.3")
 
@@ -752,17 +468,16 @@ class TestGuardsUseTheEffectiveModel:
         """GIVEN a configured override THEN an unconfigured registry model cannot block it."""
         monkeypatch.delenv("XAI_API_KEY", raising=False)
         service, _ = make_service(assistantModel="xai/grok-4.3")
-        completion = mocker.patch("llm.service.litellm.completion", return_value=_stub_response())
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        completion = mocker.patch(
+            "llm.service.provider.chat", return_value=make_completion_response()
+        )
 
         result = service.completion(
-            "hi", command="ask", model_override="gemini/gemini-3-flash-preview"
+            "hi", command="ask", model_override="anthropic/claude-haiku-5-5"
         )
 
         assert result.error is None
-        kwargs = completion.call_args.kwargs
-        assert kwargs["model"] == "gemini/gemini-3-flash-preview"
-        assert kwargs["api_key"] == FAKE_PROVIDER_KEYS["GEMINI_API_KEY"]
+        assert completion.call_args.kwargs["model"] == "anthropic/claude-haiku-5-5"
 
     def test_assistant_override_provider_is_what_is_checked(
         self, make_service, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
@@ -771,8 +486,8 @@ class TestGuardsUseTheEffectiveModel:
         from llm.profile import PROFILE_CHAT
 
         monkeypatch.delenv("XAI_API_KEY", raising=False)
-        service, _ = make_service(assistantModel="gemini/gemini-flash-latest")
-        completion = mocker.patch("llm.service.litellm.completion")
+        service, _ = make_service(assistantModel="anthropic/claude-haiku-5-5")
+        completion = mocker.patch("llm.service.provider.chat")
 
         result = service.assistant_completion(
             prompt="hi",
@@ -797,8 +512,9 @@ class TestGuardsUseTheEffectiveModel:
 
         monkeypatch.delenv("XAI_API_KEY", raising=False)
         service, _ = make_service(assistantModel="xai/grok-4.3")
-        completion = mocker.patch("llm.service.litellm.completion", return_value=_stub_response())
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
+        completion = mocker.patch(
+            "llm.service.provider.chat", return_value=make_completion_response()
+        )
 
         result = service.assistant_completion(
             prompt="hi",
@@ -808,13 +524,11 @@ class TestGuardsUseTheEffectiveModel:
             context=mocker.MagicMock(),
             bot_nick="VibeBot",
             route_profile=PROFILE_CHAT,
-            model_override="gemini/gemini-3-flash-preview",
+            model_override="anthropic/claude-haiku-5-5",
         )
 
         assert result.error is None
-        kwargs = completion.call_args.kwargs
-        assert kwargs["model"] == "gemini/gemini-3-flash-preview"
-        assert kwargs["api_key"] == FAKE_PROVIDER_KEYS["GEMINI_API_KEY"]
+        assert completion.call_args.kwargs["model"] == "anthropic/claude-haiku-5-5"
 
 
 class TestStripSelfLabel:
@@ -845,10 +559,9 @@ class TestStripSelfLabel:
         """GIVEN the model labels its reply WHEN the turn ends THEN the label is gone."""
         service, _ = make_service()
         mocker.patch(
-            "llm.service.litellm.completion",
+            "llm.service.provider.chat",
             return_value=make_completion_response("vibebot: Eck, you absolute weapon."),
         )
-        mocker.patch("llm.service.litellm.completion_cost", return_value=0.0)
 
         result = service.assistant_completion(
             prompt="call eck a weapon",

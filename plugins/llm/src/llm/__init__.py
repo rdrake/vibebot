@@ -1,4 +1,4 @@
-"""LLM: AI-powered commands using LiteLLM."""
+"""LLM: AI-powered commands."""
 
 from __future__ import annotations
 

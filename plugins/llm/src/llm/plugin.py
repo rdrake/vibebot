@@ -915,7 +915,7 @@ def _format_ago(seconds: float) -> str:
 
 
 class LLM(callbacks.Plugin):
-    """AI-powered commands using LiteLLM.
+    """AI-powered commands backed by Anthropic and xAI models.
 
     Provides ask, code, draw commands with multi-provider support.
     """
@@ -4225,7 +4225,7 @@ class LLM(callbacks.Plugin):
         """Return plugin help with documentation URL."""
         url = self.registryValue("helpUrl")
         names = ", ".join(cmd.name for cmd in COMMAND_REGISTRY)
-        return _("AI-powered commands using LiteLLM. Commands: %s. Full documentation: %s") % (
+        return _("AI-powered commands. Commands: %s. Full documentation: %s") % (
             names,
             url,
         )
@@ -11337,7 +11337,7 @@ class LLM(callbacks.Plugin):
         except (TypeError, ValueError):
             min_keep = 20
         model = self.registryValue("verseCompactionModel") or "anthropic/claude-haiku-5-5"
-        client = _compaction.LiteLLMVerseClient()
+        client = _compaction.ProviderVerseClient()
         return min_keep, model, client
 
     def _channel_retention_days(self, channel: str, default: int = 30) -> int:

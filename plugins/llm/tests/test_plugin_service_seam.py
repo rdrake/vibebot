@@ -1,4 +1,4 @@
-"""The plugin → service seam, with only LiteLLM mocked.
+"""The plugin → service seam, with only the provider mocked.
 
 Every other plugin test replaces LLMService (``plugin_env``) and every service
 test calls ``assistant_completion`` directly, so nothing checked that what the
@@ -14,14 +14,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import litellm
 import pytest
+from llm import provider
 from llm.persistence import LLMDatabase
 from llm.service import LLMService
 
-if TYPE_CHECKING:
-    from unittest.mock import MagicMock
+from .conftest import make_completion_response
 
+if TYPE_CHECKING:
     from pytest_mock import MockerFixture
 
 COST_PER_CALL = 0.001
@@ -34,21 +34,16 @@ def seam_env(plugin_env, mocker: MockerFixture, tmp_path):
     plugin.db = LLMDatabase(str(tmp_path / "seam.db"))
     service = LLMService(plugin)
     plugin.llm_service = service
-    mocker.patch("llm.service.litellm.completion_cost", return_value=COST_PER_CALL)
     try:
         yield plugin, irc, msg
     finally:
         service.typing.stop()
 
 
-def _text_response(mocker: MockerFixture, content: str) -> MagicMock:
-    resp = mocker.MagicMock()
-    resp.choices[0].message.content = content
-    resp.choices[0].message.tool_calls = None
-    resp.choices[0].finish_reason = "stop"
-    resp.usage.prompt_tokens = 100
-    resp.usage.completion_tokens = 10
-    return resp
+def _text_response(content: str) -> provider.Reply:
+    return make_completion_response(
+        content, prompt_tokens=100, completion_tokens=10, cost=COST_PER_CALL
+    )
 
 
 def _usage_rows(plugin) -> list[tuple]:
@@ -67,8 +62,8 @@ def _history(plugin) -> list[dict[str, str]]:
 def test_delivered_reply_is_booked_and_stored(seam_env, mocker: MockerFixture) -> None:
     plugin, irc, msg = seam_env
     mocker.patch(
-        "llm.service.litellm.completion",
-        return_value=_text_response(mocker, "The pitch is waterlogged."),
+        "llm.service.provider.chat",
+        return_value=_text_response("The pitch is waterlogged."),
     )
 
     plugin.ask(irc, msg, ["is the match on"])
@@ -90,8 +85,8 @@ def test_echo_after_retry_is_booked_as_error_and_not_stored(
     delivered THEN every billed call still lands in one ``error`` row."""
     plugin, irc, msg = seam_env
     completion = mocker.patch(
-        "llm.service.litellm.completion",
-        side_effect=lambda **_kw: _text_response(mocker, "Finish the story."),
+        "llm.service.provider.chat",
+        side_effect=lambda **_kw: _text_response("Finish the story."),
     )
 
     plugin.ask(irc, msg, ["finish the story"])
@@ -111,8 +106,8 @@ def test_stashed_timeout_is_booked_as_timeout_and_not_stored(
     placeholder, the row says ``timeout``, and history stays empty."""
     plugin, irc, msg = seam_env
     mocker.patch(
-        "llm.service.litellm.completion",
-        side_effect=litellm.Timeout(message="timed out", model="gpt-4", llm_provider="openai"),
+        "llm.service.provider.chat",
+        side_effect=provider.RequestTimeoutError("timed out", model="xai/grok-4", provider="xai"),
     )
 
     plugin.ask(irc, msg, ["write me an epic"])
