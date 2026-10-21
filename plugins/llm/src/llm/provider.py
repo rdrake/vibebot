@@ -279,7 +279,7 @@ _opener = urllib.request.build_opener(_NoRedirect)
 def _error_body(exc: urllib.error.HTTPError) -> str:
     try:
         return exc.read().decode("utf-8", "replace")
-    except (OSError, http.client.HTTPException, AttributeError):
+    except OSError, http.client.HTTPException, AttributeError:
         return ""
 
 
@@ -440,7 +440,7 @@ def _anthropic_user_blocks(content: Any) -> list[dict[str, Any]]:
 def _tool_input(arguments: Any) -> dict[str, Any]:
     try:
         parsed = json.loads(arguments or "{}")
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
 
@@ -782,6 +782,6 @@ def draw(
     b64 = items[0].get("b64_json") if items and isinstance(items[0], dict) else None
     try:
         image = base64.b64decode(b64) if isinstance(b64, str) else None
-    except (binascii.Error, ValueError):
+    except binascii.Error, ValueError:
         image = None
     return Picture(data=image or None, cost=cost)

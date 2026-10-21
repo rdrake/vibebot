@@ -145,7 +145,7 @@ def parse_catalog(entries: Any, image_dir: Path) -> list[MemeTemplate]:
                 mask = image_dir.parent / "masks" / str(raw["mask"])
                 corners = tuple((float(c[0]), float(c[1])) for c in raw.get("corners") or [])
                 slots.append(Slot((x, y, w, h), mask, corners if len(corners) == 4 else ()))
-            except (KeyError, TypeError, ValueError):
+            except KeyError, TypeError, ValueError:
                 continue
         if slots and PICTURE_SLOT not in keywords:
             keywords = (PICTURE_SLOT, *keywords)

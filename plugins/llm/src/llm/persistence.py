@@ -772,7 +772,7 @@ class LLMDatabase:
         for nick, channel, messages_json, last_activity in rows:
             try:
                 messages = json.loads(messages_json)
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 log.warning("Skipping corrupt conversation for %s/%s", nick, channel)
                 corrupt.append((nick, channel))
                 continue
@@ -1544,7 +1544,7 @@ class LLMDatabase:
         conn.execute("UPDATE pending_tasks SET usage_booked = 1 WHERE id = ?", (task.id,))
         try:
             payload = json.loads(task.result_payload) if task.result_payload else {}
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             payload = {}
         if not isinstance(payload, dict):
             payload = {}

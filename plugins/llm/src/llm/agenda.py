@@ -116,7 +116,7 @@ def next_rrule_fire(rule_str: str, now: float, tz: tzinfo = UTC) -> float | None
         now_local = datetime.fromtimestamp(now, tz=tz)
         rule = rrulestr(rule_str, dtstart=now_local)
         next_dt = rule.after(now_local)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
     if next_dt is None:
         return None

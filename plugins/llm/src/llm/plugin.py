@@ -682,7 +682,7 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
                 handler.send_response(403)
                 handler.end_headers()
                 return
-        except (OSError, ValueError):
+        except OSError, ValueError:
             handler.send_response(403)
             handler.end_headers()
             return
@@ -707,14 +707,14 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
             handler.send_header("Content-Length", str(len(content)))
             handler.end_headers()
             handler.wfile.write(content)
-        except (BrokenPipeError, ConnectionResetError):
+        except BrokenPipeError, ConnectionResetError:
             # Client disconnected - this is normal, ignore silently
             pass
         except OSError:
             try:
                 handler.send_response(500)
                 handler.end_headers()
-            except (BrokenPipeError, ConnectionResetError):
+            except BrokenPipeError, ConnectionResetError:
                 pass
 
 
@@ -1612,7 +1612,7 @@ class LLM(callbacks.Plugin):
         """``night``'s dark window; None when it never gets dark (or bad tz)."""
         try:
             start, end = spaceweather.dark_window(place.lat, place.lon, night, place.tz)
-        except (ZoneInfoNotFoundError, ValueError):
+        except ZoneInfoNotFoundError, ValueError:
             return None
         if start is None:
             return None
@@ -3214,7 +3214,7 @@ class LLM(callbacks.Plugin):
             return None
         try:
             batches = irc.state.getParentBatches(msg)
-        except (ValueError, AttributeError):
+        except ValueError, AttributeError:
             return None
         for batch in batches:
             if batch.type == "chathistory":
@@ -3551,7 +3551,7 @@ class LLM(callbacks.Plugin):
                 text=True,
             ).strip()
             return f"v{__version__} ({sha})"
-        except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        except subprocess.SubprocessError, FileNotFoundError, OSError:
             return f"v{__version__}"
 
     def _init_context(self) -> None:
@@ -4340,7 +4340,7 @@ class LLM(callbacks.Plugin):
         nick = ircutils.nickFromHostmask(msg.prefix)
         try:
             return irc.state.nickToAccount(nick)
-        except (KeyError, AttributeError):
+        except KeyError, AttributeError:
             return None
 
     def _resolve_nick_to_identity(self, irc: callbacks.Irc, nick: str) -> str:
@@ -4364,7 +4364,7 @@ class LLM(callbacks.Plugin):
         """
         try:
             account = irc.state.nickToAccount(nick)
-        except (KeyError, AttributeError):
+        except KeyError, AttributeError:
             return nick
         return Identity(nick, account or None).key
 
@@ -4761,7 +4761,7 @@ class LLM(callbacks.Plugin):
                 return {"status": "ok", "nick": target, "client": ircquery.clean_text(body, 200)}
             try:
                 lag_ms = int(time.time() * 1000) - int(body.split()[0])
-            except (ValueError, IndexError):
+            except ValueError, IndexError:
                 return {"status": "ok", "nick": target, "reply": ircquery.clean_text(body, 60)}
             return {"status": "ok", "nick": target, "lag_ms": lag_ms}
 
@@ -4772,7 +4772,7 @@ class LLM(callbacks.Plugin):
                 return {"error": f"history only covers this channel ({channel})"}
             try:
                 n = max(1, min(100, int(count))) if count is not None else 50
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 n = 50
             if "draft/chathistory" not in getattr(irc.state, "capabilities_ack", set()):
                 return {"error": "the server has not granted chat history to the bot"}
@@ -5260,7 +5260,7 @@ class LLM(callbacks.Plugin):
             query = str(arguments.get("query", "")).strip()
             try:
                 raw_limit = int(arguments.get("limit", 10))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 raw_limit = 10
             limit = max(1, min(25, raw_limit))
             if not query:
@@ -8468,7 +8468,7 @@ class LLM(callbacks.Plugin):
         try:
             zone = ZoneInfo(found.tz)
             tz_name = found.tz
-        except (ZoneInfoNotFoundError, ValueError):
+        except ZoneInfoNotFoundError, ValueError:
             zone, tz_name = ZoneInfo("UTC"), "UTC"
         local = now.astimezone(zone)
         # After dawn "tonight" is the coming night; before dawn, the night
@@ -10415,7 +10415,7 @@ class LLM(callbacks.Plugin):
             _raw_min_keep = 20
         try:
             min_keep = int(_raw_min_keep) if _raw_min_keep is not None else 20
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             min_keep = 20
         model = self.registryValue("verseCompactionModel") or "anthropic/claude-haiku-5-5"
         client = _compaction.ProviderVerseClient()
@@ -10429,7 +10429,7 @@ class LLM(callbacks.Plugin):
             raw = default
         try:
             return int(raw) if raw is not None else default
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return default
 
     def _log_compaction_usage(self, *, op: str, model: str, usage, channel: str) -> None:

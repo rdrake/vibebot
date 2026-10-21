@@ -1063,6 +1063,6 @@ def make_verse_denial_handlers(
     for spec in verse_tool_specs:
         try:
             names.append(spec["function"]["name"])
-        except (KeyError, TypeError):
+        except KeyError, TypeError:
             continue
     return dict.fromkeys(names, _denied)

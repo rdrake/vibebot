@@ -146,7 +146,7 @@ def _epoch(stamp: datetime | None) -> float | None:
         return None
     try:
         return stamp.timestamp()
-    except (ValueError, OverflowError, OSError):
+    except ValueError, OverflowError, OSError:
         return None
 
 

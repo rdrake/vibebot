@@ -106,7 +106,7 @@ def parse_reaction_lines(lines: Iterable[str]) -> list[dict]:
             continue
         try:
             ev = json.loads(s)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             continue
         if isinstance(ev, dict) and ev.get("ts"):
             out.append(ev)

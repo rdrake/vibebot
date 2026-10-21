@@ -58,7 +58,7 @@ def norm(name: str) -> str:
 def clean_box(raw: dict, height: int) -> dict | None:
     try:
         box = {k: float(raw[k]) for k in BOX_KEYS}
-    except (KeyError, TypeError, ValueError):
+    except KeyError, TypeError, ValueError:
         return None
     box["anchor_x"] = min(max(box["anchor_x"], 0.0), 0.95)
     box["anchor_y"] = min(max(box["anchor_y"], 0.0), 0.95)
@@ -112,7 +112,7 @@ def imgflip_boxes(meta: dict) -> list[dict]:
             continue
         try:
             x, y, w, h = (float(b[k]) for k in ("x", "y", "w", "h"))
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             continue
         angle = (-float(b.get("rotation") or 0)) % 360
         if angle > 180:
