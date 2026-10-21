@@ -37,7 +37,7 @@ repos:
         types: [python]
 
       - id: pre-push-check
-        name: pre-push lint, format-check, typecheck, syntax-check (CI owns the test suite)
+        name: pre-push lint, format-check, typecheck (CI owns the test suite)
         entry: make check-fast
         language: system
         pass_filenames: false

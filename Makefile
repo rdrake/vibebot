@@ -1,4 +1,4 @@
-.PHONY: install run test test-all lint format format-check typecheck syntax-check check check-fast preflight ci clean clean-logs clean-runtime deep-clean setup-http help \
+.PHONY: install run test test-all lint format format-check typecheck check check-fast preflight ci clean clean-logs clean-runtime deep-clean setup-http help \
        docker-build docker-run install-service uninstall-service install-timer uninstall-timer install-hooks pre-commit \
        install-deploy worktree-create worktree-remove wait-ci push-and-wait deploy rebase-pr docs docs-serve changelog
 
@@ -33,22 +33,16 @@ format-check:
 typecheck:
 	uv run ty check plugins/llm/src/ plugins/nickinmiddle/src/
 
-syntax-check:
-	uv run python scripts/check_python_syntax_compat.py \
-		plugins/llm/src plugins/llm/tests \
-		plugins/nickinmiddle/src plugins/nickinmiddle/tests scripts \
-		--versions 3.12 3.13 3.14
-
-check: lint format-check typecheck syntax-check test
+check: lint format-check typecheck test
 
 # Same as `check` minus the test suite — used by the pre-push hook so
 # pushes stay fast and CI owns full test coverage.
-check-fast: lint format-check typecheck syntax-check
+check-fast: lint format-check typecheck
 
 preflight: format check
 
 # Local approximation of CI — the authoritative definition lives in
-# .github/workflows/ci.yml (prek + syntax-check + test matrix per version).
+# .github/workflows/ci.yml (prek + tests on Python 3.14 and 3.15).
 ci:
 	uv sync --locked
 	uv run prek run --all-files
@@ -177,8 +171,7 @@ help:
 	@echo "  format          - Format code with ruff"
 	@echo "  format-check    - Check formatting without changes"
 	@echo "  typecheck       - Run ty type checker"
-	@echo "  syntax-check    - Validate Python grammar compatibility (3.12-3.14)"
-	@echo "  check           - Run all checks (lint, format-check, typecheck, syntax-check, test)"
+	@echo "  check           - Run all checks (lint, format-check, typecheck, test)"
 	@echo "  check-fast      - Same as check minus tests (used by the pre-push hook)"
 	@echo "  preflight       - Auto-format then run all checks"
 	@echo "  ci              - Run CI checks (sync --locked, pre-commit, test with coverage)"

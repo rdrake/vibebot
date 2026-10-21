@@ -284,7 +284,7 @@ def cleanup_limnoria_logging() -> Generator[None]:
             for handler in supybot.log.log.handlers[:]:
                 if isinstance(handler, logging.StreamHandler):
                     supybot.log.log.removeHandler(handler)
-    except (ImportError, AttributeError):
+    except ImportError, AttributeError:
         pass
 
     # Unregister supybot's atexit handlers that cause the logging errors
@@ -294,7 +294,7 @@ def cleanup_limnoria_logging() -> Generator[None]:
         # Clear the atexit callbacks that supybot registers
         if hasattr(supybot.world, "dying"):
             supybot.world.dying = True  # Prevent further shutdown logging
-    except (ImportError, AttributeError):
+    except ImportError, AttributeError:
         pass
 
 
@@ -304,7 +304,7 @@ def cleanup_limnoria_logging() -> Generator[None]:
 
 
 @pytest.fixture
-def test_db(tmp_path: Path) -> Generator[LLMDatabase, None, None]:
+def test_db(tmp_path: Path) -> Generator[LLMDatabase]:
     """Create an LLMDatabase backed by a temporary file with automatic cleanup."""
     db = LLMDatabase(str(tmp_path / "test.db"))
     yield db

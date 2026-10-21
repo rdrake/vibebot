@@ -138,8 +138,7 @@ make test-all     # full suite, including slow tests
 make lint         # ruff check
 make format       # ruff format
 make typecheck    # ty
-make syntax-check # Python 3.12 to 3.14 compatibility
-make check        # lint + format-check + typecheck + syntax-check + test
+make check        # lint + format-check + typecheck + test
 make preflight    # format, then check: run before calling work done
 make docs         # build the MkDocs guide
 ```
