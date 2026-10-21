@@ -2,6 +2,28 @@
 
 Pick up from here in a fresh session. The original plan is `2026-10-21-litellm-replacement.md`; its Tasks 3–4 (SDKs) are superseded by what is below.
 
+## Check-in first (next session)
+
+**Live in prod since 2026-10-21 20:36 UTC** (`c4b773f`). The post-deploy hour was *not* watched: the owner left after a few minutes. At that point 3 completions (grok #afternet, Haiku memory extraction) had run with 0 errors. Start the next session by reading the log since the restart (logs are in `messages.log`, not `docker logs`; the box has 961 MB of RAM, so use plain grep on the known path):
+
+```
+ssh -i ~/.ssh/id_rsa vibebot@rdrake.org 'L=/home/vibebot/.config/vibebot/logs/messages.log
+n=$(grep -n "20:36:12 supybot Loading LLM" $L | tail -1 | cut -d: -f1)
+tail -n +$n $L | grep -o "completion_timing op=[a-z_0-9]* model=[^ ]*" | sed "s/assistant_step_[0-9]*/assistant_step/" | sort | uniq -c | sort -rn
+tail -n +$n $L | grep -cE "result=error"; tail -n +$n $L | grep -c refusal_fallback_served; tail -n +$n $L | grep -c Traceback
+tail -n +$n $L | grep -E -A3 "result=error|Traceback|no price in provider" | cut -c1-260 | tail -40'
+```
+
+(If the bot restarted again since then, anchor on `20:36` by date instead of the last "Loading LLM".)
+
+What to look for:
+- `result=error` with `error_type`. RateLimitError or ProviderError at xAI's normal background rate is fine. AuthenticationError or BadRequestError on chat is a translation bug.
+- `refusal_fallback_served` triggers on Haiku channels: `stop_reason` is the new HTTP-200 path.
+- Image cost: `@usage` or the usage table should show draws near $0.02 and meme edits near $0.022, not $0.
+- `no price in provider.py` warnings.
+- Haiku `cached_tokens > 0` on repeat calls, and grok `cached_tokens` similar to before.
+- Spend sanity: compare a day of usage rows with the week before (litellm's booked figures were wrong for grok-4-1-fast-reasoning, so expect *higher* booked grok spend, not real spend).
+
 ## Progress since this was written (2026-10-21, second session)
 
 All local, still **not pushed**:
