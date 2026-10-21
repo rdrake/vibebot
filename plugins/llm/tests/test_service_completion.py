@@ -276,17 +276,17 @@ class TestErrorClassification:
 
     def test_auth_error_is_terminal(self) -> None:
         """GIVEN AuthenticationError WHEN classified THEN terminal."""
-        err = provider.AuthenticationError("bad key", provider="xai", model="xai/grok-4.3")
+        err = provider.AuthenticationError("bad key")
         assert LLMService._is_terminal_error(err) is True
 
     def test_timeout_is_transient(self) -> None:
         """GIVEN RequestTimeoutError WHEN classified THEN not terminal."""
-        err = provider.RequestTimeoutError("timeout", model="xai/grok-4.3", provider="xai")
+        err = provider.RequestTimeoutError("timeout")
         assert LLMService._is_terminal_error(err) is False
 
     def test_rate_limit_is_transient(self) -> None:
         """GIVEN RateLimitError WHEN classified THEN not terminal."""
-        err = provider.RateLimitError("rate limited", provider="xai", model="xai/grok-4.3")
+        err = provider.RateLimitError("rate limited")
         assert LLMService._is_terminal_error(err) is False
 
     def test_content_policy_violation_is_terminal(self) -> None:
@@ -295,18 +295,13 @@ class TestErrorClassification:
         Reclassifying this as transient would retry a guardrail block ~10x
         with backoff and re-bill each attempt.
         """
-        err = provider.ContentPolicyViolationError("blocked", model="xai/grok-4.3", provider="xai")
+        err = provider.ContentPolicyViolationError("blocked")
         assert LLMService._is_terminal_error(err) is True
 
     def test_bad_request_is_terminal(self) -> None:
         """GIVEN BadRequestError WHEN classified THEN terminal (a malformed
         request will never succeed on retry)."""
-        err = provider.BadRequestError("bad request", model="xai/grok-4.3", provider="xai")
-        assert LLMService._is_terminal_error(err) is True
-
-    def test_not_found_is_terminal(self) -> None:
-        """GIVEN NotFoundError (e.g. unknown model) WHEN classified THEN terminal."""
-        err = provider.NotFoundError("not found", model="xai/grok-4.3", provider="xai")
+        err = provider.BadRequestError("bad request")
         assert LLMService._is_terminal_error(err) is True
 
 
@@ -748,11 +743,9 @@ class TestRetryCompletion:
             {
                 "messages": [{"role": "u", "content": "x"}],
                 "max_tokens": 512,
-                "temperature": 0.7,
             },
         )
         assert chat.call_args.kwargs["max_tokens"] == 512
-        assert chat.call_args.kwargs["temperature"] == 0.7
 
 
 def test_assistant_result_was_verse_defaults_false():

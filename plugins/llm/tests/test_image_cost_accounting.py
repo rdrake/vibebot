@@ -49,9 +49,7 @@ XAI_MODERATION_ERROR = (
 
 def _refusal() -> provider.ContentPolicyViolationError:
     """xAI's billed moderation refusal, as provider.draw raises it."""
-    return provider.ContentPolicyViolationError(
-        XAI_MODERATION_ERROR, model=IMAGE_MODEL, provider="xai", status_code=400, billed=True
-    )
+    return provider.ContentPolicyViolationError(XAI_MODERATION_ERROR, billed=True)
 
 
 def _picture() -> provider.Picture:
@@ -100,7 +98,7 @@ class TestBilledRefusals:
         without one the honest answer is zero.
         """
         service, _ = make_service()
-        error = provider.ContentPolicyViolationError("blocked by safety filter", model=IMAGE_MODEL)
+        error = provider.ContentPolicyViolationError("blocked by safety filter")
         assert service._billed_failure_cost(error, IMAGE_MODEL) == 0.0
 
     def test_refused_generation_bills_through_image_generation(
@@ -344,7 +342,7 @@ class TestRefusedAttemptsSurviveTheRewriteLoop:
             "llm.service.provider.draw",
             side_effect=[
                 _refusal(),
-                provider.AuthenticationError("invalid key", model=IMAGE_MODEL, provider="xai"),
+                provider.AuthenticationError("invalid key"),
             ],
         )
         mocker.patch(

@@ -1215,36 +1215,6 @@ class TestMetaCompletion:
         assert "does NOT apply in verse" in content
         assert "the length it deserves" in content
 
-    def test_assistant_completion_verse_passes_its_temperature(
-        self, service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """Verse sets its own temperature to dampen the run-on spiral; the
-        profile's value must reach the provider call."""
-        from llm.service import PROFILE_VERSE, PROFILES
-
-        mock_response = make_completion_response("Done.")
-        captured_kwargs: dict = {}
-
-        def capture_completion(**kwargs: object) -> object:
-            captured_kwargs.update(kwargs)
-            return mock_response
-
-        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
-
-        service.assistant_completion(
-            prompt="describe the scene",
-            nick="testuser",
-            channel="#test",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="VibeBot",
-            system_prompt="You are a brooding cat avatar named {bot_nick}.",
-            route_profile=PROFILE_VERSE,
-        )
-
-        profile = PROFILES[PROFILE_VERSE]
-        assert captured_kwargs.get("temperature") == profile.temperature
-
     def test_assistant_completion_drops_channel_history_for_verse(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
@@ -1802,7 +1772,7 @@ class TestMetaCompletion:
         "error",
         [
             pytest.param(
-                provider.RequestTimeoutError("slow", model="xai/grok-4", provider="xai"),
+                provider.RequestTimeoutError("slow"),
                 id="timeout",
             ),
             pytest.param(RuntimeError("boom"), id="other"),
@@ -1868,9 +1838,7 @@ class TestMetaCompletion:
 
         mocker.patch(
             "llm.service.provider.chat",
-            side_effect=provider.RequestTimeoutError(
-                "timed out", model="xai/grok-4", provider="xai"
-            ),
+            side_effect=provider.RequestTimeoutError("timed out"),
         )
         stash_mock = mocker.patch.object(service, "_stash_timeout", return_value=True)
 
@@ -1902,9 +1870,7 @@ class TestMetaCompletion:
 
         mocker.patch(
             "llm.service.provider.chat",
-            side_effect=provider.RequestTimeoutError(
-                "timed out", model="xai/grok-4", provider="xai"
-            ),
+            side_effect=provider.RequestTimeoutError("timed out"),
         )
         mocker.patch.object(service, "_stash_timeout", return_value=False)
 
@@ -1936,7 +1902,7 @@ class TestMetaCompletion:
             "llm.service.provider.chat",
             side_effect=[
                 first_response,
-                provider.RequestTimeoutError("timed out", model="xai/grok-4", provider="xai"),
+                provider.RequestTimeoutError("timed out"),
             ],
         )
         stash_mock = mocker.patch.object(service, "_stash_timeout", return_value=True)

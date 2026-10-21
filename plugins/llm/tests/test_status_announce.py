@@ -745,24 +745,9 @@ class TestStatusAnnounceCompletion:
         result = service.status_announce_completion(facts={"name": "x"}, channel="#test")
         assert result == "Claude API is degraded."
 
-    def test_reasoning_is_turned_down_so_thinking_cannot_eat_the_output_budget(
-        self, service, mocker
-    ):
-        """Asked for, but not relied on.
-
-        gemini-flash-latest honoured a reasoning cap intermittently — 8/8 in
-        one sample, 1/5 an hour earlier. It stays because the honoured case
-        costs ~10x less; the cap and the finish_reason check are what make a
-        leak harmless.
-        """
-        mock_completion = mocker.patch("llm.service.provider.chat")
-        mock_completion.return_value = make_completion_response("Claude API is degraded.")
-        service.status_announce_completion(facts={"name": "x"}, channel="#test")
-        assert mock_completion.call_args.kwargs["effort"] == "low"
-
     def test_the_cap_leaves_room_for_thinking_plus_a_sentence(self, service, mocker):
         """Thinking is billed against max_tokens, so a cap sized for the
-        sentence alone truncates every time the disable above is ignored.
+        sentence alone truncates whenever the model thinks first.
         Thinking settles around 400-550 for this prompt rather than growing
         with the cap, so the cap has to clear that, not the sentence."""
         mock_completion = mocker.patch("llm.service.provider.chat")

@@ -46,7 +46,7 @@ def _response(payload: dict) -> io.BytesIO:
 class TestImageEdit:
     def test_success_hosts_the_result_and_prices_from_ticks(self, service, mocker) -> None:
         opened = mocker.patch(
-            "urllib.request.urlopen",
+            "llm.provider._opener.open",
             return_value=_response(
                 {
                     "data": [{"b64_json": base64.b64encode(PNG).decode()}],
@@ -78,7 +78,7 @@ class TestImageEdit:
                 b'{"error": "content moderation", "usage": {"cost_in_usd_ticks": 200000000}}'
             ),
         )
-        mocker.patch("urllib.request.urlopen", side_effect=err)
+        mocker.patch("llm.provider._opener.open", side_effect=err)
 
         result = service.image_edit(CAPTIONED, "something refused")
 
@@ -86,7 +86,7 @@ class TestImageEdit:
         assert result.cost == pytest.approx(0.02)
 
     def test_network_failure_is_free(self, service, mocker) -> None:
-        mocker.patch("urllib.request.urlopen", side_effect=OSError("boom"))
+        mocker.patch("llm.provider._opener.open", side_effect=OSError("boom"))
 
         result = service.image_edit(CAPTIONED, "x")
 
@@ -94,7 +94,7 @@ class TestImageEdit:
 
     def test_non_xai_model_is_refused_before_any_call(self, make_service, mocker) -> None:
         svc, _ = make_service(memeEditModel="anthropic/claude-haiku-5-5")
-        opened = mocker.patch("urllib.request.urlopen")
+        opened = mocker.patch("llm.provider._opener.open")
 
         result = svc.image_edit(CAPTIONED, "x")
 
@@ -429,7 +429,7 @@ class TestSlotPictures:
 class TestImageGenerate:
     def test_posts_to_generations_with_the_aspect_ratio(self, service, mocker) -> None:
         opened = mocker.patch(
-            "urllib.request.urlopen",
+            "llm.provider._opener.open",
             return_value=_response(
                 {
                     "data": [{"b64_json": base64.b64encode(PNG).decode()}],
@@ -451,7 +451,7 @@ class TestImageGenerate:
 
     def test_non_xai_model_is_refused(self, make_service, mocker) -> None:
         svc, _ = make_service(memeEditModel="anthropic/claude-haiku-5-5")
-        opened = mocker.patch("urllib.request.urlopen")
+        opened = mocker.patch("llm.provider._opener.open")
 
         result = svc.image_generate("x")
 

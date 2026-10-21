@@ -69,8 +69,6 @@ class Profile:
         force_search_on_explicit: If True and an explicit search trigger
             matches the user prompt, force
             ``tool_choice={search_web}`` on step 0.
-        temperature: Sampling temperature. xAI only (see provider.chat);
-            ``None`` leaves the provider default in place.
     """
 
     id: str
@@ -79,7 +77,6 @@ class Profile:
     overlay_setting: str | None
     max_output_tokens: int | None
     force_search_on_explicit: bool
-    temperature: float | None = None
 
 
 PROFILES: dict[str, Profile] = {
@@ -146,11 +143,6 @@ PROFILES: dict[str, Profile] = {
         # via _send_long_reply.
         max_output_tokens=3000,
         force_search_on_explicit=False,
-        # Dampen the run-on/repetition spiral a non-reasoning model falls into
-        # over a long roleplay thread: a modest temperature keeps prose varied
-        # without drifting incoherent. Reaches grok only (the refusal
-        # fallback); Haiku rejects non-default sampling.
-        temperature=0.8,
     ),
     PROFILE_REMIND_ACTION: Profile(
         id=PROFILE_REMIND_ACTION,
