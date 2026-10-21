@@ -45,7 +45,7 @@ def _parse_entity_ids(raw: str, event_id: object) -> tuple[int, ...]:
     """
     try:
         return tuple(int(x) for x in json.loads(raw))
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except json.JSONDecodeError, TypeError, ValueError:
         _log.warning("event %s has invalid entity_ids %r; treating as empty", event_id, raw)
         return ()
 
@@ -253,12 +253,12 @@ class VerseStore:
             for ev_id, raw in conn.execute("SELECT id, entity_ids FROM events"):
                 try:
                     decoded = json.loads(raw)
-                except (json.JSONDecodeError, TypeError):
+                except json.JSONDecodeError, TypeError:
                     decoded = []
                 for x in decoded if isinstance(decoded, list) else []:
                     try:
                         eid = int(x)
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         continue
                     if eid in existing:
                         conn.execute(

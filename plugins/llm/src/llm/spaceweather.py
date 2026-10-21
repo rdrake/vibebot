@@ -601,7 +601,7 @@ def cloud_series(lat: float, lon: float, *, opener: Any = None) -> list[tuple[da
             continue
         try:
             ts = datetime.fromisoformat(tag).replace(tzinfo=UTC)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         out.append((ts, round(value)))
     return out

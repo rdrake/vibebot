@@ -93,7 +93,7 @@ def parse_zone(name: str) -> ZoneInfo | None:
         return None
     try:
         return ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError):
+    except ZoneInfoNotFoundError, ValueError:
         return None
 
 
@@ -118,7 +118,7 @@ def offset_from_ctcp_time(reply: str, now_utc: datetime) -> timezone | None:
     try:
         # A reply with no date takes now_utc's, not the host calendar's.
         parsed = date_parser.parse(reply.strip(), fuzzy=True, default=now_utc.replace(tzinfo=None))
-    except (ValueError, OverflowError):
+    except ValueError, OverflowError:
         return None
 
     explicit = parsed.utcoffset() if parsed.tzinfo is not None else None

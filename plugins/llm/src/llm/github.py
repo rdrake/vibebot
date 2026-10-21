@@ -117,7 +117,7 @@ def digest(url: str, fetch: Fetch = http_fetch) -> str | None:
     kind, f = target
     try:
         out = _build(kind, f, fetch)
-    except (urllib.error.URLError, TimeoutError, ValueError, KeyError, TypeError, OSError):
+    except urllib.error.URLError, TimeoutError, ValueError, KeyError, TypeError, OSError:
         return None
     if not out:
         return None

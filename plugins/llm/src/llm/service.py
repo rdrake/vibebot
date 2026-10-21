@@ -2368,7 +2368,7 @@ class LLMService:
                 return "owner"
             if ircdb.checkCapability(hostmask, "admin"):
                 return "admin"
-        except (KeyError, RuntimeError):
+        except KeyError, RuntimeError:
             pass  # User not in database or error checking
         return None
 
@@ -2771,7 +2771,7 @@ class LLMService:
                 "",
             )
             blob = json.dumps({"system": system, "tools": tools or []}, sort_keys=True, default=str)
-        except (TypeError, ValueError, AttributeError):
+        except TypeError, ValueError, AttributeError:
             return "?"
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:8]
 
@@ -3290,7 +3290,7 @@ class LLMService:
             # Parse request_data
             try:
                 request_data = json.loads(task.request_data)
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 db.update_task_for_delivery(
                     task.id,
                     "ready",
@@ -3386,7 +3386,7 @@ class LLMService:
 
             try:
                 payload = json.loads(task.result_payload) if task.result_payload else {}
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 payload = {}
 
             # Read from request_data rather than the result payload: the msgid
@@ -3395,7 +3395,7 @@ class LLMService:
             # one gets threaded delivery for free.
             try:
                 stashed = json.loads(task.request_data) if task.request_data else {}
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 stashed = {}
             reply_msgid = stashed.get("reply_msgid") if isinstance(stashed, dict) else None
 
@@ -3694,7 +3694,7 @@ class LLMService:
                 searches += 1
                 try:
                     args = json.loads(tc.arguments or "{}")
-                except (json.JSONDecodeError, TypeError):
+                except json.JSONDecodeError, TypeError:
                     args = {}
                 query = str(args.get("query") or "") if isinstance(args, dict) else ""
                 if searches > self.MEME_MAX_SEARCHES:
@@ -5295,7 +5295,7 @@ Examples (echo → action_prompt: ""):
                 for tc in reply.tool_calls:
                     try:
                         args = json.loads(tc.arguments)
-                    except (json.JSONDecodeError, TypeError):
+                    except json.JSONDecodeError, TypeError:
                         # Don't execute with empty args — destructive tools
                         # like clear_instruction accept no required args and
                         # would silently run on malformed input.
@@ -5372,7 +5372,7 @@ Examples (echo → action_prompt: ""):
                     # present.
                     try:
                         parsed = json.loads(tool_result.content)
-                    except (json.JSONDecodeError, TypeError):
+                    except json.JSONDecodeError, TypeError:
                         parsed = None
                     # The fallback re-runs the whole turn, tools included, so
                     # once anything but a lookup has worked there is no going
