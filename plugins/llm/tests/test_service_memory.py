@@ -282,10 +282,11 @@ class TestMemoryExtraction:
         # The .exception() call records traceback info on the LogRecord
         assert any(r.exc_info is not None for r in caplog.records)
 
-    def test_ask_completion_logs_at_info_on_failure(
+    def test_ask_completion_logs_a_warning_on_failure(
         self, make_service, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """GIVEN _ask_completion raises THEN logs at INFO and returns None."""
+        """GIVEN _ask_completion raises THEN logs a WARNING (INFO never
+        reaches the prod log) and returns None."""
         service, mock_plugin = make_service()
         mock_chat = mocker.patch("llm.service.provider.chat")
         mock_chat.side_effect = RuntimeError("nope")
@@ -294,8 +295,8 @@ class TestMemoryExtraction:
             out = service._ask_completion("sys", "user", channel=None)
 
         assert out is None
-        info_records = [r for r in caplog.records if r.levelno == logging.INFO]
-        assert any("Ask completion failed" in r.message for r in info_records)
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("Ask completion failed" in r.message for r in warnings)
 
     def test_extract_memories_empty_on_invalid_json(
         self, make_service, mocker: MockerFixture
