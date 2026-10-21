@@ -119,7 +119,7 @@ imageFallbackModel: openai//work/models/MiniMax-H3/FL2VA   ← orphan after 033d
 
 The owner OK'd dropping these while believing all chat ran on Haiku. It doesn't (see prod config).
 
-- **`temperature`**: verse's 0.8 does reach grok on #afternet's verse turns and on any fallback rerun.
+- ~~`temperature`~~ **Settled: drop it** (owner, re-confirmed knowing it reaches grok: "we can live with the default temperature"). Remove it from `provider.chat`, `Profile`, the verse profile's 0.8, the assistant loop and the pending-retry stash.
 - **`json_reply=True`** (xAI `response_format: json_object`): live for `cleanup_memories` on the four grok channels. memeModel is Haiku, so meme_pick's use is a no-op. Dropping it means relying on the prompt alone for JSON on grok.
 
 ## Correctness findings to fix before push (red-team, ranked)
