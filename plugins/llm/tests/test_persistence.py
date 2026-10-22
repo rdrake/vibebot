@@ -427,6 +427,24 @@ class TestUsageTracking:
         assert breakdown[1].name == "user8"
         assert breakdown[2].name == "user7"
 
+    def test_usage_by_dimension_respects_since(self, test_db: LLMDatabase) -> None:
+        """GIVEN last month's spend and this month's WHEN the @usage report
+        asks for the top users and channels since month start THEN only this
+        month's spend is counted, not all-time spend labelled as this month."""
+        test_db.log_usage("alice", "#old", "ask", "gpt-4", 100, 50, 0.50)
+        with test_db._write_txn() as conn:
+            conn.execute("UPDATE usage SET timestamp = timestamp - 40 * 86400")
+        test_db.log_usage("bob", "#new", "ask", "gpt-4", 200, 100, 0.02)
+
+        since = time.time() - 86400
+        by_nick = test_db.get_usage_by_nick(since=since)
+        by_channel = test_db.get_usage_by_channel(since=since)
+
+        assert [(b.name, b.total_requests) for b in by_nick] == [("bob", 1)]
+        assert [(b.name, b.total_requests) for b in by_channel] == [("#new", 1)]
+        # Without since, both rows count.
+        assert {b.name for b in test_db.get_usage_by_nick()} == {"alice", "bob"}
+
 
 class TestRoundTrip:
     """Integration tests for full persistence round-trips."""
@@ -1476,6 +1494,14 @@ class TestUserInstructions:
         assert test_db.delete_instruction("testnick") is True
         assert test_db.get_instruction("testnick") is None
 
+    def test_delete_missing_instruction_returns_false(self, test_db: LLMDatabase) -> None:
+        """GIVEN no instruction set WHEN cleared THEN False, so @instruct clear
+        answers 'No instruction to clear.' instead of a fabricated 'cleared'."""
+        assert test_db.delete_instruction("nobody") is False
+        test_db.save_instruction("testnick", "text")
+        assert test_db.delete_instruction("testnick") is True
+        assert test_db.delete_instruction("testnick") is False
+
 
 class TestUserTimezones:
     """Tests for user_timezones table CRUD."""
@@ -1529,6 +1555,14 @@ class TestUserAvatarPersonas:
         test_db.save_avatar_persona("testnick", "text")
         assert test_db.delete_avatar_persona("testnick") is True
         assert test_db.get_avatar_persona("testnick") is None
+
+    def test_delete_missing_persona_returns_false(self, test_db: LLMDatabase) -> None:
+        """GIVEN no persona set WHEN cleared THEN False, so the user sees
+        'No persona to clear.' instead of 'Persona cleared.'."""
+        assert test_db.delete_avatar_persona("nobody") is False
+        test_db.save_avatar_persona("testnick", "text")
+        assert test_db.delete_avatar_persona("testnick") is True
+        assert test_db.delete_avatar_persona("testnick") is False
 
     def test_persona_independent_of_instruction(self, test_db: LLMDatabase) -> None:
         """GIVEN instruction set WHEN persona queried THEN returns None.
@@ -1696,10 +1730,12 @@ def test_save_scheduled_llm_task_rejects_duplicate_event_name(tmp_path: Path) ->
         (None, "FREQ=WEEKLY;BYDAY=MO"),
     ],
 )
+@pytest.mark.parametrize("watch_mode", [True, False])
 def test_scheduled_llm_task_full_column_round_trip(
     tmp_path: Path,
     recurrence_seconds: int | None,
     recurrence_rrule: str | None,
+    watch_mode: bool,
 ) -> None:
     """Every scheduled-task column survives save -> load carrying its own value.
 
@@ -1711,7 +1747,9 @@ def test_scheduled_llm_task_full_column_round_trip(
     scheduled-task restore path (``rehydrate_msg`` consumes ``wire_msg`` and
     ``network``). Distinct, type-distinguishable values for every column make
     any transposition fail here. Parametrized over both recurrence kinds
-    because they are mutually exclusive.
+    because they are mutually exclusive, and over watch_mode: an ordinary
+    "in 30m check X" task (watch_mode False) that reloads as a watch has its
+    negative-result reply suppressed, and the user hears nothing.
     """
     db = LLMDatabase(str(tmp_path / "llm.sqlite"))
 
@@ -1729,7 +1767,7 @@ def test_scheduled_llm_task_full_column_round_trip(
         recurrence_seconds=recurrence_seconds,
         recurrence_rrule=recurrence_rrule,
         chain_position=7,
-        watch_mode=True,
+        watch_mode=watch_mode,
         reply_target="#replytarget",
     )
     after = time.time()
@@ -1749,7 +1787,7 @@ def test_scheduled_llm_task_full_column_round_trip(
     assert row.recurrence_seconds == recurrence_seconds
     assert row.recurrence_rrule == recurrence_rrule
     assert row.chain_position == 7
-    assert row.watch_mode is True
+    assert row.watch_mode is watch_mode
     assert row.reply_target == "#replytarget"
 
     # The agenda's due scan reads via the same column map; it must agree
@@ -1927,6 +1965,41 @@ def test_load_scheduled_llm_tasks_for_owner(tmp_path: Path) -> None:
     assert {r.event_name for r in rows} == {"ev_nick"}
 
 
+def test_load_scheduled_llm_tasks_for_target_by_nick_or_account(tmp_path: Path) -> None:
+    """@remind admin list/del <nick> finds another user's live tasks by the
+    nick that scheduled them or the account they were stored under,
+    case-insensitively; an upcoming one-shot is listed, an expired one is not."""
+    from llm.persistence import EXPIRY_THRESHOLD_SECONDS
+
+    db = LLMDatabase(str(tmp_path / "llm.sqlite"))
+    now = time.time()
+    db.save_scheduled_llm_task(
+        event_name="upcoming",
+        creator_nick="Alice",
+        account="acct",
+        channel="#x",
+        network="afternet",
+        wire_msg=":Alice!u@h PRIVMSG #x :@ask hi",
+        prompt="p",
+        fire_at=now + 3600,
+    )
+    db.save_scheduled_llm_task(
+        event_name="expired",
+        creator_nick="Alice",
+        account="acct",
+        channel="#x",
+        network="afternet",
+        wire_msg=":Alice!u@h PRIVMSG #x :@ask hi",
+        prompt="p",
+        fire_at=now - 2 * EXPIRY_THRESHOLD_SECONDS,
+    )
+
+    for target in ("alice", "ACCT"):
+        rows = db.load_scheduled_llm_tasks_for_target(target)
+        assert [r.event_name for r in rows] == ["upcoming"]
+    assert db.load_scheduled_llm_tasks_for_target("nobody") == []
+
+
 def test_write_txn_rolls_back_on_error(tmp_path: Path) -> None:
     db = LLMDatabase(str(tmp_path / "t.db"))
     db.save_memory("alice", "fact-1", "#chan")
@@ -2092,6 +2165,17 @@ class TestPendingTaskUsageBooking:
         test_db.book_pending_task_usage(task_id, status="success")
         assert self._usage(test_db)[0][0] == "alice_acct"
 
+    @pytest.mark.parametrize(("cost", "prompt_tokens"), [(0.02, 0), (0.0, 100)])
+    def test_books_any_recorded_spend(
+        self, test_db: LLMDatabase, cost: float, prompt_tokens: int
+    ) -> None:
+        """GIVEN a retry that recorded only a cost (billed without tokens) or
+        only tokens WHEN booked THEN the spend still lands; only a retry that
+        recorded neither is skipped."""
+        task_id = self._ready_task(test_db, cost=cost, prompt_tokens=prompt_tokens)
+        assert test_db.book_pending_task_usage(task_id, status="success") is True
+        assert self._usage(test_db) == [("!alice", "#chan", "ask", cost, "success", "")]
+
     def test_no_row_without_spend(self, test_db: LLMDatabase) -> None:
         task_id = self._ready_task(test_db, cost=0.0, prompt_tokens=0)
         assert test_db.book_pending_task_usage(task_id, status="success") is False
@@ -2116,3 +2200,35 @@ class TestPendingTaskUsageBooking:
         test_db.book_pending_task_usage(task_id, status="error", error_detail="delivery failed")
         test_db.delete_expired_pending_tasks(time.time() + 3600)
         assert [row[4:] for row in self._usage(test_db)] == [("error", "delivery failed")]
+
+
+class TestNickWatches:
+    """notify_when_online's stored watches: per-requester listing and the
+    7-day lapse."""
+
+    def test_list_is_scoped_to_the_requester(self, test_db: LLMDatabase) -> None:
+        """GIVEN two people's watches WHEN one asks for their list (and the
+        per-person cap counts it) THEN only their own watches; without a
+        requester, every watched nick on the network."""
+        test_db.add_nick_watch("afternet", "larry", "rdrake", "#test")
+        test_db.add_nick_watch("afternet", "eve", "Bob", "#test")
+        test_db.add_nick_watch("othernet", "mallory", "bob", "#test")
+
+        assert test_db.list_nick_watches("afternet", "BOB") == ["eve"]
+        assert test_db.list_nick_watches("afternet", "rdrake") == ["larry"]
+        assert test_db.list_nick_watches("afternet") == ["eve", "larry"]
+
+    def test_lapsed_watch_is_dropped_before_listing(self, test_db: LLMDatabase) -> None:
+        """GIVEN a watch older than max_age WHEN listed with max_age THEN it is
+        gone from the list, from the cap count and from the table, so the
+        reconnect MONITOR resend skips it too."""
+        test_db.add_nick_watch("afternet", "larry", "rdrake", "#test")
+        with test_db._write_txn() as conn:
+            conn.execute("UPDATE nick_watches SET created_at = created_at - 8 * 86400")
+        test_db.add_nick_watch("afternet", "eve", "rdrake", "#test")
+
+        week = 7 * 86400
+        assert test_db.list_nick_watches("afternet", "rdrake", max_age=week) == ["eve"]
+        assert test_db.list_nick_watches("afternet") == ["eve"]
+        rows = test_db._connect().execute("SELECT nick FROM nick_watches").fetchall()
+        assert rows == [("eve",)]
