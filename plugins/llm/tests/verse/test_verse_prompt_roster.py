@@ -204,3 +204,106 @@ def test_verse_system_prompt_states_canon_precedence(tmp_path):
     )
     prompt = build_verse_system_prompt(store, me, "")
     assert CANON_PRECEDENCE_NOTE in prompt
+
+
+def test_verse_context_block_lists_unpinned_referenced_entity(tmp_path):
+    """An unpinned entity the message names is not in the roster, so it must
+    surface under 'Referenced here:' with its #id line — otherwise the chat
+    reply is grounded in nothing and verse_edit cannot address it."""
+    store = VerseStore(tmp_path, "#chan")
+    me = store.add_entity("avatar", "Hero")
+    toby = store.add_entity("npc", "Toby", "year 9 menace")
+    block = build_verse_context_block(store, "what about Toby?", avatar_id=me)
+    assert "Referenced here:" in block
+    assert f"- #{toby} Toby: year 9 menace" in block
+
+
+def test_verse_context_block_keyword_turn_carries_roster_without_named_entity(tmp_path):
+    """A verseTriggerRegex hit is a canon signal on its own: the turn names no
+    entity, but the facts block still has to carry the canon roster."""
+    store = VerseStore(tmp_path, "#chan")
+    me = store.add_entity("avatar", "Hero")
+    archie = store.add_entity("npc", "Assgas Archie", "Y11 windbag")
+    _pin(store, archie)
+    block = build_verse_context_block(store, "tell me a verse story", avatar_id=me)
+    assert f"- #{archie} Assgas Archie: Y11 windbag" in block
+
+
+def test_verse_context_block_scene_is_every_match_but_the_speaker(tmp_path):
+    """The speaker's own avatar is dropped from the referenced cast; every
+    other entity the message names stays in it."""
+    store = VerseStore(tmp_path, "#chan")
+    me = store.add_entity("avatar", "Hero", "the speaker")
+    toby = store.add_entity("npc", "Toby", "year 9 menace")
+    block = build_verse_context_block(store, "Hero meets Toby", avatar_id=me)
+    assert f"- #{toby} Toby: year 9 menace" in block
+    assert f"#{me} Hero" not in block
+
+
+def test_verse_context_block_referenced_lists_only_non_canon(tmp_path):
+    """'Referenced here:' carries the matched cast NOT already in the roster:
+    a pinned entity is listed once (in the roster), the unpinned one under
+    'Referenced here:'."""
+    store = VerseStore(tmp_path, "#chan")
+    me = store.add_entity("avatar", "Hero")
+    archie = store.add_entity("npc", "Assgas Archie", "Y11 windbag")
+    _pin(store, archie)
+    toby = store.add_entity("npc", "Toby", "year 9 menace")
+    block = build_verse_context_block(store, "did Assgas Archie and Toby fight?", avatar_id=me)
+    referenced = block.split("Referenced here:")[1]
+    assert f"- #{toby} Toby: year 9 menace" in referenced
+    assert block.count(f"- #{archie} ") == 1
+
+
+def test_verse_context_block_renders_relations(tmp_path):
+    """The facts block carries relations (docs: 'roster, relations, recent
+    events'), rendered '- <from> <kind with spaces> <to> (<note>)'."""
+    store = VerseStore(tmp_path, "#chan")
+    me = store.add_entity("avatar", "Hero")
+    harry = store.add_entity("npc", "Harry", "year 8")
+    _pin(store, harry)
+    toby = store.add_entity("npc", "Toby", "year 9")
+    store.add_relation(harry, toby, "rival_of", note="since Y7")
+    block = build_verse_context_block(store, "what is Harry up to?", avatar_id=me)
+    assert "Known relationships:" in block
+    assert "- Harry rival of Toby (since Y7)" in block
+
+
+def test_verse_context_block_lists_recent_events_of_referenced_cast(tmp_path):
+    store = VerseStore(tmp_path, "#chan")
+    me = store.add_entity("avatar", "Hero")
+    archie = store.add_entity("npc", "Archie", "Y11 windbag")
+    store.add_event(summary="Archie fell in the pond", entity_ids=[archie], source="avatar")
+    block = build_verse_context_block(store, "what happened to Archie?", avatar_id=me)
+    assert "Recent events involving them:" in block
+    assert "- Archie fell in the pond" in block
+
+
+def test_verse_context_block_roster_respects_char_cap(tmp_path):
+    """The chat-path roster is capped like the roleplay one, so a canon-signalled
+    chat turn does not carry the whole pinned world."""
+    store = VerseStore(tmp_path, "#chan")
+    me = store.add_entity("avatar", "Hero")
+    for i in range(30):
+        _pin(store, store.add_entity("npc", f"Lad{i:02d}", "x" * 40))
+    block = build_verse_context_block(
+        store, "tell me a verse story", avatar_id=me, roster_max_chars=200
+    )
+    roster = block.split("Established characters:")[1]
+    assert len(roster) <= 260  # cap + the truncation marker line
+    assert "(roster truncated)" in roster
+
+
+def test_verse_system_prompt_lists_unpinned_referenced_entity(tmp_path):
+    """A matched entity outside the canon roster gets its own #id line under
+    'Characters referenced in this scene:' (verse_edit needs the id); a pinned
+    one stays in the roster only."""
+    store = VerseStore(tmp_path, "#chan")
+    me = store.add_entity("avatar", "Hero")
+    harry = store.add_entity("npc", "Harry", "year 8")
+    _pin(store, harry)
+    toby = store.add_entity("npc", "Toby", "year 9")
+    prompt = build_verse_system_prompt(store, me, "p", message_text="did Harry and Toby fight?")
+    referenced = prompt.split("Characters referenced in this scene:")[1]
+    assert f"- #{toby} Toby: year 9" in referenced
+    assert prompt.count(f"- #{harry} ") == 1

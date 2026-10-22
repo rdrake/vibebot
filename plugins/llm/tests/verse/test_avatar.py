@@ -355,6 +355,16 @@ class TestVerseRecall:
         assert verse_recall(store, "") == []
         assert verse_recall(store, "   ") == []
 
+    def test_retired_entity_events_not_recalled(self, store: VerseStore) -> None:
+        """An event whose only linked entity is retired is dead lore: recalling
+        it would replay the retired entity into the tool result. Entity-less
+        narration is still recalled."""
+        ghost = store.add_entity("npc", "Ghost", "gone")
+        store.add_event(summary="alpha Ghost haunts the mill", entity_ids=[ghost], source="avatar")
+        store.add_event(summary="alpha wind in the trees", entity_ids=[], source="avatar")
+        store.set_status(ghost, "retired")
+        assert [ev.summary for ev in verse_recall(store, "alpha")] == ["alpha wind in the trees"]
+
 
 # ---------------------------------------------------------------------------
 # TestSystemPrompt

@@ -364,6 +364,71 @@ class TestVerseRecordDispatch:
         for i in range(5, 20):
             assert store.find_active_entity_by_name(f"npc{i}") is None
 
+    @pytest.mark.parametrize("actors", ["bob", {"a": 1}])
+    def test_dispatch_non_array_actors_rejected_and_writes_nothing(
+        self, store: VerseStore, actors: object
+    ) -> None:
+        """A non-array ``actors`` is refused with a model-facing error. A string
+        must not be iterated per character into NPCs 'b', 'o', 'b' — canon
+        pollution is hard to undo."""
+        import json
+
+        from llm.verse.avatar import dispatch_verse_tool_call, make_verse_extra_handlers
+
+        alice_id = _opt_in(store)
+        npcs_before = store.list_entities_by_kind("npc")
+        events_before = len(store.recent_events(limit=100))
+
+        result = dispatch_verse_tool_call(
+            store, alice_id, "verse_record", {"summary": "s", "actors": actors}
+        )
+        assert result.ok is False
+        assert "array" in (result.error or "")
+
+        payload = json.loads(
+            make_verse_extra_handlers(store, alice_id)["verse_record"](
+                {"summary": "s", "actors": actors}
+            ).content
+        )
+        assert payload["status"] == "error"
+        assert "array" in payload["error"]
+
+        assert store.list_entities_by_kind("npc") == npcs_before
+        assert len(store.recent_events(limit=100)) == events_before
+
+    def test_dispatch_db_write_failure_is_not_ok(
+        self, store: VerseStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A DB failure inside record_user_event must reach the model as a
+        failure, so it does not narrate an event that was never written."""
+        import json
+        import sqlite3
+
+        from llm.verse.avatar import dispatch_verse_tool_call, make_verse_extra_handlers
+
+        alice_id = _opt_in(store)
+        events_before = len(store.recent_events(limit=100))
+
+        def boom(**_kw):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        monkeypatch.setattr(store, "record_user_event", boom)
+
+        result = dispatch_verse_tool_call(
+            store, alice_id, "verse_record", {"summary": "alice waved", "actors": ["bob"]}
+        )
+        assert result.ok is False
+        assert result.error == "could not record event"
+
+        payload = json.loads(
+            make_verse_extra_handlers(store, alice_id)["verse_record"](
+                {"summary": "alice waved"}
+            ).content
+        )
+        assert payload["status"] == "error"
+        assert payload["error"] == "could not record event"
+        assert len(store.recent_events(limit=100)) == events_before
+
 
 class TestMaxActorsNotModelOverridable:
     def test_handler_overwrites_model_supplied_max_actors(self, store: VerseStore) -> None:

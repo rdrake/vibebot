@@ -277,6 +277,23 @@ def test_verse_edit_update_recasing_own_name_allowed(tmp_path):
     assert entity is not None and entity.name == "Bob"
 
 
+def test_verse_edit_summary_only_update_applies(tmp_path):
+    """update_entity without a name (the common "update the summary" edit)
+    skips the duplicate-name guard and applies."""
+    store = VerseStore(tmp_path, "#chan")
+    bob = store.add_entity("npc", "Bob", "old")
+    result = dispatch_verse_edit(
+        store,
+        op="update_entity",
+        payload={"entity_id": bob, "summary": "new"},
+        authorized=True,
+        account="gm!acct",
+    )
+    assert result["status"] == "ok"
+    entity = store.get_entity(bob)
+    assert entity is not None and entity.summary == "new" and entity.name == "Bob"
+
+
 def test_verse_edit_integrity_error_is_reported(tmp_path, monkeypatch):
     """A schema-constraint failure surfaces as status=error, not an opaque
     'Tool execution failed.'"""
