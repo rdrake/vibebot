@@ -150,3 +150,31 @@ class TestLLMExecutorBasics:
         assert ex.drain(timeout=0.2) is False
         release.set()
         ex.shutdown()
+
+    def test_shutdown_returns_without_waiting_for_running_task(self) -> None:
+        """shutdown() must not block on a running call.
+
+        die() calls shutdown() then drain(timeout=2.0); the bounded wait
+        belongs to drain. If shutdown waited for workers, one hung provider
+        call would hang unload/reload/quit past that budget.
+        """
+        ex = LLMExecutor(max_concurrency=1, log=logging.getLogger("test"))
+        started = threading.Event()
+        release = threading.Event()
+
+        def hang() -> None:
+            started.set()
+            release.wait(10)
+
+        fut = ex.submit("hung", hang)
+        try:
+            assert started.wait(timeout=2)
+            t0 = time.monotonic()
+            ex.shutdown()
+            elapsed = time.monotonic() - t0
+            assert elapsed < 0.5
+            assert fut.running()
+            assert ex.drain(timeout=0.1) is False
+        finally:
+            release.set()
+        assert ex.drain(timeout=2.0) is True
