@@ -74,6 +74,14 @@ PRICES: dict[str, Price] = {
     "anthropic/claude-haiku-5-5": Price(
         input=0.10, output=0.50, cache_read=0.01, cache_write=0.125
     ),
+    # Cache writes at 1.25× input (the 5-minute TTL); reads as listed.
+    "anthropic/claude-sonnet-5-5": Price(
+        input=2.00, output=10.00, cache_read=0.10, cache_write=2.50
+    ),
+    "anthropic/claude-opus-5-5": Price(input=4.00, output=20.00, cache_read=0.20, cache_write=5.00),
+    "anthropic/claude-fable-5-1": Price(
+        input=10.00, output=50.00, cache_read=0.25, cache_write=12.50
+    ),
     "xai/grok-4.3": _GROK_43,
     # Both fast aliases are served by grok-4.3 (owner, 2026-10-14), so they
     # are priced at its rates.
@@ -538,7 +546,7 @@ def _anthropic_request(
         body["system"] = system
     if tools:
         body["tools"] = [_anthropic_tool(tool) for tool in tools]
-    choice = _anthropic_tool_choice(tool_choice)
+    choice = _anthropic_tool_choice(tool_choice, name)
     if choice:
         body["tool_choice"] = choice
     if isinstance(json_reply, dict):
@@ -558,15 +566,28 @@ def _anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
     return spec
 
 
-def _anthropic_tool_choice(choice: str | dict[str, Any] | None) -> dict[str, Any] | None:
+# Models that answer a forced tool_choice ("any" or "tool") with a 400. Haiku
+# 5.5 still accepts it. Every forcing caller fires on a message that asks for
+# the tool (an explicit search, reminder or storybook request, or the image
+# retry nudge), so "auto" leaves the call to the model instead of failing.
+_NO_FORCED_TOOL_CHOICE = frozenset(
+    {"claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5-1"}
+)
+
+
+def _anthropic_tool_choice(
+    choice: str | dict[str, Any] | None, model: str
+) -> dict[str, Any] | None:
     if choice is None:
         return None
     if isinstance(choice, dict):
         name = (choice.get("function") or {}).get("name")
-        return {"type": "tool", "name": name} if name else None
-    # Forced choice ("any", "tool") still works on Haiku 5.5; Opus 5.5,
-    # Sonnet 5.5 and Fable 5.1 reject it with a 400.
-    return {"required": {"type": "any"}, "none": {"type": "none"}}.get(choice)
+        forced = {"type": "tool", "name": name} if name else None
+    else:
+        forced = {"required": {"type": "any"}, "none": {"type": "none"}}.get(choice)
+    if forced and forced["type"] in ("any", "tool") and model in _NO_FORCED_TOOL_CHOICE:
+        return {"type": "auto"}
+    return forced
 
 
 _ANTHROPIC_FINISH = {

@@ -25,6 +25,8 @@ from llm import provider
 WIRE = Path(__file__).parent / "fixtures" / "provider_wire"
 
 HAIKU = "anthropic/claude-haiku-5-5"
+OPUS = "anthropic/claude-opus-5-5"
+FABLE = "anthropic/claude-fable-5-1"
 GROK = "xai/grok-4-1-fast-non-reasoning"
 
 SYSTEM = [{"role": "system", "content": "You are vibebot."}]
@@ -138,6 +140,36 @@ class TestAnthropicRequest:
         expected = _without_custom_type(wire("haiku_forced_tool")["body"])
         expected["max_tokens"] = provider.DEFAULT_MAX_TOKENS  # litellm: the 128K ceiling
         assert post.body == expected
+
+    @pytest.mark.parametrize("model", [OPUS, FABLE])
+    @pytest.mark.parametrize(
+        "choice", ["required", {"type": "function", "function": {"name": "search_web"}}]
+    )
+    def test_forced_tool_choice_is_sent_as_auto_where_the_model_rejects_it(
+        self, post: FakePost, model: str, choice: str | dict[str, Any]
+    ) -> None:
+        # Opus 5.5 and Fable 5.1 answer tool_choice "any" or "tool" with a 400.
+        provider.chat(
+            model,
+            SYSTEM + [{"role": "user", "content": "search cats"}],
+            timeout=30,
+            tools=TOOLS,
+            tool_choice=choice,
+        )
+        assert post.body["tool_choice"] == {"type": "auto"}
+
+    @pytest.mark.parametrize("model", [OPUS, FABLE])
+    def test_tool_choice_none_still_reaches_models_that_reject_forcing(
+        self, post: FakePost, model: str
+    ) -> None:
+        provider.chat(
+            model,
+            SYSTEM + [{"role": "user", "content": "pick"}],
+            timeout=30,
+            tools=TOOLS,
+            tool_choice="none",
+        )
+        assert post.body["tool_choice"] == {"type": "none"}
 
     @pytest.mark.parametrize("name", ["haiku_no_max_tokens", "haiku_vision"])
     def test_default_max_tokens(self, post: FakePost, name: str) -> None:
@@ -335,6 +367,22 @@ class TestAnthropicReply:
         )
         # 100×0.10 + 1000×0.125 + 4000×0.01 + 50×0.50, per million
         assert reply.cost == pytest.approx((10 + 125 + 40 + 25) / 1e6)
+
+    @pytest.mark.parametrize(
+        ("model", "per_million"),
+        [
+            # 100 fresh, 1000 cache-written, 4000 cache-read, 50 output.
+            ("anthropic/claude-sonnet-5-5", 100 * 2.00 + 1000 * 2.50 + 4000 * 0.10 + 50 * 10.00),
+            (OPUS, 100 * 4.00 + 1000 * 5.00 + 4000 * 0.20 + 50 * 20.00),
+            (FABLE, 100 * 10.00 + 1000 * 12.50 + 4000 * 0.25 + 50 * 50.00),
+        ],
+    )
+    def test_sonnet_opus_and_fable_spend_is_booked_at_list_price(
+        self, post: FakePost, model: str, per_million: float
+    ) -> None:
+        post.reply = ANTHROPIC_TOOL_REPLY
+        reply = provider.chat(model, [{"role": "user", "content": "x"}], timeout=30, tools=TOOLS)
+        assert reply.cost == pytest.approx(per_million / 1e6)
 
     def test_turn_round_trips_thinking_verbatim(self, post: FakePost) -> None:
         post.reply = ANTHROPIC_TOOL_REPLY
