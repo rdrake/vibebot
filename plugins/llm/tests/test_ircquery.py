@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 
 from llm import ircquery
 from llm.ircquery import ChannelRow, IrcQueryRegistry
@@ -18,6 +19,33 @@ class FakeClock:
 
 def rows(*specs: tuple[str, int, str]) -> list[ChannelRow]:
     return [ChannelRow(name=n, users=u, topic=t) for n, u, t in specs]
+
+
+def ask_twice(ask: Callable[[Callable[[], None]], object], answer: Callable[[], None]) -> tuple:
+    """Run ``ask`` on two threads during one in-flight query, then ``answer`` it.
+
+    The second asker starts only after the first has sent, so it finds the
+    query in flight. Returns (number of sends, results in finishing order).
+    """
+    sends: list[int] = []
+    first_sent = threading.Event()
+    results: list[object] = []
+
+    def send() -> None:
+        sends.append(1)
+        first_sent.set()
+
+    t1 = threading.Thread(target=lambda: results.append(ask(send)))
+    t1.start()
+    assert first_sent.wait(1.0)
+    t2 = threading.Thread(target=lambda: results.append(ask(send)))
+    t2.start()
+    # Give t2 a moment to attach to the in-flight query before the answer.
+    t2.join(0.05)
+    answer()
+    t1.join(3.0)
+    t2.join(3.0)
+    return len(sends), results
 
 
 class TestListChannels:
@@ -192,6 +220,30 @@ class TestNames:
         reg = IrcQueryRegistry()
         assert reg.names("afternet", "#chan", lambda: None, timeout=0.01) is None
 
+    def test_timeout_clears_the_pending_query_so_the_next_names_sends(self):
+        """A server that never sends 366 must not wedge every later @names #chan."""
+        reg = IrcQueryRegistry()
+        sends: list[int] = []
+
+        assert reg.names("afternet", "#chan", lambda: sends.append(1), timeout=0.01) is None
+        assert reg.names("afternet", "#chan", lambda: sends.append(1), timeout=0.01) is None
+        assert len(sends) == 2
+
+    def test_concurrent_callers_share_one_in_flight_names(self):
+        """Two askers during the same NAMES both get the answer to one request."""
+        reg = IrcQueryRegistry()
+
+        def answer() -> None:
+            reg.on_names_row("afternet", "#chan", ["@alice", "bob"])
+            reg.on_names_end("afternet", "#chan")
+
+        sends, results = ask_twice(
+            lambda send: reg.names("afternet", "#chan", send, timeout=2.0), answer
+        )
+
+        assert sends == 1
+        assert [r.nicks if r else None for r in results] == [["@alice", "bob"]] * 2
+
 
 class TestFormatChannels:
     def test_sorted_by_users_descending_and_capped(self):
@@ -213,6 +265,12 @@ class TestFormatChannels:
         data = rows(("#a", 1, ""), ("#b", 10, ""))
         out = ircquery.format_channels(data, min_users=5)
         assert out == "1 channel: #b (10)"
+
+    def test_min_users_keeps_channels_with_exactly_that_many(self):
+        """`@channels --min 5` means at least 5 users, per the command docs."""
+        data = rows(("#a", 5, ""), ("#b", 4, ""))
+        out = ircquery.format_channels(data, min_users=5)
+        assert out == "1 channel: #a (5)"
 
     def test_no_match_says_so(self):
         assert ircquery.format_channels(rows(("#a", 1, "")), pattern="#zzz") == (
@@ -245,6 +303,16 @@ class TestFormatNames:
         assert len(out) <= 60
         assert out.startswith("#chan (40): nick00 nick01")
         assert out.endswith("more")
+
+    def test_remainder_counts_exactly_the_nicks_left_out(self):
+        """Shown nicks plus the `+N more` count must add up to the channel size."""
+        nicks = [f"nick{i:02d}" for i in range(40)]
+        out = ircquery.format_names("#chan", nicks, max_chars=60)
+        body, _, suffix = out.removeprefix("#chan (40): ").rpartition(" +")
+        shown = body.split()
+        hidden = int(suffix.removesuffix(" more"))
+        assert shown == nicks[: len(shown)]
+        assert len(shown) + hidden == 40
 
     def test_empty_means_not_visible(self):
         assert ircquery.format_names("#chan", []) == (
@@ -308,6 +376,29 @@ class TestWhois:
         reg = IrcQueryRegistry()
         assert reg.whois("afternet", "eck", lambda: None, timeout=0.01) is None
 
+    def test_without_313_the_user_is_not_an_oper(self):
+        """Only RPL_WHOISOPERATOR makes someone an IRC operator in the answer."""
+        reg = IrcQueryRegistry()
+
+        def send() -> None:
+            reg.on_whois_numeric("afternet", "311", ("eck", "~eck", "h", "*", "Eck"))
+            reg.on_whois_numeric("afternet", "312", ("eck", "irc.afternet.org", "AfterNET"))
+            reg.on_whois_end("afternet", "eck")
+
+        result = reg.whois("afternet", "eck", send, timeout=1.0)
+
+        assert result is not None
+        assert result.oper is False
+
+    def test_timeout_clears_the_pending_query_so_the_next_whois_sends(self):
+        """A server that never sends 318 must not wedge later lookups of that nick."""
+        reg = IrcQueryRegistry()
+        sends: list[int] = []
+
+        assert reg.whois("afternet", "eck", lambda: sends.append(1), timeout=0.01) is None
+        assert reg.whois("afternet", "eck", lambda: sends.append(1), timeout=0.01) is None
+        assert len(sends) == 2
+
     def test_malformed_idle_is_ignored_not_fatal(self):
         reg = IrcQueryRegistry()
 
@@ -319,3 +410,74 @@ class TestWhois:
 
         assert result is not None
         assert result.idle_seconds is None
+
+
+class TestCollect:
+    def test_returns_rows_fed_between_send_and_close(self):
+        reg = IrcQueryRegistry()
+
+        def send() -> None:
+            reg.feed("who", "afternet", "#Chan", ("alice", "H"))
+            reg.close("who", "afternet", "#chan")
+
+        assert reg.collect("who", "afternet", "#chan", send, timeout=1.0) == (
+            [("alice", "H")],
+            None,
+        )
+
+    def test_timeout_returns_none_and_clears_the_pending_query(self):
+        """Silence is an error, and it must not wedge later lookups of that target."""
+        reg = IrcQueryRegistry()
+        sends: list[int] = []
+
+        result = reg.collect("who", "afternet", "#chan", lambda: sends.append(1), timeout=0.01)
+
+        assert result is None
+        assert reg.pending("who", "afternet", "#chan") is False
+        assert (
+            reg.collect("who", "afternet", "#chan", lambda: sends.append(1), timeout=0.01) is None
+        )
+        assert len(sends) == 2
+
+    def test_a_timed_out_ctcp_wait_rejects_a_late_reply(self):
+        """Nobody waits any more, so a stray CTCP VERSION reply is not accepted."""
+        reg = IrcQueryRegistry()
+
+        assert reg.collect("ctcp-VERSION", "afternet", "larry", lambda: None, timeout=0.01) is None
+
+        assert reg.pending("ctcp-VERSION", "afternet", "larry") is False
+        assert reg.feed("ctcp-VERSION", "afternet", "larry", "mIRC 7") is False
+
+    def test_partial_returns_the_rows_that_arrived_before_the_timeout(self):
+        """ADMIN with no 259: the LUSERS/VERSION rows that did arrive are kept."""
+        reg = IrcQueryRegistry()
+
+        def send() -> None:
+            reg.feed("network", "afternet", "*", ("251", "There are 40 users"))
+
+        result = reg.collect("network", "afternet", "*", send, timeout=0.01, partial=True)
+
+        assert result == ([("251", "There are 40 users")], None)
+        assert reg.pending("network", "afternet", "*") is False
+
+    def test_partial_with_nothing_arrived_is_still_none(self):
+        reg = IrcQueryRegistry()
+        assert (
+            reg.collect("network", "afternet", "*", lambda: None, timeout=0.01, partial=True)
+            is None
+        )
+
+    def test_concurrent_callers_share_one_in_flight_query(self):
+        """Two askers of the same (kind, target) both get the one reply."""
+        reg = IrcQueryRegistry()
+
+        def answer() -> None:
+            reg.feed("who", "afternet", "#chan", ("alice", "H"))
+            reg.close("who", "afternet", "#chan")
+
+        sends, results = ask_twice(
+            lambda send: reg.collect("who", "afternet", "#chan", send, timeout=2.0), answer
+        )
+
+        assert sends == 1
+        assert results == [([("alice", "H")], None)] * 2
