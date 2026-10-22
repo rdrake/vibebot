@@ -834,13 +834,13 @@ def dispatch_verse_tool_call(
     *,
     logger: logging.Logger | None = None,
 ) -> VerseDispatchResult:
-    """Dispatch a single verse tool call, swallowing all exceptions.
+    """Dispatch a single verse tool call, never raising.
 
     Applies the side effect (event write, attribute update, etc.) to
-    ``store``.  If the tool raises for any reason — including retired avatar,
-    OperationalError (DB deleted mid-session), or missing required args —
-    logs at WARNING and returns without raising.  Call order is the
-    caller's responsibility.
+    ``store``.  If the tool raises for any reason — including retired avatar
+    or OperationalError (DB deleted mid-session) — logs at WARNING and
+    returns ``ok=False`` without raising.  Call order is the caller's
+    responsibility.
 
     This function is the core of C7d's failure-handling contract:
     - B2-level business failures (bad move target) are handled INSIDE
@@ -852,10 +852,14 @@ def dispatch_verse_tool_call(
     with its in-world ``result`` text (including failures like "You can't
     find that place."); verse_move returns ``payload={'status': 'ok'}``.
     A ValueError from either ("no such place", "avatar retired") returns
-    ``ok=False`` with that ``error``; other exceptions keep the historical
-    swallow-and-skip semantics (logged, ``ok=True``). The read tools return their data to the model —
-    verse_look carries ``description`` and verse_recall carries ``events``
-    (≤5, summary + ts) — instead of computing it and dropping it.
+    ``ok=False`` with that ``error``; a missing required arg (``verb``,
+    ``place_name``) returns ``ok=False`` naming it; any other exception is
+    logged and returns ``ok=False`` with a generic error (the exception text
+    can carry file paths, so it stays in the log). Nothing was written in
+    any of these cases, so the model must not narrate them. The read tools
+    return their data to the model — verse_look carries ``description`` and
+    verse_recall carries ``events`` (≤5, summary + ts) — instead of computing
+    it and dropping it.
     ``verse_record`` may return ``ok=False`` with a model-facing ``error``
     string.
     """
@@ -866,7 +870,7 @@ def dispatch_verse_tool_call(
             verb = args.get("verb")
             if not verb:
                 log.warning("verse_act missing 'verb' arg (avatar=%s)", avatar_id)
-                return _ok
+                return VerseDispatchResult(ok=False, error="verb required")
             act = verse_act(store, avatar_id, verb, args.get("target"), args.get("details"))
             return VerseDispatchResult(
                 ok=True, payload={"status": "ok", "result": act.scene_shift_text}
@@ -875,7 +879,7 @@ def dispatch_verse_tool_call(
             place = args.get("place_name")
             if not place:
                 log.warning("verse_move missing 'place_name' arg (avatar=%s)", avatar_id)
-                return _ok
+                return VerseDispatchResult(ok=False, error="place_name required")
             verse_move(store, avatar_id, place)
             return _ok
         elif name == "verse_look":
@@ -913,7 +917,7 @@ def dispatch_verse_tool_call(
             avatar_id,
             exc,
         )
-        return _ok
+        return VerseDispatchResult(ok=False, error="verse tool failed; nothing was written")
 
 
 def _dispatch_verse_record(
@@ -933,8 +937,8 @@ def _dispatch_verse_record(
     """
     # Retired-avatar guard (mirrors verse_act): fail with a model-facing error
     # instead of letting record_user_event raise into the broad dispatch except,
-    # which would silently swallow it. Also closes the TOCTOU window where the
-    # avatar retires between dispatch and the write.
+    # which would hand the model only a generic error. Also closes the TOCTOU
+    # window where the avatar retires between dispatch and the write.
     avatar = store.get_entity(avatar_id)
     if avatar is None or avatar.status == "retired":
         return VerseDispatchResult(ok=False, error="avatar retired")
@@ -954,8 +958,8 @@ def _dispatch_verse_record(
     actors = cleaned[:max_actors]
     # Any DB-level failure here (OperationalError, IntegrityError, or the
     # active-actor recheck's ValueError on a TOCTOU retire) must surface as
-    # ok=False rather than propagate to the broad dispatch except, which would
-    # report ok=True and let the model narrate an event that was never written.
+    # ok=False here. The broad dispatch except once reported ok=True for such
+    # failures, letting the model narrate an event that was never written.
     try:
         event_id = store.record_user_event(
             actor_id=avatar_id,
