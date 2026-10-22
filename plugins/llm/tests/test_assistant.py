@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 import pytest
@@ -377,6 +378,11 @@ class TestAssistantToolExecutor:
         result = executor.execute("cancel_pending_task", {"id": "abc123"})
         mock_cancel_pending_task_fn.assert_called_once_with("abc123")
         assert "delete" in result.content.lower()
+        # A real cancel must read as success, or the model tells the user it
+        # failed and they cancel again, or give up on a reminder that is gone.
+        parsed = json.loads(result.content)
+        assert parsed["status"] == "ok"
+        assert "error" not in parsed
 
     def test_cancel_pending_task_not_found(
         self,
@@ -392,6 +398,48 @@ class TestAssistantToolExecutor:
         }
         result = executor.execute("cancel_pending_task", {"id": "xyz"})
         assert "not found" in result.content.lower()
+        # 2026-09-25: the model believed a cancel worked ("Slate wiped clean")
+        # while the reminder still fired. A failed cancel must reach the model
+        # as an error, never as status ok.
+        parsed = json.loads(result.content)
+        assert "error" in parsed
+        assert parsed.get("status") != "ok"
+
+    def test_cancel_all_pending_tasks_reports_the_counts(
+        self,
+        executor: AssistantToolExecutor,
+        mock_cancel_all_pending_tasks_fn: MagicMock,
+    ) -> None:
+        """GIVEN cancel_all is wired WHEN the model calls it THEN the cancel
+        runs once and the model hears status ok plus what was cancelled."""
+        result = executor.execute("cancel_all_pending_tasks", {})
+        mock_cancel_all_pending_tasks_fn.assert_called_once_with()
+        assert json.loads(result.content) == {
+            "status": "ok",
+            "reminders_message": "Cancelled 2 reminders.",
+            "scheduled_tasks_cancelled": 0,
+        }
+
+    def test_list_pending_tasks_empty_says_none(
+        self,
+        executor: AssistantToolExecutor,
+        mock_list_pending_tasks_fn: MagicMock,
+    ) -> None:
+        """GIVEN nothing pending WHEN asked THEN an empty list, not an error:
+        "what reminders do I have" must hear "none"."""
+        mock_list_pending_tasks_fn.return_value = []
+        parsed = json.loads(executor.execute("list_pending_tasks", {}).content)
+        assert parsed == {"tasks": [], "message": "No pending tasks."}
+
+    def test_plain_tool_raises_no_icons(self, executor: AssistantToolExecutor) -> None:
+        """GIVEN a tool with no web lookup and no image WHEN it runs THEN the
+        executor raises neither the web-lookup nor the reworded icon: each one
+        means a specific thing happened (docs/guide/user/ai-commands.md)."""
+        assert executor.grounding_used is False
+        assert executor.image_reworded is False
+        executor.execute("list_memories", {})
+        assert executor.grounding_used is False
+        assert executor.image_reworded is False
 
     # -- Task 6: Structured returns and new callables ----------------------
 
@@ -528,6 +576,41 @@ class TestMetaCompletion:
         assert result.content == "Done \u2014 I'll respond in haiku."
         db.save_instruction.assert_called_once_with("testuser", "respond in haiku")
         assert mock_completion.call_count == 2
+
+    def test_plain_tool_turn_carries_no_icon_signals(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a turn whose only tool is a memory write WHEN it replies THEN
+        the result raises neither grounding (web-lookup icon) nor
+        image_reworded (reworded icon): no web lookup ran, no image was drawn.
+        These two fields are what the reply's icon prefix reads."""
+        mocker.patch(
+            "llm.service.provider.chat",
+            side_effect=[
+                make_completion_response(
+                    None, tool_calls=[make_tool_call("save_memory", {"text": "likes tea"})]
+                ),
+                make_completion_response("Noted."),
+            ],
+        )
+        db = mocker.MagicMock()
+        db.save_memory.return_value = 1
+
+        result = service.assistant_completion(
+            route_profile=PROFILE_CHAT,
+            prompt="remember I like tea",
+            nick="testuser",
+            account="testuser",
+            channel="#test",
+            db=db,
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+        )
+
+        assert result.content == "Noted."
+        db.save_memory.assert_called_once()
+        assert result.grounding_used is False
+        assert result.image_reworded is False
 
     def test_accountless_reminder_action_cannot_read_memories(
         self, service: LLMService, mocker: MockerFixture
@@ -3645,6 +3728,26 @@ class TestPersonalDataToolsNeedAccount:
         assert "authenticated account" in executor.execute("cleanup_memories", {}).content
         cleanup.assert_not_called()
 
+    def test_generate_image_refused_without_account(self, mocker: MockerFixture):
+        """GIVEN an accountless caller who holds llm.draw (a reminder action
+        hands it out) WHEN the model asks for an image THEN nothing is spent:
+        @draw needs an authenticated account, and the per-account cooldown has
+        no account to key on."""
+        draw_fn = mocker.MagicMock()
+        executor = make_executor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="rdrake",
+            channel="#t",
+            account=None,
+            route_profile=PROFILE_REMIND_ACTION,
+            capabilities=frozenset({"llm.ask", "llm.draw"}),
+            draw_fn=draw_fn,
+        )
+        result = executor.execute("generate_image", {"prompt": "a cat"})
+        assert "authenticated account" in result.content
+        draw_fn.assert_not_called()
+
     def test_authenticated_caller_saves(self, mocker: MockerFixture):
         db = mocker.MagicMock()
         db.save_memory.return_value = 7
@@ -3784,6 +3887,88 @@ class TestExecutorCoverageGaps:
         result = ex.execute("schedule_llm_task", args)
         assert expected_substring in result.content
         schedule_fn.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("reply_target", "expected"),
+        [(" rdrake ", "rdrake"), ("#deliver", "#deliver"), ("", None), (None, None)],
+    )
+    def test_schedule_llm_task_schedules_and_reports(
+        self,
+        mocker: MockerFixture,
+        reply_target: str | None,
+        expected: str | None,
+    ) -> None:
+        """GIVEN a valid schedule WHEN the model calls the tool THEN the
+        scheduler gets the stripped arguments and its result reaches the model.
+
+        reply_target is where the fire is delivered: a PM-to-self task that
+        lost it would post in the public origin channel. Only an empty or
+        missing value falls back to the origin (None)."""
+        scheduled = {
+            "status": "ok",
+            "event_name": "llm_task_1",
+            "fire_at": "2026-10-22T13:00:00Z",
+            "message": "Scheduled.",
+        }
+        schedule_fn = mocker.MagicMock(return_value=scheduled)
+        ex = make_executor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="rdrake",
+            channel="#t",
+            account="rdrake",
+            schedule_llm_task_fn=schedule_fn,
+        )
+        args = {"when_natural": " in 1h ", "prompt": " ping "}
+        if reply_target is not None:
+            args["reply_target"] = reply_target
+
+        result = ex.execute("schedule_llm_task", args)
+
+        schedule_fn.assert_called_once_with(
+            when_natural="in 1h", prompt="ping", reply_target=expected
+        )
+        assert json.loads(result.content) == scheduled
+
+    def test_fetch_url_returns_the_fetched_page(self, mocker: MockerFixture) -> None:
+        """GIVEN a wired fetcher WHEN the model reads a link THEN the fetcher
+        gets the model's URL and its result (content and cost) comes back."""
+        fetch_fn = mocker.MagicMock(return_value=ToolResult(content="page text", cost=0.01))
+        ex = make_executor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            fetch_fn=fetch_fn,
+        )
+        result = ex.execute("fetch_url", {"url": "https://example.com/a"})
+        fetch_fn.assert_called_once_with("https://example.com/a")
+        assert result.content == "page text"
+        assert ex.accumulated_cost == pytest.approx(0.01)
+
+    def test_fetch_url_unwired_says_unavailable(self, mocker: MockerFixture) -> None:
+        ex = make_executor(
+            db=mocker.MagicMock(), context=mocker.MagicMock(), nick="n", channel="#t"
+        )
+        result = ex.execute("fetch_url", {"url": "https://example.com/a"})
+        assert json.loads(result.content) == {"error": "URL fetching is unavailable."}
+
+    def test_generate_image_first_try_is_not_marked_reworded(self, mocker: MockerFixture) -> None:
+        """GIVEN an image drawn from the prompt as asked WHEN the tool runs THEN
+        the turn is not marked reworded: the reworded icon means a filter
+        refused and the prompt was rewritten, and this one wasn't."""
+        draw_fn = mocker.MagicMock(return_value=ToolCallbackResult(True, "https://x/y.png"))
+        ex = make_executor(
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            nick="n",
+            channel="#t",
+            capabilities=frozenset({"llm.ask", "llm.draw"}),
+            draw_fn=draw_fn,
+        )
+        result = ex.execute("generate_image", {"prompt": "a cat"})
+        assert json.loads(result.content)["status"] == "ok"
+        assert ex.image_reworded is False
 
     def test_cancel_pending_task_requires_id(self, mocker: MockerFixture) -> None:
         """cancel_pending_task rejects empty id before calling fn."""
