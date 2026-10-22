@@ -4175,7 +4175,7 @@ Examples (echo → action_prompt: ""):
         actually happened. Empty when context is off → prompt is unchanged.
         """
         if max_images is None:
-            max_images = int(self.plugin.registryValue("verseStorybookMaxImages", channel) or 3)
+            max_images = int(self.plugin.registryValue("verseStorybookMaxImages", channel))
         max_chars = VERSE_STORYBOOK_MAX_CHARS
         world = (
             STORYBOOK_WORLD_TEMPLATE.format(roster=world_context)
@@ -4220,7 +4220,7 @@ Examples (echo → action_prompt: ""):
         established cast and draws on what actually happened.
         """
         if max_images is None:
-            max_images = int(self.plugin.registryValue("verseStorybookMaxImages", channel) or 3)
+            max_images = int(self.plugin.registryValue("verseStorybookMaxImages", channel))
         story = self._generate_story_struct(
             brief,
             channel=channel,

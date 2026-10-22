@@ -722,6 +722,7 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         # Verse subsystem
         "verseEnabled": False,
         "verseStyleExemplars": [],
+        "verseStorybookMaxImages": 5,  # mirrors config.py
         # Service status tool — a single configured source by default so
         # _status_sources() (bound below onto the plugin Mock) returns a real
         # list instead of an unconfigured Mock's auto-attribute.
