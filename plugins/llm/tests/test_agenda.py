@@ -232,6 +232,25 @@ class TestFinish:
         get = test_db.get_reminder if kind is Kind.REMINDER else test_db.get_scheduled_llm_task
         assert get("c") is None
 
+    @pytest.mark.parametrize(("kind", "fires"), [(Kind.TASK, 5), (Kind.REMINDER, 50)])
+    def test_a_fresh_chain_fires_exactly_its_documented_count(
+        self, agenda, test_db, clock, kind, fires
+    ) -> None:
+        """Tasks fire at most five times, reminders 50 (docs/guide/user/).
+
+        The literal counts matter: a task's sixth fire is one more billed
+        turn that can post into another channel.
+        """
+        add = _reminder if kind is Kind.REMINDER else _task
+        get = test_db.get_reminder if kind is Kind.REMINDER else test_db.get_scheduled_llm_task
+        add(test_db, "c", T0, recurrence_seconds=60)
+        outcomes = []
+        for _ in range(fires):
+            outcomes.append(_fire(agenda, clock, kind, "c").outcome)
+            clock.now += 60
+        assert outcomes == [Outcome.RESCHEDULED] * (fires - 1) + [Outcome.CAPPED]
+        assert get("c") is None
+
     def test_one_short_of_the_cap_reschedules(self, agenda, test_db, clock) -> None:
         cap = MAX_CHAIN_POSITION[Kind.TASK]
         _task(test_db, "t", T0, recurrence_seconds=60, chain_position=cap - 1)
@@ -274,6 +293,12 @@ class TestNextDue:
         assert agenda.next_due_at() is None
         _reminder(test_db, "r", T0 + 50)
         _task(test_db, "t", T0 + 20)
+        assert agenda.next_due_at() == T0 + 20
+
+    def test_an_earlier_reminder_beats_a_later_task(self, agenda, test_db) -> None:
+        """The one wakeup must fire for the soonest entry, whichever table it is in."""
+        _reminder(test_db, "r", T0 + 20)
+        _task(test_db, "t", T0 + 50)
         assert agenda.next_due_at() == T0 + 20
 
     def test_skips_a_firing_entry(self, agenda, test_db, clock) -> None:
