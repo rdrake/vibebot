@@ -505,6 +505,30 @@ def test_dispatch_captures_reply(mocker):
     assert out == {"status": "ok", "reply": "pong"}
 
 
+def test_dispatch_plain_error_does_not_abort_the_command(mocker):
+    """irc.error() without Raise=True is a reply, not an early exit: Limnoria's
+    ReplyIrcProxy.error() only raises on Raise=True. The command keeps running,
+    and everything it said comes back as an ok reply, not "command failed"."""
+    from llm import limnoria_bridge as lb
+
+    cb = _stub_callback(mocker, "Misc", commands=["ping"])
+
+    def _error_then_reply(_command, proxy, _msg, _tokens):
+        proxy.error("no such thing")
+        proxy.reply("but here is a close match")
+
+    cb._callCommand.side_effect = _error_then_reply
+    irc = mocker.MagicMock()
+    irc.getCallback.return_value = cb
+    irc.network = "testnet"
+    msg = _fake_msg(mocker)
+    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
+    mocker.patch.object(lb.callbacks, "tokenize", return_value=[])
+
+    out = lb.dispatch(irc, msg, plugin="Misc", command="ping", arg_string="")
+    assert out == {"status": "ok", "reply": "no such thing\nbut here is a close match"}
+
+
 def test_dispatch_refuses_loaded_plugin_outside_allowlist(mocker):
     """GIVEN bridgeAllowedPlugins Time WHEN the model calls a loaded Alias.add
     THEN dispatch refuses it — the allowlist binds dispatch, not just the menu."""
@@ -737,6 +761,18 @@ def test_search_commands_matches_description_text():
     ]
     out = lb.search_commands(cmds, "timezone")
     assert [c.command for c in out] == ["tell"]
+
+
+def test_search_commands_finds_command_by_name_alone():
+    """A command with no docstring is still found by its own name."""
+    from llm import limnoria_bridge as lb
+
+    cmds = [
+        _make_cmd("Misc", "ping"),
+        _make_cmd("Time", "tell", description="Returns the time in a given timezone."),
+    ]
+    out = lb.search_commands(cmds, "ping")
+    assert [c.command for c in out] == ["ping"]
 
 
 def test_search_commands_ranks_multi_field_matches_higher():
