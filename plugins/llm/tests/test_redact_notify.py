@@ -91,6 +91,43 @@ class TestDeleteLastReply:
 
         assert "error" in self._delete(plugin, irc, msg)
 
+    def test_echoed_join_is_not_a_reply(self, env, mocker) -> None:
+        """GIVEN the server echoes the bot's own JOIN with a msgid after a
+        reply WHEN the model deletes its last reply THEN only the reply is
+        redacted; a JOIN is never the bot's "reply"."""
+        plugin, irc, msg = env
+        echo(plugin, irc, "p1", at=1000.0, mocker=mocker)
+        mocker.patch("llm.plugin.time.time", return_value=2000.0)
+        join = ircmsgs.IrcMsg(prefix="testbot!bot@host", command="JOIN", args=("#test",))
+        join.server_tags["msgid"] = "j1"
+        plugin.inFilter(irc, join)
+
+        assert self._delete(plugin, irc, msg)["status"] == "ok"
+        assert [m.args[:2] for m in sent(irc, "REDACT")] == [("#test", "p1")]
+
+    def test_only_an_echoed_join_leaves_nothing_to_delete(self, env) -> None:
+        plugin, irc, msg = env
+        join = ircmsgs.IrcMsg(prefix="testbot!bot@host", command="JOIN", args=("#test",))
+        join.server_tags["msgid"] = "j1"
+        plugin.inFilter(irc, join)
+
+        assert "error" in self._delete(plugin, irc, msg)
+        assert sent(irc, "REDACT") == []
+
+    def test_multiline_reply_is_redacted_by_its_batch_opener(self, env, mocker) -> None:
+        """A multiline reply is one BATCH; its opener names the channel in
+        args[2] and its msgid redacts the whole reply."""
+        plugin, irc, msg = env
+        mocker.patch("llm.plugin.time.time", return_value=1000.0)
+        opener = ircmsgs.IrcMsg(
+            prefix="testbot!bot@host", command="BATCH", args=("+r1", "draft/multiline", "#test")
+        )
+        opener.server_tags["msgid"] = "b"
+        plugin.inFilter(irc, opener)
+
+        assert self._delete(plugin, irc, msg)["status"] == "ok"
+        assert [m.args[:2] for m in sent(irc, "REDACT")] == [("#test", "b")]
+
 
 class TestNotifyWhenOnline:
     def _call(self, plugin, irc, msg, **args) -> dict:
@@ -147,6 +184,8 @@ class TestNotifyWhenOnline:
 
         assert sent(irc, "PRIVMSG") == []
         assert plugin.db.list_nick_watches("afternet") == []
+        # Nothing watches larry any more: free the server MONITOR slot.
+        assert sent(irc, "MONITOR")[-1].args == ("-", "Larry")
 
     def test_cancel_and_list(self, env) -> None:
         plugin, irc, msg = env
@@ -192,6 +231,63 @@ class TestNotifyWhenOnline:
         plugin, irc, msg = env
 
         assert self._call(plugin, irc, msg, nick="testbot")["error"] == "that is me"
+
+    @pytest.mark.parametrize("bad", ["", "#chan", "a,b", "bad nick", "n" * 65])
+    def test_rejects_anything_but_one_nick(self, env, bad) -> None:
+        """GIVEN a model-supplied nick that is empty, too long, a channel or
+        a comma list WHEN it asks for a watch THEN it is refused before any
+        MONITOR goes out or any watch is stored ("a,b" would watch two)."""
+        plugin, irc, msg = env
+
+        assert self._call(plugin, irc, msg, nick=bad) == {"error": "nick must be an IRC nick"}
+        assert sent(irc, "MONITOR") == []
+        assert plugin.db.list_nick_watches("afternet") == []
+
+    def test_cancel_keeps_monitor_while_someone_else_watches(self, env) -> None:
+        """GIVEN rdrake and the caller both watch larry WHEN the caller
+        cancels THEN the server keeps monitoring larry for rdrake."""
+        plugin, irc, msg = env
+        plugin.db.add_nick_watch("afternet", "larry", "rdrake", "#test")
+        plugin.db.add_nick_watch("afternet", "larry", "testnick", "#test")
+
+        assert self._call(plugin, irc, msg, nick="larry", action="cancel")["status"] == "ok"
+
+        assert ("-", "larry") not in [m.args for m in sent(irc, "MONITOR")]
+        assert plugin.db.list_nick_watches("afternet", "rdrake") == ["larry"]
+
+    def test_online_answer_keeps_monitor_for_another_watcher(self, env) -> None:
+        """GIVEN rdrake already waits on larry WHEN the caller asks and larry
+        is online now THEN MONITOR keeps larry, so rdrake is still told."""
+        plugin, irc, msg = env
+        plugin.db.add_nick_watch("afternet", "larry", "rdrake", "#test")
+        self._serve_monitor(plugin, irc, "730")
+
+        assert self._call(plugin, irc, msg, nick="larry")["online"] is True
+
+        assert ("-", "larry") not in [m.args for m in sent(irc, "MONITOR")]
+        assert plugin.db.list_nick_watches("afternet", "rdrake") == ["larry"]
+
+    def test_unsolicited_offline_reply_leaves_the_watch(self, env) -> None:
+        """GIVEN a stored watch on larry WHEN the server says larry is
+        offline (731, as it does for every watch after a reconnect) THEN
+        nobody is told he is online and the watch stays."""
+        plugin, irc, _ = env
+        plugin.db.add_nick_watch("afternet", "larry", "rdrake", "#test")
+
+        plugin.do731(irc, numeric("731", "larry"))
+
+        assert sent(irc, "PRIVMSG") == []
+        assert plugin.db.list_nick_watches("afternet") == ["larry"]
+
+    def test_end_of_motd_resends_stored_watches(self, env) -> None:
+        """MONITOR lists die with the connection: every (re)connect re-adds
+        the stored watches."""
+        plugin, irc, _ = env
+        plugin.db.add_nick_watch("afternet", "larry", "rdrake", "#test")
+
+        plugin.do376(irc, numeric("376", "End of MOTD"))
+
+        assert [m.args for m in sent(irc, "MONITOR")] == [("+", "larry")]
 
 
 def test_delete_note_shape_counts_as_fake(env) -> None:

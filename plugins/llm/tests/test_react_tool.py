@@ -50,6 +50,21 @@ class TestLastMsgidTracking:
 
         assert not plugin._last_msgids
 
+    @pytest.mark.parametrize(
+        ("command", "args"),
+        [("TAGMSG", ("#test",)), ("NOTICE", ("#test", "brb")), ("JOIN", ("#test",))],
+    )
+    def test_only_a_privmsg_is_their_latest_message(self, react_env, command, args) -> None:
+        """GIVEN bob's PRIVMSG m1 WHEN a msgid-tagged TAGMSG (a reaction),
+        NOTICE or JOIN of his follows THEN "bob's latest message" is still m1."""
+        plugin, irc, _ = react_env
+        plugin.inFilter(irc, privmsg("#test", "bob", "hot take", "m1"))
+        other = ircmsgs.IrcMsg(command=command, args=args, prefix="bob!u@host")
+        other.server_tags["msgid"] = "m2"
+        plugin.inFilter(irc, other)
+
+        assert plugin._last_msgids[("afternet", "#test", "bob")] == "m1"
+
     def test_lru_is_bounded(self, react_env, mocker) -> None:
         plugin, irc, _ = react_env
         mocker.patch("llm.plugin._LAST_MSGID_CAP", 2)
