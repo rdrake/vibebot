@@ -579,6 +579,7 @@ class TestSlots:
         out = meme_render.insert_pictures(base, (slot,), [Image.new("RGB", (40, 40), "red")])
 
         assert out.getpixel((75, 50)) == (255, 0, 0)
+        assert out.getpixel((75, 21)) == (255, 0, 0)  # the mask's top row: pasted at the box top
         assert out.getpixel((55, 50)) == (255, 255, 255)  # in the box, outside the mask
         assert out.getpixel((10, 10)) == (255, 255, 255)
         assert base.getpixel((75, 50)) == (255, 255, 255)  # input untouched
@@ -610,6 +611,114 @@ class TestSlots:
 
         assert out.getpixel((25, 60))[0] > 200  # near the left edge: red
         assert out.getpixel((70, 40))[2] > 200  # near the right edge: blue
+
+    def test_the_quad_corners_show_the_picture_corners(self, tmp_path):
+        """Each corner of the tilted quad shows the matching corner of the
+        picture, and the quad's diagonals cross at the picture's centre (a
+        perspective map keeps straight lines straight). The picture encodes
+        its own coordinates: red is x, green is y."""
+        Image.new("L", (200, 200), 255).save(tmp_path / "m.png")
+        # Not a parallelogram: a true perspective, not just an affine skew.
+        corners = ((0.3, 0.1), (0.75, 0.15), (0.9, 0.9), (0.1, 0.8))
+        slot = meme_render.Slot((0.1, 0.1, 0.8, 0.8), tmp_path / "m.png", corners)
+        picture = Image.new("RGB", (256, 256))
+        picture.putdata([(x, y, 0) for y in range(256) for x in range(256)])
+
+        out = meme_render.insert_pictures(Image.new("RGB", (200, 200), "white"), (slot,), [picture])
+
+        quad = [(x * 200, y * 200) for x, y in corners]
+        middle = (sum(x for x, _ in quad) / 4, sum(y for _, y in quad) / 4)
+        expected = [(0, 0), (255, 0), (255, 255), (0, 255)]  # TL, TR, BR, BL
+        for (x, y), (u, v) in zip(quad, expected, strict=True):
+            # A tenth of the way in from the corner, so the probe is inside.
+            probe = (int(x + (middle[0] - x) / 10), int(y + (middle[1] - y) / 10))
+            red, green, _ = out.getpixel(probe)
+            assert abs(red - u) <= 20 and abs(green - v) <= 20, (probe, (red, green))
+        # The diagonals TL-BR and TR-BL cross at the picture's centre.
+        (ax, ay), (bx, by), (cx, cy), (dx, dy) = quad
+        t = ((ax - bx) * (by - dy) - (ay - by) * (bx - dx)) / (
+            (ax - cx) * (by - dy) - (ay - cy) * (bx - dx)
+        )
+        red, green, _ = out.getpixel((round(ax + t * (cx - ax)), round(ay + t * (cy - ay))))
+        assert abs(red - 128) <= 4 and abs(green - 128) <= 4
+
+    def test_warp_coefficients_map_each_quad_corner_to_its_picture_corner(self, monkeypatch):
+        """Pillow's PERSPECTIVE maps an output (x, y) to the input
+        ((a x + b y + c) / (g x + h y + 1), (d x + e y + f) / (g x + h y + 1)):
+        each corner of the quad must land exactly on the picture's corner."""
+        seen: list[tuple[float, ...]] = []
+        transform = Image.Image.transform
+
+        def spy(self, size, method, data=None, *args, **kwargs):
+            seen.append(tuple(data))
+            return transform(self, size, method, data, *args, **kwargs)
+
+        monkeypatch.setattr(Image.Image, "transform", spy)
+        quad = [(60.0, 20.0), (150.0, 30.0), (180.0, 180.0), (20.0, 160.0)]
+        meme_render._warp(Image.new("RGB", (256, 128)), quad, (200, 200))
+
+        (a, b, c, d, e, f, g, h) = seen[-1]
+        for (x, y), (u, v) in zip(quad, [(0, 0), (256, 0), (256, 128), (0, 128)], strict=True):
+            w = g * x + h * y + 1
+            assert (a * x + b * y + c) / w == pytest.approx(u, abs=1e-6)
+            assert (d * x + e * y + f) / w == pytest.approx(v, abs=1e-6)
+
+    def test_slot_size_is_the_box_in_pixels(self, tmp_path):
+        slot = meme_render.Slot((0.0, 0.0, 0.5, 0.25), tmp_path / "m.png")
+        assert meme_render.slot_size(Image.new("RGB", (200, 100)), slot) == (100, 25)
+
+    @staticmethod
+    def _framed() -> Image.Image:
+        """10x10: a red frame two pixels thick around a green centre."""
+        picture = Image.new("RGB", (10, 10), (255, 0, 0))
+        picture.paste((0, 255, 0), (2, 2, 8, 8))
+        return picture
+
+    def _cover(self, tmp_path, size: tuple[int, int]) -> Image.Image:
+        Image.new("L", size, 255).save(tmp_path / "m.png")
+        slot = meme_render.Slot((0, 0, 1, 1), tmp_path / "m.png")
+        return meme_render.insert_pictures(
+            Image.new("RGB", size, "white"), (slot,), [self._framed()]
+        )
+
+    @staticmethod
+    def _is(pixel: tuple[int, int, int], colour: str) -> bool:
+        red, green, blue = pixel
+        if colour == "red":
+            return red > 200 and green < 60 and blue < 60
+        return green > 200 and red < 60 and blue < 60
+
+    def test_a_square_picture_covers_a_tall_slot_without_stretching(self, tmp_path):
+        """Scaled 2x to cover 6x20: the whole height shows (frame at top and
+        bottom) and the sides are cropped evenly, so the middle row is all
+        centre — a stretched picture would show the frame at the sides."""
+        out = self._cover(tmp_path, (6, 20))
+        assert self._is(out.getpixel((3, 1)), "red")
+        assert self._is(out.getpixel((3, 18)), "red")
+        for x in range(6):
+            assert self._is(out.getpixel((x, 10)), "green"), x
+
+    def test_a_square_picture_covers_a_wide_slot_without_stretching(self, tmp_path):
+        out = self._cover(tmp_path, (20, 6))
+        assert self._is(out.getpixel((1, 3)), "red")
+        assert self._is(out.getpixel((18, 3)), "red")
+        for y in range(6):
+            assert self._is(out.getpixel((10, y)), "green"), y
+
+    def test_cover_crops_the_overflow_from_the_centre(self, tmp_path):
+        """A picture in thirds (red, green, blue) covering a square slot
+        shows only its middle third, whichever way it overflows."""
+        Image.new("L", (10, 10), 255).save(tmp_path / "m.png")
+        slot = meme_render.Slot((0, 0, 1, 1), tmp_path / "m.png")
+        tall = Image.new("RGB", (10, 30), (255, 0, 0))
+        tall.paste((0, 255, 0), (0, 10, 10, 20))
+        tall.paste((0, 0, 255), (0, 20, 10, 30))
+        for picture in (tall, tall.transpose(Image.Transpose.TRANSPOSE)):
+            out = meme_render.insert_pictures(
+                Image.new("RGB", (10, 10), "white"), (slot,), [picture]
+            )
+            for xy in ((0, 0), (9, 0), (0, 9), (9, 9), (5, 5)):
+                assert self._is(out.getpixel(xy), "green"), xy
 
     def test_a_missing_picture_leaves_its_slot_blank(self, tmp_path):
         Image.new("L", (50, 50), 255).save(tmp_path / "m.png")
@@ -714,6 +823,47 @@ class TestRender:
         image = meme_render.load_image(buf.getvalue())
         assert image.mode == "RGB" and image.getpixel((0, 0)) == (255, 255, 255)
 
+    def test_load_image_keeps_opaque_pixels(self):
+        rgba = Image.new("RGBA", (20, 10), (255, 0, 0, 255))
+        buf = io.BytesIO()
+        rgba.save(buf, "PNG")
+        assert meme_render.load_image(buf.getvalue()).getpixel((0, 0)) == (255, 0, 0)
+
+    def test_layout_top_puts_one_row_per_caption_in_the_band(self):
+        """--top: the picture sits whole below the band, and each caption
+        gets its own row inside the band (lowercase, descenders and all)."""
+        picture = Image.new("RGB", (200, 160), (255, 0, 0))
+        out = _decode(
+            meme_render.render(
+                picture, meme_render.TOP_BOTTOM, ["going up", "and away"], layout_top=True
+            )
+        )
+        band = 160 // 4
+        assert out.size == (200, 160 + band)
+        assert out.crop((0, band, 200, 160 + band)).tobytes() == picture.tobytes()
+        white = Image.new("RGB", (200, band // 2), "white")
+        for top in (0, band // 2):
+            row = out.crop((0, top, 200, top + band // 2))
+            assert ImageChops.difference(row, white).getbbox() is not None, top
+
+    def test_wrapped_captions_stack_inside_the_box(self):
+        """A caption wrapped to three rows is drawn as three legible rows:
+        taller than one row would be, and every row inside the box."""
+        size = (200, 400)
+        bbox = _ink(
+            meme_render.render(
+                _gray(size), (meme_render.Box(0, 0, 1, 1),), ["hello there my good friend"]
+            ),
+            size,
+        )
+        assert bbox[1] > 0 and bbox[3] < size[1]
+        assert 120 < bbox[3] - bbox[1] < 240
+
+    def test_an_overlong_caption_still_renders(self):
+        caption = " ".join(["word"] * 100)
+        png = meme_render.render(_picture(), meme_render.TOP_BOTTOM, [caption, caption])
+        assert _decode(png).size == (200, 150)
+
 
 def _gray(size: tuple[int, int]) -> Image.Image:
     return Image.new("RGB", size, (128, 128, 128))
@@ -747,6 +897,13 @@ class TestBoxPlacement:
         )
         assert top[3] < size[1] // 2
         assert bottom[1] > size[1] // 2
+        # Pushed to the edge, not past it: a pad (a twentieth of the box)
+        # stays clear and the caption is as tall as a middle-aligned one.
+        middle = _ink(meme_render.render(_gray(size), (meme_render.Box(0, 0, 1, 1),), ["hi"]), size)
+        pad = size[1] / 20
+        assert top[1] >= pad - 2
+        assert bottom[3] <= size[1] - pad + 2
+        assert top[3] - top[1] == bottom[3] - bottom[1] == middle[3] - middle[1]
 
     def test_valign_defaults_to_middle(self):
         size = (200, 400)
@@ -775,6 +932,29 @@ class TestBoxPlacement:
         )
         assert abs(turned[0] - flat[0]) <= 6 and abs(turned[1] - flat[1]) <= 6
 
+    def test_an_angled_box_turns_its_caption(self):
+        size = (300, 300)
+        box = meme_render.Box(1 / 3, 1 / 3, 1 / 3, 1 / 3)
+        flat = _ink(meme_render.render(_gray(size), (box,), ["XOX"]), size)
+        turned = _ink(meme_render.render(_gray(size), (replace(box, angle=30.0),), ["XOX"]), size)
+        # Turned 30 degrees, a wide word stands taller than it does flat.
+        assert turned[3] - turned[1] > (flat[3] - flat[1]) * 1.5
+
+    def test_a_wide_angled_box_turns_whole_about_its_own_centre(self):
+        """An off-centre, non-square box: the turned caption is not clipped
+        to the box's flat outline and stays centred on the box."""
+        size = (400, 300)
+        box = meme_render.Box(0.1, 0.3, 0.8, 0.2, angle=20.0)  # centre (200, 120), 60 px tall
+        bbox = _ink(meme_render.render(_gray(size), (box,), ["hello there my friend"]), size)
+        assert bbox[3] - bbox[1] > 60
+        centre = _centre(bbox)
+        assert abs(centre[0] - 200) <= 6 and abs(centre[1] - 120) <= 6
+
+    def test_centred_caption_in_a_wide_band(self):
+        size = (400, 300)
+        bbox = _ink(meme_render.render(_gray(size), (meme_render.Box(0, 0, 1, 0.2),), ["hi"]), size)
+        assert abs(_centre(bbox)[0] - 200) <= 6
+
     def test_black_text_gets_a_white_outline(self):
         size = (200, 150)
         png = meme_render.render(
@@ -787,3 +967,86 @@ class TestBoxPlacement:
         assert meme_render._stroke("black", 3) == (3, "white")
         assert meme_render._stroke("white", 3) == (3, "black")
         assert meme_render._stroke("#ff0000", 3) == (1, "#000000")
+
+
+class TestCaptionText:
+    """Caption casing, row splits and font fitting (memegen's text rules)."""
+
+    @pytest.mark.parametrize(
+        ("style", "text", "lines", "expected"),
+        [
+            # upper: the Box default, the classic all-caps meme.
+            ("upper", "top text", ["top text"], "TOP TEXT"),
+            # none: the user's casing, verbatim (--top bands, label text).
+            ("none", "keep Me", ["keep Me"], "keep Me"),
+            ("none", "i know", ["i know"], "i know"),
+            ("none", "abcd", ["abcd"], "abcd"),
+            # default: an all-lowercase meme gets capitalised; "I", never "i".
+            ("default", "i know", ["i know", "ok"], "I know"),
+            ("default", "hello there", ["hello there", "bye"], "Hello there"),
+            ("default", "so i said", ["so i said"], "So I said"),
+            # ...but mixed case stays as typed, sentence or not.
+            ("default", "I use NixOS", ["I use NixOS"], "I use NixOS"),
+            ("default", "Go NixOS.", ["Go NixOS."], "Go NixOS."),
+            ("default", "hello there", ["hello there", "BYE"], "hello there"),
+            # mock: sPoNgEbOb alternation.
+            ("mock", "abcd", ["abcd"], "aBcD"),
+            ("mock", "abcdef", ["abcdef"], "aBcDeF"),
+        ],
+    )
+    def test_stylize(self, style, text, lines, expected):
+        assert meme_render._stylize(style, text, lines) == expected
+
+    def test_split_2_breaks_at_the_central_space(self):
+        assert meme_render._split_2("hello world") == "hello\nworld"
+
+    def test_split_3_makes_three_rows_of_about_a_third_each(self):
+        out = meme_render._split_3("aa bb cc dd ee ff")
+        assert "\n\n" not in out
+        assert [row.strip() for row in out.split("\n")] == ["aa bb", "cc dd", "ee ff"]
+
+    def test_fit_font_uses_the_full_size_when_the_text_fits(self):
+        assert meme_render._fit_font("thick", "hi", (400, 100), 50).size == 50
+
+    def test_fit_font_shrinks_a_long_caption_to_the_box_width(self):
+        text = "when you finally fix the bug and three more appear"
+        font = meme_render._fit_font("thick", text, (200, 30), 30)
+        assert meme_render.MINIMUM_FONT_SIZE < font.size < 30
+        assert meme_render._text_size(text, font)[0] <= 200
+
+    def test_fit_font_bounds_width_even_in_a_tall_box(self):
+        text = "when you finally fix the bug"
+        font = meme_render._fit_font("thick", text, (100, 400), 60)
+        assert meme_render._text_size(text, font)[0] <= 100 * 34 / 35
+
+    def test_fit_font_in_a_wide_short_band_is_height_limited(self):
+        """A 400x60 band (TOP_BOTTOM's shape): the height sets the size."""
+        font = meme_render._fit_font("thick", "HELLO WORLD", (400, 60), 60)
+        left, top, right, bottom = font.getbbox("HELLO WORLD")  # the ink
+        assert font.size > 30
+        assert right - left <= 400 and bottom - top <= 60
+
+    def test_wrap_keeps_a_short_caption_on_one_row(self):
+        assert meme_render._wrap("thick", "one does not", (600, 100), 60) == "one does not"
+
+    def test_wrap_keeps_one_row_when_it_is_as_big_as_two(self):
+        # One row only just fits at full size; two or three rows would be
+        # no bigger, so the caption stays one row.
+        assert meme_render._wrap("thick", "nice try", (196, 400), 60) == "nice try"
+
+    def test_wrap_uses_three_rows_for_a_long_caption(self):
+        text = "when you finally fix the bug and then three more appear right away"
+        assert meme_render._wrap("thick", text, (400, 150), 60).count("\n") == 2
+
+    def test_wrap_uses_two_rows_when_three_would_be_too_narrow(self):
+        text = "hello there my good friend"
+        assert meme_render._wrap("thick", text, (60, 30), 40).count("\n") == 1
+
+    def test_wrap_keeps_one_row_when_wrapped_text_would_be_too_narrow(self):
+        # Two rows fit bigger, but would fill under 60% of the width.
+        assert meme_render._wrap("thick", "hello world", (240, 400), 60) == "hello world"
+
+    def test_wrap_splits_an_overlong_caption_in_two(self):
+        text = " ".join(["word"] * 100)
+        out = meme_render._wrap("thick", text, (200, 30), 16)
+        assert isinstance(out, str) and out.count("\n") == 1
