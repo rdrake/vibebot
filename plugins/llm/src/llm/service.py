@@ -1009,6 +1009,16 @@ def _replies_repetitive(a: str, b: str) -> bool:
     return overlap >= _REPEAT_OVERLAP_THRESHOLD
 
 
+# The stand-in stored for a reminder mutation that sent nothing to IRC, as
+# "[<label>: <the tool's message>]". Keyed by tool name.
+REMINDER_MUTATION_CONTEXT_NOTES = {
+    "set_reminder": "reminder set",
+    "cancel_pending_task": "pending task cancelled",
+    "cancel_all_pending_tasks": "all pending tasks cancelled",
+}
+_CONTEXT_NOTE_PREFIXES = tuple(f"[{label}" for label in REMINDER_MUTATION_CONTEXT_NOTES.values())
+
+
 def _strip_repeated_replies(
     history: list[dict[str, str]] | None,
 ) -> list[dict[str, str]] | None:
@@ -1019,13 +1029,19 @@ def _strip_repeated_replies(
     next turn and the record would stay stuck. User turns and distinct
     assistant turns are kept. History windows are small, so the pairwise
     comparison is cheap.
+
+    Reminder notes are never judged. Two of them look alike, but each says
+    a request was handled; dropped, the requests read as unanswered and the
+    model set the reminder again on unrelated turns (2026-10-22: one reminder
+    fired twice, with a third copy pending for the next day).
     """
     if not history:
         return history
     replies = [
-        (i, str(m.get("content", "")))
+        (i, content)
         for i, m in enumerate(history)
         if m.get("role") == Role.ASSISTANT
+        and not (content := str(m.get("content", ""))).startswith(_CONTEXT_NOTE_PREFIXES)
     ]
     doomed: set[int] = set()
     for x in range(len(replies)):

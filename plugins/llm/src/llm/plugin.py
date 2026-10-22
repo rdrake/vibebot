@@ -58,6 +58,7 @@ from .profile import (
     PROFILES,
 )
 from .service import (
+    REMINDER_MUTATION_CONTEXT_NOTES,
     SILENT_TOOLS,
     AssistantRequestContext,
     AssistantResult,
@@ -168,12 +169,8 @@ _REQUEST_CONTEXT_CAPABILITIES = frozenset(
 # assistant turn reads back as an unanswered request, so the next turn
 # repeats the mutation. On 2026-09-03 "remind me to do the needful in 60s"
 # followed by "do so kindly" set the same reminder twice for that reason.
-_REMINDER_MUTATION_CONTEXT_NOTES = {
-    "set_reminder": "reminder set",
-    "cancel_pending_task": "pending task cancelled",
-    "cancel_all_pending_tasks": "all pending tasks cancelled",
-}
-_REMINDER_MUTATION_TOOLS = frozenset(_REMINDER_MUTATION_CONTEXT_NOTES)
+# The labels live in service.py, whose history strips must leave them alone.
+_REMINDER_MUTATION_TOOLS = frozenset(REMINDER_MUTATION_CONTEXT_NOTES)
 
 _FULL_ANSWER_LABEL = "Full answer"
 
@@ -5565,7 +5562,7 @@ class LLM(callbacks.Plugin):
             # history to attach to and binds to whatever else in the channel
             # mentioned a duration (observed 2026-09-03: it answered about
             # another user's request).
-            label = _REMINDER_MUTATION_CONTEXT_NOTES[result.last_successful_tool]
+            label = REMINDER_MUTATION_CONTEXT_NOTES[result.last_successful_tool]
             detail = result.last_tool_message.strip()
             return (f"[{label}: {detail}]" if detail else f"[{label}]"), True
 

@@ -2658,6 +2658,22 @@ class TestRepeatReplyGuard:
             {"role": "user", "content": "how's it going"},
         ]
 
+    def test_strip_repeated_replies_keeps_reminder_notes(self) -> None:
+        """Two reminder notes look alike, but each records an answered request.
+
+        Stripping them made both requests read as unanswered, and the model
+        set the reminder again on unrelated turns: on 2026-10-22 one reminder
+        fired twice, with a third copy still pending for the next day.
+        """
+        history = [
+            {"role": "user", "content": "remind me at 3 PM EDT tomorrow to use my Claude reset"},
+            {"role": "assistant", "content": "[reminder set: Reminder set for 3:00 PM tomorrow.]"},
+            {"role": "user", "content": "actually set that reminder to 11 AM tomorrow"},
+            {"role": "assistant", "content": "[pending task cancelled: Cancelled reminder #1.]"},
+            {"role": "assistant", "content": "[reminder set: Reminder set for 11:00 AM tomorrow.]"},
+        ]
+        assert _strip_repeated_replies(history) == history
+
     def test_strip_repeated_replies_keeps_clean_thread_intact(self) -> None:
         """GIVEN a thread with no repeats WHEN stripped THEN nothing drops."""
         history = [
