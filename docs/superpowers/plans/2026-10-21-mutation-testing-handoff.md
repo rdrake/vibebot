@@ -38,7 +38,19 @@ The sweep skips modules that already have a result, so an interrupted module sim
 - **Exit codes.** Exit 1 or 2 means `killed`, and `error4` (the mutant broke an import) counts as killed too. A run past 300 s is recorded as `timeout`.
 - **Output.** Each record has `{idx, line, desc, scope, src, status, tier, secs}`. `idx` indexes `enumerate_mutants(ast.parse(source))`. To reproduce a mutant, run `mutant_source(src, idx)` from `scripts/mutate.py` against the worktree source at `48b2f5e`.
 
-## Evaluation workflow: RUNNING (2026-10-22)
+## Evaluation results: 33 modules DONE and on main (2026-10-22)
+
+- **Report:** `~/.cache/vibebot-mutation/eval/report.md`. The full result JSON is in `eval/result.json`.
+- **Findings:** 329 confirmed gaps (19 high, 305 med, 5 low).
+- **On main** at `24b3b33`, pushed: 213 tests and 4 code fixes. The fixes are scheduled-task `@instruct` as fenced data, blocked-draw rewriter spend, storybook cap 0, and verse tools no longer reporting ok when nothing was written.
+- **Open:**
+  - `plugin.py` evaluation, whose sweep is still running.
+  - Anthropic reply and cost tests in `provider.py`: thinning left 21 mutants uncovered.
+  - Re-mutate `meme_render`, `compaction`, `github`, `usertz` and `persistence`.
+  - 611 unverified low gaps.
+- **Script fix:** the evaluation script now treats a finding that a skeptic skipped as unverified.
+
+## Evaluation workflow (first run, 2026-10-22)
 
 - **Launched** on the 33 finished modules, everything except `plugin.py`, whose sweep is still running.
   - Run ID: `wf_49fc9b59-7da`.
