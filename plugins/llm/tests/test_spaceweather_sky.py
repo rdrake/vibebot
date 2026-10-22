@@ -121,6 +121,21 @@ def test_effective_levels_cancel_clears_older_watch():
     assert spaceweather.effective_levels(ws, today=date(2026, 10, 11)) == {}
 
 
+def test_watch_without_by_day_block_has_no_levels():
+    alert = {
+        "product_id": "A30F",
+        "message": (
+            "Space Weather Message Code: WATA30\r\nSerial Number: 287\r\n"
+            "Issue Time: 2026 Oct 10 1200 UTC\r\n\r\nWATCH: Geomagnetic Storm "
+            "Category G2 Predicted\r\nComment: \r\n"
+        ),
+    }
+    (w,) = spaceweather.parse_watches([alert])
+    assert w.serial == 287
+    assert w.levels == {}
+    assert spaceweather.effective_levels([w], today=date(2026, 10, 10)) == {}
+
+
 def _utc_from_local(y, m, d, hh, mm, offset_hours):
     return datetime(y, m, d, hh, mm, tzinfo=UTC) - timedelta(hours=offset_hours)
 
@@ -170,6 +185,16 @@ def test_sun_altitude_known_values():
     assert 85 < alt <= 90
     # Same moment at 180 E: local midnight, sun far below.
     assert spaceweather.sun_altitude(0.0, 180.0, datetime(2026, 3, 20, 12, 0, tzinfo=UTC)) < -80
+
+
+def test_sun_altitude_uses_seconds_as_fractions_of_a_minute():
+    toronto = (43.65, -79.38)
+    on_minute = spaceweather.sun_altitude(*toronto, datetime(2026, 10, 12, 1, 0, tzinfo=UTC))
+    late = spaceweather.sun_altitude(*toronto, datetime(2026, 10, 12, 1, 0, 59, tzinfo=UTC))
+    assert abs(late - on_minute) < 0.3
+    # A live clock reading has seconds: 1 am local is dark, 1 pm local is not.
+    assert spaceweather.is_dark(*toronto, datetime(2026, 10, 12, 5, 0, 12, tzinfo=UTC))
+    assert not spaceweather.is_dark(*toronto, datetime(2026, 10, 11, 17, 0, 12, tzinfo=UTC))
 
 
 def test_ovation_overhead_and_poleward():

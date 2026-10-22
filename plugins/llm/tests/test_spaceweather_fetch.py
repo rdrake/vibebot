@@ -7,6 +7,7 @@ import http.client
 import io
 import json
 import os
+import random
 import urllib.error
 from datetime import UTC, datetime
 from pathlib import Path
@@ -130,6 +131,38 @@ def test_full_size_rtsw_feed_fetches(gzipped):
     opener = FakeOpener(gzip.compress(raw), headers=GZIP) if gzipped else FakeOpener(raw)
     got = sw.fetch_json(sw.SWPC + sw.WIND_PATH, max_bytes=sw.MAX_BYTES, opener=opener)
     assert len(got) == len(json.loads(raw))
+
+
+def test_full_size_ovation_grid_fetches():
+    # The live OVATION grid is every 1-degree cell: ~918 KB raw, ~140 KB gzip.
+    rng = random.Random(0)
+    grid = {
+        "Observation Time": "2026-10-11T13:24:00Z",
+        "Forecast Time": "2026-10-11T14:12:00Z",
+        "Data Format": "[Longitude, Latitude, Aurora]",
+        "coordinates": [
+            [lo, la, rng.randint(0, 100) if abs(la) >= 50 else rng.randint(0, 3)]
+            for lo in range(360)
+            for la in range(-90, 91)
+        ],
+        "type": "MultiPoint",
+    }
+    raw = json.dumps(grid, separators=(",", ":")).encode()
+    assert len(raw) > 700_000
+    body = gzip.compress(raw)
+    assert len(body) > 100_000
+    opener = FakeOpener(body, headers=GZIP)
+    got = sw.fetch_json(sw.SWPC + sw.OVATION_PATH, max_bytes=sw.OVATION_MAX_BYTES, opener=opener)
+    assert len(got["coordinates"]) == 360 * 181
+    cells = {(lo, la): p for lo, la, p in grid["coordinates"]}
+    assert sw.ovation_at(got, 64.8, -147.7)["overhead_pct"] == cells[(212, 65)]
+
+
+def test_no_opener_uses_the_no_redirect_opener(monkeypatch):
+    opener = opener_for({"ok": True})
+    monkeypatch.setattr(sw, "_no_redirect_opener", lambda: opener)
+    assert sw.fetch_json(sw.SWPC + sw.KP_PATH, max_bytes=1000) == {"ok": True}
+    assert opener.request is not None
 
 
 def test_gzip_bomb_raises():
@@ -310,6 +343,20 @@ def test_parse_kp_includes_block_in_progress_and_skips_junk():
     blocks = sw.parse_kp(rows, now=datetime(2026, 10, 11, 10, 30, tzinfo=UTC))
     assert [b["kp"] for b in blocks] == [3.0]
     assert blocks[0]["scale"] is None
+
+
+def test_parse_kp_skips_header_row_and_missing_time_tag():
+    # The Kp product was once a list of lists with a header row.
+    rows = [
+        ["time_tag", "kp", "observed", "noaa_scale"],
+        {"time_tag": None, "kp": 5.0, "observed": "predicted", "noaa_scale": "G1"},
+        {"kp": 6.0, "observed": "predicted", "noaa_scale": "G2"},
+        {"time_tag": "2026-10-11T09:00:00", "kp": 3.0, "observed": "observed", "noaa_scale": None},
+    ]
+    blocks = sw.parse_kp(rows, now=datetime(2026, 10, 11, 10, 30, tzinfo=UTC))
+    assert [(b["start"], b["kp"]) for b in blocks] == [
+        (datetime(2026, 10, 11, 9, 0, tzinfo=UTC), 3.0)
+    ]
 
 
 class _BrokenRead:

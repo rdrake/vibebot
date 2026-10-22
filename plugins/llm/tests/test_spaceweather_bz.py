@@ -202,3 +202,53 @@ def test_northward_minutes_excluded_from_ey():
 def test_nan_never_reaches_samples():
     samples = spaceweather.parse_rtsw([_mag_row("2026-10-11T11:59:00", float("nan"))], [])
     assert samples[0].bz is None and not math.isnan(samples[0].bt)
+
+
+def test_row_without_time_tag_is_skipped():
+    mag = [
+        {"active": True, "source": "ACE", "bz_gsm": -12.0, "bt": 5.0},
+        {"time_tag": None, "active": True, "source": "ACE", "bz_gsm": -12.0, "bt": 5.0},
+        _mag_row("2026-10-11T11:59:00", -12.0),
+    ]
+    samples = spaceweather.parse_rtsw(mag, [])
+    assert [s.ts for s in samples] == [datetime(2026, 10, 11, 11, 59, tzinfo=UTC)]
+
+
+def test_moderate_southward_bz_is_not_storm_conditions():
+    # Bz at -6 nT for 3 h: southward, but never at the -10 nT threshold.
+    samples = _series(190, -6.0)
+    assert not spaceweather.storm_conditions(samples, now=NOW, **STORM)
+    assert spaceweather.advance_episode(None, samples, now=NOW, **STORM) is None
+
+
+def test_half_the_window_at_threshold_is_not_storm_conditions():
+    # Alternating -12 / -8 nT: only half the minutes are at or below -10 nT, so
+    # not "most of the last 3 hours", though the 30-minute mean sits at -10 nT.
+    samples = [
+        Sample(ts=NOW - timedelta(minutes=i), bz=-12.0 if i % 2 else -8.0, bt=12.0, speed=600.0)
+        for i in range(179, -1, -1)
+    ]
+    assert spaceweather.trailing_mean_bz(samples, now=NOW) == pytest.approx(-10.0)
+    assert not spaceweather.storm_conditions(samples, now=NOW, **STORM)
+    assert spaceweather.advance_episode(None, samples, now=NOW, **STORM) is None
+
+
+def test_storm_already_ending_does_not_start_episode():
+    # Most of the 3 h at -15 nT, but the last 30 min strongly northward: the
+    # 30-minute mean is above -5 nT, so there is no episode to start.
+    samples = _series(150, -15.0, end=NOW - timedelta(minutes=30)) + _series(30, 10.0)
+    assert spaceweather.storm_conditions(samples, now=NOW, **STORM)
+    assert spaceweather.advance_episode(None, samples, now=NOW, **STORM) is None
+
+
+def test_running_episode_reports_current_speed():
+    ep = spaceweather.advance_episode(_running(), _series(60, -12.0, speed=450.0), now=NOW, **STORM)
+    assert ep is not None
+    assert ep.latest_speed == pytest.approx(450.0)
+    assert ep.lead_minutes == round(1.5e6 / 450.0 / 60)
+
+    # No recent speed data: keep the last known speed.
+    ep = spaceweather.advance_episode(_running(), _series(60, -12.0, speed=None), now=NOW, **STORM)
+    assert ep is not None
+    assert ep.latest_speed == pytest.approx(600.0)
+    assert ep.lead_minutes == 42
