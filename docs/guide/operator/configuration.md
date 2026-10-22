@@ -35,7 +35,7 @@ API keys are **not** part of the Limnoria registry. They come from environment v
 | `ANTHROPIC_API_KEY` | Anthropic (`anthropic/` models) |
 | `XAI_API_KEY` | xAI (`xai/` models) |
 
-These are the only two providers the bot can call. With the defaults, chat and `@meme` need `ANTHROPIC_API_KEY`, and search, `@draw`, meme picture edits and the refusal fallback need `XAI_API_KEY`, because they run on fixed xAI models (see [Model selection](#model-selection)).
+These are the only two providers the bot can call. With the defaults, chat and the `@meme` template picker need `ANTHROPIC_API_KEY` (a named template with captions renders locally and calls no model), and search, subject research, `@draw`, meme picture edits and the refusal fallback need `XAI_API_KEY`, because they run on fixed xAI models (see [Model selection](#model-selection)).
 
 Copy `.env.example` to `~/.config/vibebot/env` and set the variables there; the systemd unit passes that file to the container with `--env-file` (see [Installation](installation.md)). A model whose provider has no key configured fails with an error naming the missing variable, for example `no API key configured for provider 'xai' (set XAI_API_KEY)`.
 
@@ -46,17 +46,17 @@ Models are `provider/name` strings, and the provider must be `anthropic/` or `xa
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
 | `assistantModel` | channel | `anthropic/claude-haiku-5-5` | All assistant text and tool work: chat, planner, memory, reminders, scheduled tasks. Needs vision support if users paste image URLs |
-| `memoryModel` | channel | empty | Model for the memory extraction that runs after every reply. Falls back to `assistantModel`. A cheap model is enough |
+| `memoryModel` | channel | empty | Model for the memory extraction that runs after a stored `@ask` or chat reply to an authenticated user. Falls back to `assistantModel`. A cheap model is enough |
 | `verseModel` | channel | empty | Model for verse-mode replies. Falls back to `assistantModel`. Set this when the assistant model is a terse reasoning model that writes poor prose |
 
 The other roles run on fixed models:
 
 | Role | Model | Notes |
 |------|-------|-------|
-| Refusal fallback | `xai/grok-4-1-fast-non-reasoning` | Re-runs a chat turn once when its model refuses: a policy refusal that survives its one retry, or a provider refusal error. The fallback gets the original request without the refusal. Skipped when the turn already runs on this model, when `XAI_API_KEY` is unset, or when a tool that changes something (a reminder, an image, a memory) already worked this turn, since the re-run would repeat it. Its cost books at `xai/grok-4.3` rates, the model behind the alias |
+| Refusal fallback | `xai/grok-4-1-fast-non-reasoning` | Re-runs a chat turn once when its model refuses: an Anthropic `stop_reason` refusal (at once, with no retry), a policy refusal that survives its one retry, or a provider refusal error. The fallback gets the original request without the refusal. Skipped when the turn already runs on this model, when `XAI_API_KEY` is unset, or when a tool that changes something (a reminder, an image, a memory) already worked this turn, since the re-run would repeat it. Its cost books at `xai/grok-4.3` rates, the model behind the alias |
 | Images | `xai/grok-imagine-image` | `@draw`, `@story` and the `generate_image` tool |
 | Search | `xai/grok-4.3` | Web search, URL fetch and [subject research](#subject-research). GitHub links skip it: they are read through GitHub's API. A request can run at most three searches |
-| Meme picker | `anthropic/claude-haiku-5-5` | Picks a template and writes captions when `@meme` (or `make_meme`'s `brief`) names no template the catalog knows. It opens on a short list (the 40 most popular templates plus up to 20 sharing a word with the request, about 5K prompt tokens) and can call a `search_templates` tool up to twice to reach the rest of the catalog. No search: one call, about 5K tokens, 2 s. Each search is another round trip: about 12K tokens and 4 s with one, 19K and 6 s with two. Under $0.003 either way |
+| Meme picker | `anthropic/claude-haiku-5-5` | Picks a template and writes captions when `@meme` (or `make_meme`'s `brief`) names no template the catalog knows. It opens on a short list (the 40 most popular templates plus up to 20 sharing a word with the request, about 5K prompt tokens) and can call a `search_templates` tool up to twice to reach the rest of the catalog. No search: one call, about 5K tokens, 2 s. Each search is another round trip: about 12K tokens and 4 s with one, 19K and 6 s with two. Under $0.003 either way. [Subject research](#subject-research) runs first, adding one search-model call and a few seconds to every picker request |
 | Meme picture edits | `xai/grok-imagine-image` | The picker's `draw` (and `make_meme`'s). Templates with picture slots get one generated picture per slot (`/v1/images/generations`), masked into the blank; other templates send the captioned meme to `/v1/images/edits`. About $0.02 per picture, refusals billed too |
 | Verse compaction | `anthropic/claude-haiku-5-5` | The daily verse compaction job |
 
@@ -85,7 +85,8 @@ planner's prompt. A request that names nobody real — "a pine forest at
 sunrise" — comes back with nothing and adds nothing to the prompt.
 
 The cost is one extra call and a few seconds, so `@draw` is visibly
-slower than the image call alone. The typing indicator covers the wait. The usage table
+slower than the image call alone. The `@meme` template picker runs the same
+research before it picks, so a meme of a real person carries what they look like. The typing indicator covers the wait. The usage table
 records research costs under the command name `dossier`, separately from the
 planner's own row, because the two run on different models.
 
@@ -108,7 +109,7 @@ The system prompt defines the bot's personality and constraints. It is channel-o
 |---------|-------------|
 | `assistantSystemPrompt` | Personality and constraints for all assistant work. Verse mode layers scene context on top of this prompt rather than replacing it |
 
-The default carries constraints worth keeping: `assistantSystemPrompt` holds replies to one to three lines of plain text with no markdown. Read the shipped text before you replace it — `@config default plugins.LLM.assistantSystemPrompt` — because a replacement drops those constraints with it.
+`assistantSystemPrompt` is a personality overlay: the bot appends it to a fixed framework prompt and never lets it replace that prompt. The structural rules (the three-line cap, plain text, no markdown) live in the framework and survive any replacement, so this setting changes the bot's voice, not its output format. Read the shipped text before you replace it: `@config default plugins.LLM.assistantSystemPrompt`.
 
 Example: give a channel a specialised personality:
 
@@ -146,7 +147,7 @@ Turning `verseStorybookEnabled` off does not stop image costs on its own, becaus
 
 ## Memory
 
-Memory extraction always runs after a reply; `memoryModel` (under [Model selection](#model-selection)) picks its model. A candidate fact needs 2 mentions before it is promoted, an unreinforced candidate is pruned after 14 days, durable memories are capped at 50 per user, and cleanup runs every 3 extraction passes that promote something.
+Memory extraction runs after a stored `@ask` or chat reply to an authenticated user, and stops once that user holds 50 durable memories; `memoryModel` (under [Model selection](#model-selection)) picks its model. A candidate fact needs 2 mentions before it is promoted, an unreinforced candidate is pruned after 14 days, durable memories are capped at 50 per user, and cleanup runs every 3 extraction passes that promote something.
 
 See [Memory promotion](memory-promotion.md) for how the two-stage pipeline works.
 
@@ -171,11 +172,11 @@ Two bots that answer each other never get bored, so replies to another bot are c
 |---------|-------|---------|-------------|
 | `botLoopHostSuffixes` | global | `Bot.AfterNET.Org` | Host suffixes the network reserves for bots. Matched case-insensitively against the sender's host. A sender matched here, or one with the +B mode, cannot address the bot by replying to its lines. A full host works too, for a bot on a user host |
 
-A nick counts as a bot only when the network says so, by either of two signals. AfterNET advertises `BOT=B` and marks flagged users in the WHOX status field, which is where the bot reads it — six nicks carry it today, long-running service bots among them. Anyone unflagged is treated as a person and is never capped, and a human *addressing the bot* clears the counts in that channel, so a conversation someone has joined is never cut short. Only addressed lines reset it: what people say during a bot loop is commentary on the noise ("wtf", "jesus"), and treating that as a reset would license three more replies after every such line.
+A nick counts as a bot only when the network says so. AfterNET advertises `BOT=B`, so a `+B` sender's lines carry the IRCv3 `bot` message tag, which the bot reads on the first line; once a WHO answers, the flag in the WHOX status field is the fallback — six nicks carry it today, long-running service bots among them. Anyone unflagged is treated as a person and is never capped, and a human *addressing the bot* clears the counts in that channel, so a conversation someone has joined is never cut short. Only addressed lines reset it: what people say during a bot loop is commentary on the noise ("wtf", "jesus"), and treating that as a reset would license three more replies after every such line.
 
 The `+B` mode is opt-in, and the bot most likely to loop with yours may not set it — `grok` answers on `Hxz` from `grok.Bot.AfterNET.Org`. So the sender's host counts too: AfterNET only issues `*.Bot.AfterNET.Org` to registered bots, and across a full day of channel logs the only nicks on one were `grok`, `grook5`, and `vibebot` itself. The host is checked first because it is free and decides on the very first line, with no WHO round trip.
 
-Because the bot skips Limnoria's automatic WHO on join when `account-tag` and `extended-join` are active, the flag is fetched on demand: the first time an unknown nick addresses the bot, a WHO goes out for that nick and the answer is cached for an hour. That first line is always answered — the guard fails open, so the worst case is one extra reply, never a silenced user. A bot that never sets `+B` is invisible to this and will not be capped.
+Because the bot skips Limnoria's automatic WHO on join when `account-tag` and `extended-join` are active, the flag is fetched on demand: the first time an unknown nick addresses the bot, a WHO goes out for that nick. The answer is kept until restart, and a WHO that gets no answer is re-sent at most once an hour. That first line is always answered — the guard fails open, so the worst case is one extra reply, never a silenced user. A bot that never sets `+B` is invisible to this and will not be capped.
 
 ## Web and HTTP output
 
@@ -211,7 +212,7 @@ Every failure falls back to local storage: endpoint unreachable, upload rejected
 | `bridgeDebugInChannel` | channel | `False` | Append a bridge-call debug footer to replies |
 | `memeAliases` | global | `tyrone=yallgot biggums=yallgot chappelle=yallgot` | Extra template names, `name=id` or `name=https://image`. An id target adds the name as a keyword on that template; a URL target adds a two-caption template drawn on that image. Hyphens for spaces in the name |
 
-The bridge never exposes or runs state-changing commands. A creator can hold at most 5 active scheduled LLM tasks per channel. The `irc_lookup` tool (live `LIST`, `NAMES`, `WHOIS`, `WHO`, topic, network info, CTCP) is always on the chat tool surface; its `history` kind also needs `privacyOptInOnly` off. The models behind `@meme` are listed under [Model selection](#model-selection).
+The bridge never exposes the state-changing commands listed in `MUTATING_COMMANDS`, which covers the curated default plugins. Allowlisting another plugin exposes its unlisted commands, subject only to Limnoria capabilities. A creator can hold at most 5 active scheduled LLM tasks per channel. The `irc_lookup` tool (live `LIST`, `NAMES`, `WHOIS`, `WHOWAS`, `WHO`, topic, network info, CTCP) is always on the chat tool surface; its `history` kind also needs `privacyOptInOnly` off. The models behind `@meme` are listed under [Model selection](#model-selection).
 
 See [Tuning and monitoring](tuning-monitoring.md) for the bridge's security model and the scheduled-task tool.
 
