@@ -89,9 +89,10 @@ class TestWhowas:
 
 class TestNickTargets:
     @pytest.mark.parametrize("kind", ["whowas", "ctcp_version", "ctcp_ping"])
-    @pytest.mark.parametrize("target", ["#afternet", "", "n" * 65])
+    @pytest.mark.parametrize("target", ["#afternet", "", "n" * 65, "larry,curly"])
     def test_non_nick_target_is_refused_without_sending(self, env, kind, target) -> None:
-        """A CTCP to "#afternet" would go to the whole channel."""
+        """A CTCP to "#afternet" would go to the whole channel, and one to
+        "larry,curly" to two people."""
         plugin, irc, _ = env
 
         assert lookup(plugin, irc, kind=kind, target=target) == {"error": "target must be a nick"}

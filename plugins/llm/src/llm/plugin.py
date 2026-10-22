@@ -4470,8 +4470,12 @@ class LLM(callbacks.Plugin):
         """irc_lookup kinds past channels/names/whois; None for an unknown kind."""
         silent = {"error": self._IRC_QUERY_SILENT}
         needs_nick = kind in ("whowas", "ctcp_version", "ctcp_ping")
+        # PRIVMSG/NOTICE/WHOWAS targets are comma-separated: "a,b" would hit two.
         if needs_nick and (
-            not target or len(target) > 64 or not ircutils.isNick(target, strictRfc=False)
+            not target
+            or len(target) > 64
+            or "," in target
+            or not ircutils.isNick(target, strictRfc=False)
         ):
             return {"error": "target must be a nick"}
         if kind in ("who", "topic") and not ircutils.isChannel(target):
