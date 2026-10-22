@@ -9,6 +9,7 @@ import pytest
 from llm.usertz import (
     SOURCE_CTCP,
     SOURCE_SET,
+    UTC_DEFAULT,
     UserTz,
     format_offset,
     needs_zone,
@@ -59,6 +60,16 @@ class TestUserTzLabel:
     def test_fixed_offset_shows_offset_only(self) -> None:
         tz = UserTz(tz=timezone(timedelta(hours=-4)), source=SOURCE_CTCP)
         assert tz.label(NOW) == "UTC-04:00"
+
+    def test_utc_default_is_labelled_utc(self) -> None:
+        # The fallback for a user with no zone: absolute times are UTC.
+        assert UTC_DEFAULT.label(NOW) == "UTC"
+        assert UserTz(tz=ZoneInfo("UTC"), source=SOURCE_SET).label(NOW) == "UTC"
+
+    def test_named_zone_at_zero_offset_shows_utc(self) -> None:
+        # London in winter sits at UTC+0; the label never shows a nonzero offset.
+        tz = UserTz(tz=ZoneInfo("Europe/London"), source=SOURCE_SET)
+        assert tz.label(datetime(2026, 12, 1, tzinfo=UTC)) == "Europe/London (UTC)"
 
 
 class TestOffsetFromCtcpTime:
