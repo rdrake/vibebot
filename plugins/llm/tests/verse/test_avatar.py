@@ -759,6 +759,61 @@ class TestDispatchContract:
         assert result == VerseDispatchResult(ok=False, error="no such place")
         assert store.get_attribute(alice_id, "location") == "The Clearing"
 
+    @pytest.mark.parametrize(
+        ("tool", "args", "needle"),
+        [
+            ("verse_act", {}, "verb"),
+            ("verse_act", {"verb": ""}, "verb"),
+            ("verse_move", {}, "place_name"),
+            ("verse_move", {"place_name": ""}, "place_name"),
+        ],
+    )
+    def test_missing_required_arg_is_not_ok(
+        self, store: VerseStore, tool: str, args: dict, needle: str
+    ) -> None:
+        """A call missing its required arg did nothing, so it must not be
+        reported as a success — the model would narrate an act or move that
+        never happened. The error names the missing arg so the model can fix
+        the call."""
+        alice_id = _opt_in(store)
+        events_before = len(store.recent_events(limit=100))
+
+        result = dispatch_verse_tool_call(store, alice_id, tool, args)
+        assert result.ok is False
+        assert needle in (result.error or "")
+
+        payload = json.loads(make_verse_extra_handlers(store, alice_id)[tool](args).content)
+        assert payload["status"] == "error"
+        assert needle in payload["error"]
+
+        assert store.get_attribute(alice_id, "location") == "The Clearing"
+        assert len(store.recent_events(limit=100)) == events_before
+
+    def test_unexpected_exception_is_not_ok(self, store: VerseStore) -> None:
+        """A DB failure (disk I/O error, DB deleted mid-session) means nothing
+        was written: the model must see an error, not a success it narrates."""
+        import sqlite3
+        from contextlib import contextmanager
+        from unittest.mock import patch
+
+        alice_id = _opt_in(store)
+        events_before = len(store.recent_events(limit=100))
+
+        @contextmanager
+        def _boom():  # type: ignore[return]
+            raise sqlite3.OperationalError("disk I/O error")
+            yield  # pragma: no cover
+
+        with patch.object(store, "write_transaction", _boom):
+            result = dispatch_verse_tool_call(store, alice_id, "verse_act", {"verb": "speak"})
+            handler = make_verse_extra_handlers(store, alice_id)["verse_act"]
+            payload = json.loads(handler({"verb": "speak"}).content)
+
+        assert result.ok is False
+        assert result.error
+        assert payload["status"] == "error"
+        assert len(store.recent_events(limit=100)) == events_before
+
     def test_verse_act_failure_text_reaches_model(self, store: VerseStore) -> None:
         """verse_act's in-world failure text ('You can't find that place.')
         is carried in the payload instead of being dropped for a bare ok."""
