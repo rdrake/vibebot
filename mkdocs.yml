@@ -27,8 +27,8 @@ theme:
         icon: material/weather-night
         name: Switch to system preference
   font:
-    text: IBM Plex Sans
-    code: IBM Plex Mono
+    text: Atkinson Hyperlegible Next
+    code: JetBrains Mono
   icon:
     repo: fontawesome/brands/github
   features:
@@ -62,8 +62,6 @@ plugins:
           - operator/operations.md
           - operator/configuration.md
           - operator/*.md
-        Plugins:
-          - plugins/*.md
         Reference:
           - reference/*.md
         User guide:
@@ -82,6 +80,7 @@ markdown_extensions:
   - tables
   - toc:
       permalink: true
+      title: On this page
 
 nav:
   - Home: index.md
@@ -93,10 +92,6 @@ nav:
     - Scheduled tasks: user/scheduled-tasks.md
     - Service status: user/service-status.md
     - Aurora: user/aurora.md
-  - Plugins:
-    - Overview: plugins/index.md
-    - LLM: plugins/llm.md
-    - NickInMiddle: plugins/nickinmiddle.md
   - Operator guide:
     - Installation and deployment: operator/installation.md
     - Operations and auto-updates: operator/operations.md
@@ -109,3 +104,5 @@ nav:
   - Reference:
     - Command reference: reference/commands.md
     - Bridge tools: reference/bridge-tools.md
+    - Internals: reference/internals.md
+    - NickInMiddle: reference/nickinmiddle.md

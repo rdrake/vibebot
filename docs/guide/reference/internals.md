@@ -1,4 +1,4 @@
-# LLM plugin
+# Internals
 
 The LLM plugin is VibeBot's main AI surface. It provides
 natural-language chat, image generation, illustrated stories,
