@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from typing import TYPE_CHECKING
@@ -1275,9 +1276,10 @@ class TestStartupNotification:
         mock_irc.queueMsg.assert_called_once()
         queued_msg = mock_irc.queueMsg.call_args[0][0]
         assert queued_msg.args[0] == "owner_nick"
-        assert "VibeBot started" in queued_msg.args[1]
-        assert "2 channels" in queued_msg.args[1]
-        assert "UTC" in queued_msg.args[1]
+        assert re.fullmatch(
+            r"VibeBot started \| 2 channels \| \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC",
+            queued_msg.args[1],
+        )
 
     def test_send_startup_notification_handles_no_owner(
         self, plugin_with_mocks: tuple, mocker: MockerFixture

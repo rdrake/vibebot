@@ -5,13 +5,13 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/rdrake/vibebot-v8/v9/ircout"
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
-	"github.com/rdrake/vibebot-v8/v9/overlay"
-	"github.com/rdrake/vibebot-v8/v9/persist"
-	"github.com/rdrake/vibebot-v8/v9/router"
-	"github.com/rdrake/vibebot-v8/v9/router/profile"
-	"github.com/rdrake/vibebot-v8/v9/tooling"
+	"github.com/rdrake/vibebot/v9/ircout"
+	"github.com/rdrake/vibebot/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/overlay"
+	"github.com/rdrake/vibebot/v9/persist"
+	"github.com/rdrake/vibebot/v9/router"
+	"github.com/rdrake/vibebot/v9/router/profile"
+	"github.com/rdrake/vibebot/v9/tooling"
 )
 
 // Config bundles the executor's dependencies.

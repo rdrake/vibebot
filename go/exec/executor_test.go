@@ -9,16 +9,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rdrake/vibebot-v8/v9/exec"
-	"github.com/rdrake/vibebot-v8/v9/ircout"
-	ircfake "github.com/rdrake/vibebot-v8/v9/ircout/fake"
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
-	llmfake "github.com/rdrake/vibebot-v8/v9/llmcore/fake"
-	overlayfake "github.com/rdrake/vibebot-v8/v9/overlay/fake"
-	persistfake "github.com/rdrake/vibebot-v8/v9/persist/fake"
-	"github.com/rdrake/vibebot-v8/v9/router"
-	"github.com/rdrake/vibebot-v8/v9/router/profile"
-	toolfake "github.com/rdrake/vibebot-v8/v9/tooling/fake"
+	"github.com/rdrake/vibebot/v9/exec"
+	"github.com/rdrake/vibebot/v9/ircout"
+	ircfake "github.com/rdrake/vibebot/v9/ircout/fake"
+	"github.com/rdrake/vibebot/v9/llmcore"
+	llmfake "github.com/rdrake/vibebot/v9/llmcore/fake"
+	overlayfake "github.com/rdrake/vibebot/v9/overlay/fake"
+	persistfake "github.com/rdrake/vibebot/v9/persist/fake"
+	"github.com/rdrake/vibebot/v9/router"
+	"github.com/rdrake/vibebot/v9/router/profile"
+	toolfake "github.com/rdrake/vibebot/v9/tooling/fake"
 )
 
 type harness struct {

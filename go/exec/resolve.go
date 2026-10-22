@@ -3,8 +3,8 @@ package exec
 import (
 	"fmt"
 
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
-	"github.com/rdrake/vibebot-v8/v9/tooling"
+	"github.com/rdrake/vibebot/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/tooling"
 )
 
 // ResolveSchemas converts tool names into ToolSchema via the dispatcher.

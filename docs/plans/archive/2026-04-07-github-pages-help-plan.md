@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python, GitHub Actions, GitHub Pages
 
-**Before starting:** Enable GitHub Pages on the repo (source: GitHub Actions) via: `gh api repos/rdrake/vibebot-v8/pages -X POST -f build_type=workflow`
+**Before starting:** Enable GitHub Pages on the repo (source: GitHub Actions) via: `gh api repos/rdrake/vibebot/pages -X POST -f build_type=workflow`
 
 ---
 
@@ -197,7 +197,7 @@ git commit -m "feat: add build script for GitHub Pages help page"
 **Step 1: Enable GitHub Pages**
 
 ```bash
-gh api repos/rdrake/vibebot-v8/pages -X POST -f build_type=workflow
+gh api repos/rdrake/vibebot/pages -X POST -f build_type=workflow
 ```
 
 If it fails because Pages is already enabled, that's fine.
@@ -281,11 +281,11 @@ def test_get_plugin_help_uses_help_url_config(self, mocker: MockerFixture) -> No
     mocker.patch("llm.plugin.schedule")
     mocker.patch("llm.plugin.LLMDatabase")
     plugin = LLM(mocker.MagicMock())
-    mocker.patch.object(plugin, "registryValue", return_value="https://rdrake.github.io/vibebot-v8/")
+    mocker.patch.object(plugin, "registryValue", return_value="https://rdrake.github.io/vibebot/")
 
     result = plugin.getPluginHelp()
 
-    assert "https://rdrake.github.io/vibebot-v8/" in result
+    assert "https://rdrake.github.io/vibebot/" in result
     assert "ask" in result
 ```
 
@@ -304,7 +304,7 @@ conf.registerGlobalValue(
     LLM,
     "helpUrl",
     registry.String(
-        "https://rdrake.github.io/vibebot-v8/",
+        "https://rdrake.github.io/vibebot/",
         _("""URL to the help documentation page. Shown in plugin help output."""),
     ),
 )
@@ -526,7 +526,7 @@ gh run list --limit 5
 Wait for the "Deploy Help Page" workflow to complete, then verify:
 
 ```bash
-curl -sI https://rdrake.github.io/vibebot-v8/
+curl -sI https://rdrake.github.io/vibebot/
 ```
 
 Expected: HTTP 200 with `content-type: text/html`.
@@ -534,7 +534,7 @@ Expected: HTTP 200 with `content-type: text/html`.
 **Step 4: Verify the page content**
 
 ```bash
-curl -s https://rdrake.github.io/vibebot-v8/ | grep -o '%[a-z]*' | sort -u
+curl -s https://rdrake.github.io/vibebot/ | grep -o '%[a-z]*' | sort -u
 ```
 
 Expected: all 8 commands listed.

@@ -3,8 +3,8 @@ package exec_test
 import (
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/exec"
-	toolfake "github.com/rdrake/vibebot-v8/v9/tooling/fake"
+	"github.com/rdrake/vibebot/v9/exec"
+	toolfake "github.com/rdrake/vibebot/v9/tooling/fake"
 )
 
 func TestResolveSchemasReturnsInOrder(t *testing.T) {

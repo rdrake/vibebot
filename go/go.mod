@@ -1,3 +1,3 @@
-module github.com/rdrake/vibebot-v8/v9
+module github.com/rdrake/vibebot/v9
 
 go 1.23

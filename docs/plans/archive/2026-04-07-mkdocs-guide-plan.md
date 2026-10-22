@@ -4,7 +4,7 @@
 
 **Goal:** Replace the single-page help site with a full MkDocs Material documentation site covering user commands and operator configuration, deployed on GitHub Pages.
 
-**Architecture:** MkDocs Material site with 10 markdown pages (index + 4 user guide + 4 operator guide + 1 reference). Built by GitHub Actions on push to main, deployed to `rdrake.github.io/vibebot-v8/`. MkDocs is added as a dev dependency. The existing `build_help_page.py` script and `_site/` output are removed. MkDocs source lives in `docs/guide/` to avoid conflicts with existing `docs/plans/` and `docs/reviews/` directories.
+**Architecture:** MkDocs Material site with 10 markdown pages (index + 4 user guide + 4 operator guide + 1 reference). Built by GitHub Actions on push to main, deployed to `rdrake.github.io/vibebot/`. MkDocs is added as a dev dependency. The existing `build_help_page.py` script and `_site/` output are removed. MkDocs source lives in `docs/guide/` to avoid conflicts with existing `docs/plans/` and `docs/reviews/` directories.
 
 **Note:** The reference page is hand-written markdown, not generated from `COMMAND_REGISTRY`. This means it can drift — when adding or changing commands, update `docs/guide/reference/commands.md` to match.
 
@@ -48,8 +48,8 @@ Expected: mkdocs-material and its dependencies installed successfully.
 
 ```yaml
 site_name: VibeBot v8
-site_url: https://rdrake.github.io/vibebot-v8/
-repo_url: https://github.com/rdrake/vibebot-v8
+site_url: https://rdrake.github.io/vibebot/
+repo_url: https://github.com/rdrake/vibebot
 docs_dir: docs/guide
 strict: true
 
@@ -231,14 +231,14 @@ git commit -m "docs: add user guide pages"
   - HTTP server: `https://docs.limnoria.net/use/httpserver.html`
 - Link to LiteLLM providers: `https://docs.litellm.ai/docs/providers`
 - Config values are from `plugins/llm/src/llm/config.py` — use exact registry names.
-- Docker image: `ghcr.io/rdrake/vibebot-v8`
+- Docker image: `ghcr.io/rdrake/vibebot`
 
 **Step 1: Write `docs/guide/operator/installation.md`**
 
 Content should cover:
 - Prerequisites: Docker (recommended) or Python 3.12+ with uv
 - Link to [Limnoria getting started](https://docs.limnoria.net/use/getting_started.html) for initial `bot.conf` creation
-- Docker deployment: `docker pull ghcr.io/rdrake/vibebot-v8:latest`, volume mounts
+- Docker deployment: `docker pull ghcr.io/rdrake/vibebot:latest`, volume mounts
 - systemd service: `make install-service`, `make install-timer` for auto-updates
 - Manual/dev setup: `make install && make run`
 - Verifying: `systemctl --user status vibebot`
@@ -464,7 +464,7 @@ Expected: Build succeeds, `site/` directory created with all pages.
 **Step 6: Verify locally**
 
 Run: `uv run mkdocs serve`
-Expected: Site serves at `http://127.0.0.1:8000/vibebot-v8/` with working navigation.
+Expected: Site serves at `http://127.0.0.1:8000/vibebot/` with working navigation.
 
 **Step 7: Commit**
 

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/tooling"
-	"github.com/rdrake/vibebot-v8/v9/tooling/fake"
+	"github.com/rdrake/vibebot/v9/tooling"
+	"github.com/rdrake/vibebot/v9/tooling/fake"
 )
 
 func TestDispatchReturnsScripted(t *testing.T) {

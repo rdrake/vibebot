@@ -1,7 +1,7 @@
 site_name: VibeBot
-site_url: https://rdrake.github.io/vibebot-v8/
-repo_url: https://github.com/rdrake/vibebot-v8
-repo_name: rdrake/vibebot-v8
+site_url: https://rdrake.github.io/vibebot/
+repo_url: https://github.com/rdrake/vibebot
+repo_name: rdrake/vibebot
 docs_dir: docs/guide
 strict: true
 

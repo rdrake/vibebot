@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
-	"github.com/rdrake/vibebot-v8/v9/llmcore/fake"
+	"github.com/rdrake/vibebot/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/llmcore/fake"
 )
 
 func TestScriptedCompletions(t *testing.T) {

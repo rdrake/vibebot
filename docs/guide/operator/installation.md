@@ -1,6 +1,6 @@
 # Installation and deployment
 
-To ask a chat assistant about setup, give it [llms-full.txt](https://rdrake.github.io/vibebot-v8/llms-full.txt): this whole guide as one Markdown file. [llms.txt](https://rdrake.github.io/vibebot-v8/llms.txt) is the page index.
+To ask a chat assistant about setup, give it [llms-full.txt](https://rdrake.github.io/vibebot/llms-full.txt): this whole guide as one Markdown file. [llms.txt](https://rdrake.github.io/vibebot/llms.txt) is the page index.
 
 ## Prerequisites
 
@@ -16,7 +16,7 @@ VibeBot is a [Limnoria](https://docs.limnoria.net/) plugin. If you have never us
 Pull the latest image:
 
 ```bash
-docker pull ghcr.io/rdrake/vibebot-v8:latest
+docker pull ghcr.io/rdrake/vibebot:latest
 ```
 
 Run the container, mounting your configuration and data directories:
@@ -28,7 +28,7 @@ docker run --rm --name vibebot \
     -v /path/to/config:/config \
     -v /var/www/llm:/var/www/llm \
     -w /config \
-    ghcr.io/rdrake/vibebot-v8:latest
+    ghcr.io/rdrake/vibebot:latest
 ```
 
 The `/config` volume holds your `bot.conf` and its `conf/`, `data/`, and `logs/` directories. The `/var/www/llm` mount is optional: add it only when you point `httpRoot` there for an external web server to serve. `httpRoot` is empty by default, which keeps the `@draw` and `@story` output inside `/config` under `data/web/llm/` — see [Configuration → Web and HTTP output](configuration.md#web-and-http-output).
@@ -40,8 +40,8 @@ The `/config` volume holds your `bot.conf` and its `conf/`, `data/`, and `logs/`
 The repository includes a systemd user service for production deployments. The target lives in the repository's `Makefile`, so clone first even if you are deploying the published image:
 
 ```bash
-git clone https://github.com/rdrake/vibebot-v8.git
-cd vibebot-v8
+git clone https://github.com/rdrake/vibebot.git
+cd vibebot
 make install-service
 ```
 
@@ -86,8 +86,8 @@ See [Operations](operations.md) for how the two update paths work together.
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/rdrake/vibebot-v8.git
-cd vibebot-v8
+git clone https://github.com/rdrake/vibebot.git
+cd vibebot
 make install
 ```
 

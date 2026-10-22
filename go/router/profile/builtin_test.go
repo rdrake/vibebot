@@ -3,7 +3,7 @@ package profile_test
 import (
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/router/profile"
+	"github.com/rdrake/vibebot/v9/router/profile"
 )
 
 func TestBuiltinsRegistered(t *testing.T) {

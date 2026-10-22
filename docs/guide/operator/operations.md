@@ -6,7 +6,7 @@ This page covers day-to-day operation of a deployed bot: updates, restarts, logs
 
 Two independent paths keep the running bot current. Both end in the same place: a restart that pulls the newest image.
 
-**Path 1: CI push deploy.** A push to `main` runs CI. When CI passes, a second workflow builds the Docker image, pushes it to `ghcr.io/rdrake/vibebot-v8:latest`, and then connects to the production host over SSH with a restricted deploy key. The remote key runs one forced command: `systemctl --user restart vibebot`. The service unit pulls the latest image on start, so the restart deploys the new build.
+**Path 1: CI push deploy.** A push to `main` runs CI. When CI passes, a second workflow builds the Docker image, pushes it to `ghcr.io/rdrake/vibebot:latest`, and then connects to the production host over SSH with a restricted deploy key. The remote key runs one forced command: `systemctl --user restart vibebot`. The service unit pulls the latest image on start, so the restart deploys the new build.
 
 A push that touches only `docs/**`, `*.md`, or `mkdocs.yml` is exempt. CI's `paths-ignore` skips those, and because `docker.yml` triggers on CI success, no image is built and the running bot is never restarted. Documentation still publishes: `pages.yml` has its own trigger on `docs/**` and `mkdocs.yml`. A push that changes only a root-level `*.md` fires nothing at all.
 
@@ -121,7 +121,7 @@ Force a check and read the updater log:
 ```bash
 systemctl --user start vibebot-updater
 journalctl --user -u vibebot-updater -n 20 --no-pager
-docker pull ghcr.io/rdrake/vibebot-v8:latest
+docker pull ghcr.io/rdrake/vibebot:latest
 ```
 
 ### Service stops after logout
@@ -154,7 +154,7 @@ Every image build is tagged with the commit SHA (`type=sha` in `docker.yml`, alo
 
    That prints the full SHA; the tag is `sha-` plus its first seven characters. Do not use `{{.Config.Image}}` — the unit always runs `:latest`, so that only ever prints `:latest`. Once the bad build is live, take the SHA from the GitHub Actions run summary for the last known-good `Build and Push Docker Image` run instead.
 
-2. **Stop the updater first.** `vibebot-updater.service` hardcodes `IMAGE=ghcr.io/rdrake/vibebot-v8:latest` and compares that digest against the running container's every 15 minutes. It cannot undo the pin — the step 3 drop-in wins over the unit's own `Environment=IMAGE` — but a pinned container never matches the `:latest` digest, so the timer restarts `vibebot` on every tick, dropping the bot off IRC each time.
+2. **Stop the updater first.** `vibebot-updater.service` hardcodes `IMAGE=ghcr.io/rdrake/vibebot:latest` and compares that digest against the running container's every 15 minutes. It cannot undo the pin — the step 3 drop-in wins over the unit's own `Environment=IMAGE` — but a pinned container never matches the `:latest` digest, so the timer restarts `vibebot` on every tick, dropping the bot off IRC each time.
 
    ```bash
    systemctl --user stop vibebot-updater.timer
@@ -164,7 +164,7 @@ Every image build is tagged with the commit SHA (`type=sha` in `docker.yml`, alo
 
    ```bash
    mkdir -p ~/.config/systemd/user/vibebot.service.d
-   printf '[Service]\nEnvironment=IMAGE=ghcr.io/rdrake/vibebot-v8:sha-<PREV>\n' \
+   printf '[Service]\nEnvironment=IMAGE=ghcr.io/rdrake/vibebot:sha-<PREV>\n' \
      > ~/.config/systemd/user/vibebot.service.d/override.conf
    systemctl --user daemon-reload && systemctl --user restart vibebot
    ```

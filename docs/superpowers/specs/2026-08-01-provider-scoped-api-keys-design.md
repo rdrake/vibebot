@@ -329,7 +329,7 @@ build is tagged `type=sha` (`docker.yml:41-46`) — and it must be written into
 ```
 systemctl --user stop vibebot-updater.timer
 mkdir -p ~/.config/systemd/user/vibebot.service.d
-printf '[Service]\nEnvironment=IMAGE=ghcr.io/rdrake/vibebot-v8:sha-<PREV>\n' \
+printf '[Service]\nEnvironment=IMAGE=ghcr.io/rdrake/vibebot:sha-<PREV>\n' \
   > ~/.config/systemd/user/vibebot.service.d/override.conf
 systemctl --user daemon-reload && systemctl --user restart vibebot
 ```

@@ -2,7 +2,7 @@
 
 The main AI plugin for VibeBot v8: chat and image generation on Anthropic and xAI models, memory, reminders, scheduled tasks, and the verse fiction layer.
 
-This README covers plugin internals for developers. User and operator documentation lives in the [published guide](https://rdrake.github.io/vibebot-v8/).
+This README covers plugin internals for developers. User and operator documentation lives in the [published guide](https://rdrake.github.io/vibebot/).
 
 ## Module layout
 
@@ -65,7 +65,7 @@ Boundaries to respect:
 | `@canon`, `@versedit` | `llm.verse.edit` | Canon editing |
 | `@versedump`, `@versepurge`, `@versecompact` | `llm.verse.gm` | GM operations; the two-step `@versepurge` wipe lives in `plugin.py` |
 
-Rate limiting covers four command families (`ask`, `draw`, `meme`, `story`), each with registered and trusted tiers; `ask` also has an unregistered tier, while `draw`, `meme` and `story` require an authenticated account. The [operator guide](https://rdrake.github.io/vibebot-v8/operator/rate-limiting-security/) documents the matrix and defaults.
+Rate limiting covers four command families (`ask`, `draw`, `meme`, `story`), each with registered and trusted tiers; `ask` also has an unregistered tier, while `draw`, `meme` and `story` require an authenticated account. The [operator guide](https://rdrake.github.io/vibebot/operator/rate-limiting-security/) documents the matrix and defaults.
 
 ## Security patterns
 

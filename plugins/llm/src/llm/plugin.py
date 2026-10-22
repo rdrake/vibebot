@@ -247,7 +247,7 @@ _BOT_LOOP_WINDOW = 300
 _LOG_LEVEL = logging.WARNING
 # Simultaneous outbound LLM calls, across the command path and background work.
 _MAX_CONCURRENT_LLM_CALLS = 16
-_HELP_URL = "https://rdrake.github.io/vibebot-v8/"
+_HELP_URL = "https://rdrake.github.io/vibebot/"
 
 # Replies that wrap to at most this many IRC lines go inline as one IRCv3
 # draft/multiline batch; longer ones get a teaser of at most
@@ -3386,7 +3386,7 @@ class LLM(callbacks.Plugin):
     def _send_startup_notification(self, irc: callbacks.Irc) -> None:
         """Send startup notification PM to bot owner.
 
-        Message format: VibeBot started | v8 | N channel(s) | YYYY-MM-DD HH:MM:SS UTC
+        Message format: VibeBot started | N channel(s) | YYYY-MM-DD HH:MM:SS UTC
         """
         # Remove the scheduled check event if it exists
         with contextlib.suppress(KeyError):
@@ -3404,7 +3404,7 @@ class LLM(callbacks.Plugin):
         channel_count = len(irc.state.channels)
         timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
         plural = "s" if channel_count != 1 else ""
-        message = f"VibeBot started | v8 | {channel_count} channel{plural} | {timestamp}"
+        message = f"VibeBot started | {channel_count} channel{plural} | {timestamp}"
 
         irc.queueMsg(ircmsgs.privmsg(owner, message))
         self.log.info("Startup notification sent to %s", owner)

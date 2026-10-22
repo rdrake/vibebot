@@ -5,7 +5,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/rdrake/vibebot-v8/v9/ircout"
+	"github.com/rdrake/vibebot/v9/ircout"
 )
 
 type Sender struct {

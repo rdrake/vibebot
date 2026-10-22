@@ -6,7 +6,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/llmcore"
 )
 
 type Client struct {

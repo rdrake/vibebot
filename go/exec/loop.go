@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
-	"github.com/rdrake/vibebot-v8/v9/tooling"
+	"github.com/rdrake/vibebot/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/tooling"
 )
 
 type runLoopArgs struct {

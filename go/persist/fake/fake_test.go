@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rdrake/vibebot-v8/v9/persist"
-	"github.com/rdrake/vibebot-v8/v9/persist/fake"
+	"github.com/rdrake/vibebot/v9/persist"
+	"github.com/rdrake/vibebot/v9/persist/fake"
 )
 
 func TestAppendAndHistory(t *testing.T) {

@@ -114,4 +114,4 @@ A shared world per channel, with avatars and a cast that persists between sessio
 
 </div>
 
-<p class="vb-foot">Language models from Anthropic and xAI handle the understanding, chosen per channel. Source on <a href="https://github.com/rdrake/vibebot-v8">GitHub</a>; built on <a href="https://github.com/ProgVal/Limnoria">Limnoria</a>.</p>
+<p class="vb-foot">Language models from Anthropic and xAI handle the understanding, chosen per channel. Source on <a href="https://github.com/rdrake/vibebot">GitHub</a>; built on <a href="https://github.com/ProgVal/Limnoria">Limnoria</a>.</p>

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rdrake/vibebot-v8/v9/router/profile"
+	"github.com/rdrake/vibebot/v9/router/profile"
 )
 
 func newTestRegistry(t *testing.T) *profile.Registry {

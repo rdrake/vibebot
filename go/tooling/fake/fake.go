@@ -6,7 +6,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/rdrake/vibebot-v8/v9/tooling"
+	"github.com/rdrake/vibebot/v9/tooling"
 )
 
 type Dispatcher struct {

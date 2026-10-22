@@ -1367,7 +1367,7 @@ There is no rollback section today. A revert push is 10-20 minutes and can be bl
 # otherwise bounce the pinned container every 15 minutes.
 systemctl --user stop vibebot-updater.timer
 mkdir -p ~/.config/systemd/user/vibebot.service.d
-printf '[Service]\nEnvironment=IMAGE=ghcr.io/rdrake/vibebot-v8:sha-<PREV>\n' \
+printf '[Service]\nEnvironment=IMAGE=ghcr.io/rdrake/vibebot:sha-<PREV>\n' \
   > ~/.config/systemd/user/vibebot.service.d/override.conf
 systemctl --user daemon-reload && systemctl --user restart vibebot
 ```

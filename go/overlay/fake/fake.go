@@ -4,7 +4,7 @@ package fake
 import (
 	"context"
 
-	"github.com/rdrake/vibebot-v8/v9/overlay"
+	"github.com/rdrake/vibebot/v9/overlay"
 )
 
 type Resolver struct {

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Host the generated help page on GitHub Pages at `https://rdrake.github.io/vibebot-v8/` so it stays in sync with the command registry and is publicly accessible. Remove the non-functional dynamic help page serving from the Limnoria HTTP callback.
+Host the generated help page on GitHub Pages at `https://rdrake.github.io/vibebot/` so it stays in sync with the command registry and is publicly accessible. Remove the non-functional dynamic help page serving from the Limnoria HTTP callback.
 
 ## Architecture
 
@@ -19,7 +19,7 @@ The bot's `getPluginHelp()` links to a configurable `helpUrl` config option, def
 
 ### Modified files
 
-- `plugins/llm/src/llm/config.py` — add `helpUrl` config option defaulting to `https://rdrake.github.io/vibebot-v8/`
+- `plugins/llm/src/llm/config.py` — add `helpUrl` config option defaulting to `https://rdrake.github.io/vibebot/`
 - `plugins/llm/src/llm/plugin.py`:
   - Remove `_serve_help_page()` method from `LLMHTTPCallback`
   - Remove `_get_help_url()` method from `LLM` class
@@ -84,7 +84,7 @@ conf.registerGlobalValue(
     LLM,
     "helpUrl",
     registry.String(
-        "https://rdrake.github.io/vibebot-v8/",
+        "https://rdrake.github.io/vibebot/",
         _("""URL to the help documentation page."""),
     ),
 )

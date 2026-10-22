@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/overlay"
-	"github.com/rdrake/vibebot-v8/v9/overlay/fake"
+	"github.com/rdrake/vibebot/v9/overlay"
+	"github.com/rdrake/vibebot/v9/overlay/fake"
 )
 
 func TestGetReturnsCanned(t *testing.T) {

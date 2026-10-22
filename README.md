@@ -2,7 +2,7 @@
 
 An AI-powered IRC bot for AfterNet, built on [Limnoria](https://github.com/ProgVal/Limnoria), running on Anthropic and xAI models.
 
-The full guide lives at **[rdrake.github.io/vibebot-v8](https://rdrake.github.io/vibebot-v8/)**: a user guide, an operator guide, and a command reference.
+The full guide lives at **[rdrake.github.io/vibebot](https://rdrake.github.io/vibebot/)**: a user guide, an operator guide, and a command reference.
 
 ## Features
 
@@ -54,7 +54,7 @@ export XAI_API_KEY=...
 | `@channels [--min n] [glob]` | List the network's busiest public channels |
 | `@names [channel]` | List who is in a channel |
 
-Verse channels add more: `@verseopt`, `@rp`, `@verse`, `@look`, `@who`, `@avatar`, and editor and GM commands. The [command reference](https://rdrake.github.io/vibebot-v8/reference/commands/) covers the full list.
+Verse channels add more: `@verseopt`, `@rp`, `@verse`, `@look`, `@who`, `@avatar`, and editor and GM commands. The [command reference](https://rdrake.github.io/vibebot/reference/commands/) covers the full list.
 
 ## Configuration
 
@@ -65,11 +65,11 @@ supybot.plugins.LLM.assistantModel: anthropic/claude-haiku-5-5
 supybot.plugins.LLM.verseModel: xai/grok-4-1-fast-non-reasoning
 ```
 
-Model names must start with `anthropic/` or `xai/`. The [operator configuration guide](https://rdrake.github.io/vibebot-v8/operator/configuration/) covers every key, including rate limits, memory, context, and verse settings.
+Model names must start with `anthropic/` or `xai/`. The [operator configuration guide](https://rdrake.github.io/vibebot/operator/configuration/) covers every key, including rate limits, memory, context, and verse settings.
 
 ## Production deployment
 
-Production runs the Docker image `ghcr.io/rdrake/vibebot-v8:latest` as a systemd user service named `vibebot`. The service mounts `~/.config/vibebot` at `/config` for `bot.conf`, the env file, and runtime data.
+Production runs the Docker image `ghcr.io/rdrake/vibebot:latest` as a systemd user service named `vibebot`. The service mounts `~/.config/vibebot` at `/config` for `bot.conf`, the env file, and runtime data.
 
 ```bash
 make install-service   # scaffold the unit, config dir, and env file
@@ -155,7 +155,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
 ## Repository layout
 
 ```
-vibebot-v8/
+vibebot/
 ├── plugins/llm/             # Main AI plugin
 │   ├── src/llm/             # plugin.py, service.py, assistant.py, config.py,
 │   │   └── verse/           # verse world store, avatars, compaction, tooling

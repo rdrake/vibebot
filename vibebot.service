@@ -8,7 +8,7 @@ Type=simple
 Restart=always
 RestartSec=10
 
-Environment=IMAGE=ghcr.io/rdrake/vibebot-v8:latest
+Environment=IMAGE=ghcr.io/rdrake/vibebot:latest
 EnvironmentFile=-%h/.config/vibebot/env
 
 ExecStartPre=-/usr/bin/docker pull ${IMAGE}

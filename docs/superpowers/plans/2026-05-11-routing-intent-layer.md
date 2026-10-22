@@ -6,7 +6,7 @@
 
 **Architecture:** Pure decision function emits a `RouteDecision` struct → stateful executor consumes it, resolves tools to schemas, builds a canonical cache prefix, drives an LLM tool-call loop, delivers via IRC. Cache discipline is enforced by `llmcore.Canonical(CachedPrefix) []byte` — a single byte serializer with documented ordering and delimiter. Test fakes for every external interface keep the slice runnable in isolation.
 
-**Tech Stack:** Go 1.23 (pinned floor; `log/slog`, `crypto/sha256`, `encoding/json`, `sync`). No external runtime dependencies in this slice (real `openai-go`, `ergochat/irc-go`, Gemini SDK enter in sub-projects A/B). Module path: `github.com/rdrake/vibebot-v8/v9`. Code lives in `go/` subdirectory of the existing repo.
+**Tech Stack:** Go 1.23 (pinned floor; `log/slog`, `crypto/sha256`, `encoding/json`, `sync`). No external runtime dependencies in this slice (real `openai-go`, `ergochat/irc-go`, Gemini SDK enter in sub-projects A/B). Module path: `github.com/rdrake/vibebot/v9`. Code lives in `go/` subdirectory of the existing repo.
 
 **Spec:** `docs/superpowers/specs/2026-05-11-routing-intent-layer-design.md` (commit `2b07346`).
 
@@ -22,7 +22,7 @@ All paths relative to repo root `/Users/rdrake/workspace/afternet/vibebot-v8/`.
 
 ```
 go/
-├── go.mod                          # module github.com/rdrake/vibebot-v8/v9; go 1.23
+├── go.mod                          # module github.com/rdrake/vibebot/v9; go 1.23
 ├── Makefile                        # build/test/lint targets
 ├── llmcore/
 │   ├── client.go                   # Client iface, CachedPrefix, ToolSchema, CacheHandle, Canonical()
@@ -101,13 +101,13 @@ Expected: a version string. If missing, install via `brew install golangci-lint`
 ```bash
 mkdir -p /Users/rdrake/workspace/afternet/vibebot-v8/go
 cd /Users/rdrake/workspace/afternet/vibebot-v8/go
-go mod init github.com/rdrake/vibebot-v8/v9
+go mod init github.com/rdrake/vibebot/v9
 ```
 
 Then edit `go/go.mod` so the `go` directive pins to `1.23` (not "or newer"):
 
 ```
-module github.com/rdrake/vibebot-v8/v9
+module github.com/rdrake/vibebot/v9
 
 go 1.23
 ```
@@ -191,7 +191,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/llmcore"
 )
 
 func TestCanonicalIsDelimited(t *testing.T) {
@@ -615,8 +615,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
-	"github.com/rdrake/vibebot-v8/v9/llmcore/fake"
+	"github.com/rdrake/vibebot/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/llmcore/fake"
 )
 
 func TestScriptedCompletions(t *testing.T) {
@@ -666,7 +666,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/llmcore"
 )
 
 type Client struct {
@@ -753,8 +753,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/tooling"
-	"github.com/rdrake/vibebot-v8/v9/tooling/fake"
+	"github.com/rdrake/vibebot/v9/tooling"
+	"github.com/rdrake/vibebot/v9/tooling/fake"
 )
 
 func TestDispatchReturnsScripted(t *testing.T) {
@@ -814,7 +814,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/rdrake/vibebot-v8/v9/tooling"
+	"github.com/rdrake/vibebot/v9/tooling"
 )
 
 type Dispatcher struct {
@@ -890,8 +890,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/overlay"
-	"github.com/rdrake/vibebot-v8/v9/overlay/fake"
+	"github.com/rdrake/vibebot/v9/overlay"
+	"github.com/rdrake/vibebot/v9/overlay/fake"
 )
 
 func TestGetReturnsCanned(t *testing.T) {
@@ -932,7 +932,7 @@ package fake
 import (
 	"context"
 
-	"github.com/rdrake/vibebot-v8/v9/overlay"
+	"github.com/rdrake/vibebot/v9/overlay"
 )
 
 type Resolver struct {
@@ -980,8 +980,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rdrake/vibebot-v8/v9/persist"
-	"github.com/rdrake/vibebot-v8/v9/persist/fake"
+	"github.com/rdrake/vibebot/v9/persist"
+	"github.com/rdrake/vibebot/v9/persist/fake"
 )
 
 func TestAppendAndHistory(t *testing.T) {
@@ -1025,7 +1025,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rdrake/vibebot-v8/v9/persist"
+	"github.com/rdrake/vibebot/v9/persist"
 )
 
 type Store struct {
@@ -1102,8 +1102,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/ircout"
-	"github.com/rdrake/vibebot-v8/v9/ircout/fake"
+	"github.com/rdrake/vibebot/v9/ircout"
+	"github.com/rdrake/vibebot/v9/ircout/fake"
 )
 
 func TestSendRecords(t *testing.T) {
@@ -1148,7 +1148,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/rdrake/vibebot-v8/v9/ircout"
+	"github.com/rdrake/vibebot/v9/ircout"
 )
 
 type Sender struct {
@@ -1217,7 +1217,7 @@ package profile_test
 import (
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/router/profile"
+	"github.com/rdrake/vibebot/v9/router/profile"
 )
 
 func TestRegistryLookup(t *testing.T) {
@@ -1344,7 +1344,7 @@ package profile_test
 import (
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/router/profile"
+	"github.com/rdrake/vibebot/v9/router/profile"
 )
 
 func TestBuiltinsRegistered(t *testing.T) {
@@ -1857,7 +1857,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rdrake/vibebot-v8/v9/router/profile"
+	"github.com/rdrake/vibebot/v9/router/profile"
 )
 
 func newTestRegistry(t *testing.T) *profile.Registry {
@@ -2041,7 +2041,7 @@ func decideAction(evt IRCEvent, state ChannelState, bot BotState) Action {
 ```go
 package router
 
-import "github.com/rdrake/vibebot-v8/v9/router/profile"
+import "github.com/rdrake/vibebot/v9/router/profile"
 
 // Route is the pure decision function. Same inputs → same RouteDecision.
 //
@@ -2203,8 +2203,8 @@ package exec_test
 import (
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/exec"
-	toolfake "github.com/rdrake/vibebot-v8/v9/tooling/fake"
+	"github.com/rdrake/vibebot/v9/exec"
+	toolfake "github.com/rdrake/vibebot/v9/tooling/fake"
 )
 
 func TestResolveSchemasReturnsInOrder(t *testing.T) {
@@ -2243,8 +2243,8 @@ package exec
 import (
 	"fmt"
 
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
-	"github.com/rdrake/vibebot-v8/v9/tooling"
+	"github.com/rdrake/vibebot/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/tooling"
 )
 
 // ResolveSchemas converts tool names into ToolSchema via the dispatcher.
@@ -2291,8 +2291,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/exec"
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/exec"
+	"github.com/rdrake/vibebot/v9/llmcore"
 )
 
 func TestBuildCachedPrefixFields(t *testing.T) {
@@ -2370,7 +2370,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/llmcore"
 )
 
 // BuildPrefixArgs is the input to BuildCachedPrefix.
@@ -2534,10 +2534,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
-	llmfake "github.com/rdrake/vibebot-v8/v9/llmcore/fake"
-	"github.com/rdrake/vibebot-v8/v9/tooling"
-	toolfake "github.com/rdrake/vibebot-v8/v9/tooling/fake"
+	"github.com/rdrake/vibebot/v9/llmcore"
+	llmfake "github.com/rdrake/vibebot/v9/llmcore/fake"
+	"github.com/rdrake/vibebot/v9/tooling"
+	toolfake "github.com/rdrake/vibebot/v9/tooling/fake"
 )
 
 func TestRunLoopNoToolCallsReturns(t *testing.T) {
@@ -2635,8 +2635,8 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
-	"github.com/rdrake/vibebot-v8/v9/tooling"
+	"github.com/rdrake/vibebot/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/tooling"
 )
 
 type runLoopArgs struct {
@@ -2731,16 +2731,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rdrake/vibebot-v8/v9/exec"
-	"github.com/rdrake/vibebot-v8/v9/ircout"
-	ircfake "github.com/rdrake/vibebot-v8/v9/ircout/fake"
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
-	llmfake "github.com/rdrake/vibebot-v8/v9/llmcore/fake"
-	overlayfake "github.com/rdrake/vibebot-v8/v9/overlay/fake"
-	persistfake "github.com/rdrake/vibebot-v8/v9/persist/fake"
-	"github.com/rdrake/vibebot-v8/v9/router"
-	"github.com/rdrake/vibebot-v8/v9/router/profile"
-	toolfake "github.com/rdrake/vibebot-v8/v9/tooling/fake"
+	"github.com/rdrake/vibebot/v9/exec"
+	"github.com/rdrake/vibebot/v9/ircout"
+	ircfake "github.com/rdrake/vibebot/v9/ircout/fake"
+	"github.com/rdrake/vibebot/v9/llmcore"
+	llmfake "github.com/rdrake/vibebot/v9/llmcore/fake"
+	overlayfake "github.com/rdrake/vibebot/v9/overlay/fake"
+	persistfake "github.com/rdrake/vibebot/v9/persist/fake"
+	"github.com/rdrake/vibebot/v9/router"
+	"github.com/rdrake/vibebot/v9/router/profile"
+	toolfake "github.com/rdrake/vibebot/v9/tooling/fake"
 )
 
 type harness struct {
@@ -2947,13 +2947,13 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/rdrake/vibebot-v8/v9/ircout"
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
-	"github.com/rdrake/vibebot-v8/v9/overlay"
-	"github.com/rdrake/vibebot-v8/v9/persist"
-	"github.com/rdrake/vibebot-v8/v9/router"
-	"github.com/rdrake/vibebot-v8/v9/router/profile"
-	"github.com/rdrake/vibebot-v8/v9/tooling"
+	"github.com/rdrake/vibebot/v9/ircout"
+	"github.com/rdrake/vibebot/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/overlay"
+	"github.com/rdrake/vibebot/v9/persist"
+	"github.com/rdrake/vibebot/v9/router"
+	"github.com/rdrake/vibebot/v9/router/profile"
+	"github.com/rdrake/vibebot/v9/tooling"
 )
 
 // Config bundles the executor's dependencies.
@@ -3200,16 +3200,16 @@ import (
 	"os"
 	"time"
 
-	"github.com/rdrake/vibebot-v8/v9/exec"
-	ircfake "github.com/rdrake/vibebot-v8/v9/ircout/fake"
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
-	llmfake "github.com/rdrake/vibebot-v8/v9/llmcore/fake"
-	"github.com/rdrake/vibebot-v8/v9/overlay"
-	overlayfake "github.com/rdrake/vibebot-v8/v9/overlay/fake"
-	persistfake "github.com/rdrake/vibebot-v8/v9/persist/fake"
-	"github.com/rdrake/vibebot-v8/v9/router"
-	"github.com/rdrake/vibebot-v8/v9/router/profile"
-	toolfake "github.com/rdrake/vibebot-v8/v9/tooling/fake"
+	"github.com/rdrake/vibebot/v9/exec"
+	ircfake "github.com/rdrake/vibebot/v9/ircout/fake"
+	"github.com/rdrake/vibebot/v9/llmcore"
+	llmfake "github.com/rdrake/vibebot/v9/llmcore/fake"
+	"github.com/rdrake/vibebot/v9/overlay"
+	overlayfake "github.com/rdrake/vibebot/v9/overlay/fake"
+	persistfake "github.com/rdrake/vibebot/v9/persist/fake"
+	"github.com/rdrake/vibebot/v9/router"
+	"github.com/rdrake/vibebot/v9/router/profile"
+	toolfake "github.com/rdrake/vibebot/v9/tooling/fake"
 )
 
 func main() {

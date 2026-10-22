@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
-	llmfake "github.com/rdrake/vibebot-v8/v9/llmcore/fake"
-	"github.com/rdrake/vibebot-v8/v9/tooling"
-	toolfake "github.com/rdrake/vibebot-v8/v9/tooling/fake"
+	"github.com/rdrake/vibebot/v9/llmcore"
+	llmfake "github.com/rdrake/vibebot/v9/llmcore/fake"
+	"github.com/rdrake/vibebot/v9/tooling"
+	toolfake "github.com/rdrake/vibebot/v9/tooling/fake"
 )
 
 func TestRunLoopNoToolCallsReturns(t *testing.T) {

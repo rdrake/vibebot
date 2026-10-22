@@ -1,6 +1,6 @@
 package router
 
-import "github.com/rdrake/vibebot-v8/v9/router/profile"
+import "github.com/rdrake/vibebot/v9/router/profile"
 
 func decideAction(evt IRCEvent, state ChannelState, bot BotState) Action {
 	if addressed(evt, bot.SelfNick, bot.RecentSentIDs) {

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/llmcore"
 )
 
 func TestCanonicalIsDelimited(t *testing.T) {

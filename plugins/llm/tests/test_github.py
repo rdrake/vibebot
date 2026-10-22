@@ -22,8 +22,8 @@ class TestParse:
             ("https://github.com/o/r/commit/2d0fdec175a1", "commit"),
             ("https://github.com/o/r/commit/2d0fdec175a1.patch", "commit"),
             ("https://github.com/o/r/blob/main/src/a.c", "blob"),
-            ("https://github.com/rdrake/vibebot-v8", "repo"),
-            ("https://github.com/rdrake/vibebot-v8/", "repo"),
+            ("https://github.com/rdrake/vibebot", "repo"),
+            ("https://github.com/rdrake/vibebot/", "repo"),
             ("https://gist.github.com/MrLenin/491f87ea4d95", "gist"),
             ("https://gist.githubusercontent.com/MrLenin/491f/raw/x.md", "raw"),
             ("https://raw.githubusercontent.com/o/r/main/README.md", "raw"),
@@ -37,7 +37,7 @@ class TestParse:
     @pytest.mark.parametrize(
         "url",
         [
-            "https://rdrake.github.io/vibebot-v8/",
+            "https://rdrake.github.io/vibebot/",
             "https://www.githubstatus.com/incidents/x",
             "https://github.com/o/r/security/advisories/GHSA-1",
             "https://github.com/o/r/actions/runs/1",

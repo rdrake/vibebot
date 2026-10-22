@@ -211,7 +211,7 @@ changelog:
 	@echo "CHANGELOG.md updated."
 
 # Docker
-IMAGE_NAME ?= ghcr.io/rdrake/vibebot-v8
+IMAGE_NAME ?= ghcr.io/rdrake/vibebot
 IMAGE_TAG ?= latest
 
 docker-build:

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/llmcore"
 )
 
 // BuildPrefixArgs is the input to BuildCachedPrefix.

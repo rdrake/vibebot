@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/rdrake/vibebot-v8/v9/exec"
-	"github.com/rdrake/vibebot-v8/v9/llmcore"
+	"github.com/rdrake/vibebot/v9/exec"
+	"github.com/rdrake/vibebot/v9/llmcore"
 )
 
 func TestBuildCachedPrefixFields(t *testing.T) {

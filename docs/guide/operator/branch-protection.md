@@ -1,6 +1,6 @@
 # Branch protection (optional)
 
-VibeBot's pipeline does not require GitHub branch protection. The upstream repository (`rdrake/vibebot-v8`) is single-maintainer; direct pushes to `main` are normal, and the CI, Docker build, and auto-deploy pipeline is the safety net. This page is for forks and team deployments that want a hard PR gate.
+VibeBot's pipeline does not require GitHub branch protection. The upstream repository (`rdrake/vibebot`) is single-maintainer; direct pushes to `main` are normal, and the CI, Docker build, and auto-deploy pipeline is the safety net. This page is for forks and team deployments that want a hard PR gate.
 
 ## Recommended ruleset
 

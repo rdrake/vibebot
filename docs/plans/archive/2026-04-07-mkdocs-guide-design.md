@@ -2,7 +2,7 @@
 
 ## Goal
 
-Replace the single-page help site with a full MkDocs Material documentation site covering both end-user commands and operator deployment/configuration. Deploy on GitHub Pages at the same URL (`rdrake.github.io/vibebot-v8/`).
+Replace the single-page help site with a full MkDocs Material documentation site covering both end-user commands and operator deployment/configuration. Deploy on GitHub Pages at the same URL (`rdrake.github.io/vibebot/`).
 
 ## Principles
 
@@ -83,7 +83,7 @@ Quick-reference table of all commands with syntax, description, and required cap
 
 - Replace the current `pages.yml` workflow to build MkDocs instead of running `build_help_page.py`.
 - Keep `scripts/build_help_page.py` for now (it feeds the command registry) — or generate the reference page from the same data during MkDocs build.
-- Site deploys to the same `rdrake.github.io/vibebot-v8/` URL.
+- Site deploys to the same `rdrake.github.io/vibebot/` URL.
 
 ## Limnoria Doc Links
 

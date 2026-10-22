@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-Environment=IMAGE=ghcr.io/rdrake/vibebot-v8:latest
+Environment=IMAGE=ghcr.io/rdrake/vibebot:latest
 ExecStart=/bin/bash -c '\
   LOCAL=$(docker inspect --format="{{.Image}}" vibebot 2>/dev/null || echo "none"); \
   docker pull -q ${IMAGE}; \

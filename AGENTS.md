@@ -125,7 +125,7 @@ Keep those boundaries intact:
 
 ### Issue tracker
 
-Issues live in GitHub Issues on `rdrake/vibebot-v8`, managed with the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues live in GitHub Issues on `rdrake/vibebot`, managed with the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
