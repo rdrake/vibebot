@@ -163,6 +163,20 @@ class TestMemeCommand:
 
         assert "unavailable" in mock_irc.error.call_args.args[0]
 
+    def test_catalog_unavailable_fails_once_and_spends_nothing(self, meme_plugin, mocker) -> None:
+        """A broken install is one clear error: no picker, no grounding, no typing."""
+        plugin, mock_irc, mock_msg = meme_plugin
+        mocker.patch.object(meme, "bundled_catalog", return_value=None)
+        dossier = mocker.patch.object(plugin, "_subject_dossier_for", return_value=None)
+
+        plugin.meme(mock_irc, mock_msg, ["drake | a | b"])
+
+        mock_irc.error.assert_called_once()
+        assert mock_irc.error.call_args.args[0] == "Meme templates are unavailable right now."
+        dossier.assert_not_called()
+        plugin.llm_service.meme_pick.assert_not_called()
+        plugin.llm_service._begin_typing.assert_not_called()
+
     def test_requires_an_account(self, meme_plugin) -> None:
         plugin, mock_irc, mock_msg = meme_plugin
         mock_irc.state.nickToAccount.return_value = None

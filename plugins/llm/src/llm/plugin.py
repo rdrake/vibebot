@@ -7765,12 +7765,16 @@ class LLM(callbacks.Plugin):
         ("willy wonka" → Condescending Wonka) counts only when captions came
         with it: "@meme y'all got any more of them flamethrowers" also
         fuzzy-matches yallgot, and it is a request, not a name.
+
+        With no catalog there is nothing to pick from either: True sends the
+        request straight to ``_make_meme``, which says so once, instead of
+        spending a grounding call on a picker that cannot run.
         """
         if meme.is_http_url(query.strip()):
             return True
         catalog = self._meme_catalog()
         if catalog is None:
-            return False
+            return True
         if catalog.exact(query) is not None:
             return True
         return has_lines and catalog.resolve(query) is not None
