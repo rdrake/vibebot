@@ -149,9 +149,10 @@ def pytest(wt, tests, timeout):
     try:
         r = subprocess.run(
             [
-                "uv",
-                "run",
-                "--no-sync",
+                # The worktree's own interpreter, not `uv run`: a Homebrew uv
+                # upgrade briefly removes the binary and killed a 3-hour run.
+                str(wt / ".venv/bin/python"),
+                "-m",
                 "pytest",
                 "-x",
                 "-q",
@@ -171,6 +172,8 @@ def pytest(wt, tests, timeout):
         )
     except subprocess.TimeoutExpired:
         return "timeout"
+    except OSError as exc:
+        return f"error:{type(exc).__name__}"
     if r.returncode == 0:
         return "survived"
     if r.returncode in (1, 2):
@@ -245,6 +248,12 @@ def main():
                 return fs
         return []
 
+    # A crashed run resumes from its checkpoint instead of starting over.
+    partial = pathlib.Path(a.out + ".partial")
+    checkpointed = {}
+    if partial.exists():
+        checkpointed = {r["idx"]: r for r in json.loads(partial.read_text())}
+
     muts = enumerate_mutants(tree)
     results, jobs = [], []
     for i, (node, ln, desc, _kind) in enumerate(muts):
@@ -265,10 +274,17 @@ def main():
             rec.update(status="uncovered", tier=0, secs=0)
             results.append(rec)
             continue
+        if i in checkpointed:
+            results.append(checkpointed[i])
+            continue
         t1 = tier1_for(scope_names(ln))
         t2 = [f for f in tier2_all if f not in t1]
         jobs.append((rec, t1, t2))
-    print(f"{a.module}: {len(jobs)} to run, {len(results)} uncovered", flush=True)
+    print(
+        f"{a.module}: {len(jobs)} to run, {len(checkpointed)} from checkpoint, "
+        f"{sum(r['status'] == 'uncovered' for r in results)} uncovered",
+        flush=True,
+    )
 
     free = list(wts)
     with cf.ThreadPoolExecutor(a.workers) as ex:
@@ -297,11 +313,14 @@ def main():
                 rec.update(status=st, tier=tier, secs=secs)
                 results.append(rec)
                 done_n += 1
+                if done_n % 50 == 0:
+                    partial.write_text(json.dumps([r for r in results if r["tier"]], indent=0))
                 if done_n % 100 == 0:
                     print(f"  {done_n}/{len(jobs)}", flush=True)
                 submit()
     results.sort(key=lambda r: r["idx"])
     pathlib.Path(a.out).write_text(json.dumps(results, indent=0))
+    partial.unlink(missing_ok=True)
     print(a.module, dict(collections.Counter(r["status"] for r in results)), flush=True)
 
 
