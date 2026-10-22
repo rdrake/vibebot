@@ -2,8 +2,8 @@
 
 A small `inFilter` plugin that rewrites incoming channel messages that
 contain the bot's nick in the *middle* of the text, moving the nick to
-the front. Limnoria's normal addressing logic then recognises the
-message as addressed, with no core changes.
+the front. The LLM plugin's own addressing check, which matches a
+leading nick, then treats the message as addressed.
 
 ## Why it exists
 
@@ -43,7 +43,7 @@ For every channel `PRIVMSG`, NickInMiddle:
    matches `Vibe[bot]`.
 4. Rewrites the `PRIVMSG` with the bot's own nick at the front — a
    configured alias is replaced by the real nick, not carried through —
-   then lets Limnoria dispatch the message normally.
+   then the LLM plugin's leading-nick check routes it to the assistant.
 
 Example rewrite, with bot nick `vibebot`:
 

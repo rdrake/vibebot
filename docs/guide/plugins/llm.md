@@ -15,6 +15,7 @@ tools.
 | Memory | `@forget`, `@memories`, `@instruct` | Volatile context, durable facts, persistent instructions. |
 | Reminders | `@remind`, `@tz` | Natural-language reminders with recurring support, read in your time zone. |
 | Accounting | `@usage` | Per-account and per-channel API usage. |
+| IRC lookups | `@channels`, `@names`, `@model` | Live channel list and member list, plus which model answered the last reply. |
 | Verse (user) | `@verseopt`, `@rp`, `@verse`, `@look`, `@who`, `@avatar` | Opt in, roleplay, inspect the scene, set a persona. |
 | Verse (editor) | `@canon`, `@versedit` | Curate durable canon. Requires `llm.verse.edit`. |
 | Verse (GM) | `@versedump`, `@versepurge`, `@versecompact` | Inspect, wipe, and compact a channel's verse. Requires `llm.verse.gm`. |
@@ -24,7 +25,7 @@ and capability requirements, and the
 [configuration guide](../operator/configuration.md) for every registry
 key.
 
-`@ask` and `@draw` also work through plain language: mention
+`@ask`, `@draw` and `@meme` also work through plain language: mention
 the bot by name or send it a PM. `@story` does not — an illustrated page
 comes from the command, or from an explicit illustrate cue in a verse
 channel with `verseStorybookEnabled` on. Memory, Reminders and Accounting are
@@ -38,15 +39,15 @@ route sees.
 ## Capabilities
 
 Limnoria capabilities gate the AI and verse commands: `llm.ask` (`@ask`,
-`@forget`), `llm.draw` (also covers `@story`), `llm.verse`
+`@forget`), `llm.draw` (`@draw`, `@meme`, `@story`), `llm.verse`
 (`@rp`, `@verseopt`, `@verse`, `@look`, `@who`), `llm.verse.edit`
 (`@canon`, `@versedit`), and `llm.verse.gm` (`@versedump`,
 `@versepurge`, `@versecompact`).
 
 `@remind` also needs `llm.ask`, since it manages persisted reminders and
-scheduled tasks. `@memories`, `@instruct`, `@tz`, `@usage`, and `@avatar` carry
-no capability of their own. The paths that reach past your own data check
-inline instead: `owner` for `@memories <nick>` and `@remind admin`,
+scheduled tasks. `@memories`, `@instruct`, `@tz`, `@usage`, `@avatar`,
+`@channels`, `@names`, and `@model` carry no capability of their own. The paths that reach past your own data check
+inline instead: `owner` for `@memories <nick>`, `@memories cleanup <nick>` and `@remind admin`,
 `admin` for a bare `@usage` by PM. Owner and admin accounts bypass rate limits.
 
 ## Internal layout
@@ -89,9 +90,9 @@ appends an `executor: running/queued/max` field for tuning.
 ## Storage
 
 Persistent state lives in a single SQLite database managed by
-`persistence.py`. All writes go through the `_write_txn` context
-manager, so a failure mid-update rolls back rather than leaving partial
-state. Tables cover memories, reminders, scheduled tasks, conversation
+`persistence.py`. Writes run in a transaction (the `_write_txn` context
+manager, or an explicit `BEGIN IMMEDIATE` for the pending-task claim),
+so a failure mid-update rolls back rather than leaving partial state. Tables cover memories, reminders, scheduled tasks, conversation
 snapshots, and per-account usage. Each verse-enabled channel gets its
 own SQLite store under `data/verse/`.
 
