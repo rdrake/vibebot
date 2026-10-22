@@ -46,6 +46,7 @@ bot.conf.bak
 
 # Testing
 .pytest_cache/
+.pytest-tmp/
 .coverage
 htmlcov/
 coverage.xml

@@ -85,6 +85,7 @@ Keep those boundaries intact:
 ## Testing expectations
 
 - Add or update tests for behaviour changes.
+- Before writing or reviewing tests, read `.claude/skills/writing-tests/SKILL.md`. It covers where expected values come from, what to assert, which fakes to use, and the scoped mutation check that proves a new test kills something.
 - LLM plugin tests live under `plugins/llm/tests/`; nickinmiddle tests under `plugins/nickinmiddle/tests/`.
 - Keep the **93%** coverage floor (enforced by `pyproject.toml` and `make test`).
 - Follow existing test style, including behaviour-driven docstrings where that pattern already exists.

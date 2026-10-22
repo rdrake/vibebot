@@ -1,6 +1,11 @@
 """AST mutation tester, two-tier test selection.
 
 usage: scripts/mutate.py MODULE_REL_PATH --out FILE [--workers N] [--cov cov.json]
+       scripts/mutate.py MODULE_REL_PATH --out FILE --wt . --scope NAME [--scope NAME]
+
+The second form is the quick check after writing tests: it mutates only the
+named functions or classes, in this checkout, one mutant at a time. The
+module is restored after each mutant; `git diff` it if a run is killed.
 
 Setup and the full-codebase sweep: scripts/mutation_sweep.sh. The work
 directory (worktrees wt0..wtN-1, coverage, results) is $MUTATION_DIR,
@@ -209,8 +214,12 @@ def main():
     ap.add_argument("--workers", type=int, default=10)
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--cov")
+    ap.add_argument("--wt", help="run in this one checkout instead of $MUTATION_DIR/wt*")
+    ap.add_argument("--scope", action="append", help="only mutants inside this function/class")
     a = ap.parse_args()
-    wts = [HERE / f"wt{i}" for i in range(a.workers)]
+    if a.wt:
+        a.workers = 1
+    wts = [pathlib.Path(a.wt).resolve()] if a.wt else [HERE / f"wt{i}" for i in range(a.workers)]
     src = (wts[0] / a.module).read_text()
     lines = src.splitlines()
     tree = ast.parse(src)
@@ -265,6 +274,8 @@ def main():
         text = lines[ln - 1]
         s = text.strip()
         if s.startswith("@") or re.search(r"\b(log|logger)\.\w+\(", text) or "__all__" in text:
+            continue
+        if a.scope and not set(a.scope) & set(scope_names(ln)):
             continue
         rec = {
             "idx": i,
