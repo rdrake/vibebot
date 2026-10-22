@@ -115,6 +115,19 @@ class TestResearchSeam:
         assert rows[0].args[4] == 90
         assert rows[0].args[5] == 60
 
+    def test_unpriced_call_with_tokens_is_still_booked(self, researching_plugin) -> None:
+        """GIVEN research that used tokens on a model with no price WHEN it
+        returns THEN its row is still written, so the token count is not lost."""
+        plugin, mock_irc, mock_msg = researching_plugin
+        plugin.llm_service.subject_dossier.return_value = _dossier(
+            _FACTS, prompt_tokens=100, completion_tokens=50, cost=0.0
+        )
+
+        plugin.draw(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
+
+        rows = [c for c in plugin.db.log_usage.call_args_list if c.args[2] == "dossier"]
+        assert [r.args[4:7] for r in rows] == [(100, 50, 0.0)]
+
     def test_a_failed_call_books_nothing(self, researching_plugin) -> None:
         """GIVEN research that cost nothing WHEN it returns THEN no row is written.
 

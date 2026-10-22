@@ -3447,6 +3447,95 @@ class TestVerseStorybook:
         pf_anon = PreflightResult(False, Caller(Identity("alice", None), "#test"))
         assert plugin._ambient_storybook_brief(mock_msg, pf_anon, illustrate) is None  # no account
 
+    def _ambient_env(self, plugin_env, mocker, tmp_path, **overrides):
+        from llm.verse.store import VerseStore
+
+        plugin, mock_irc, mock_msg = plugin_env
+        store = VerseStore(tmp_path, "#test")
+        mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+        settings = {
+            "verseEnabled": True,
+            "verseStorybookEnabled": True,
+            "verseTriggerRegex": r"\bstinky lads\b",
+            "verseStorybookCooldownSeconds": 0,
+        }
+        settings.update(overrides)
+        plugin.registryValue = mocker.MagicMock(side_effect=make_registry_side_effect(settings))
+        mock_msg.prefix = "alice!u@h"
+        pf = PreflightResult(False, Caller(Identity("alice", "acct"), "#test"))
+        return plugin, mock_msg, pf
+
+    _ILLUSTRATE = "illustrate the stinky lads' saga"
+
+    def test_ambient_storybook_off_by_flag(self, plugin_env, mocker, tmp_path):
+        """verseStorybookEnabled off (the default) → a prose tale, never a
+        paid image storybook, even with every spend gate passing."""
+        plugin, msg, pf = self._ambient_env(
+            plugin_env, mocker, tmp_path, verseStorybookEnabled=False
+        )
+
+        assert plugin._ambient_storybook_brief(msg, pf, self._ILLUSTRATE) is None
+
+    def test_ambient_storybook_needs_draw_capability(self, plugin_env, mocker, tmp_path):
+        plugin, msg, pf = self._ambient_env(plugin_env, mocker, tmp_path)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm.") and cap != "llm.draw",
+        )
+
+        assert plugin._ambient_storybook_brief(msg, pf, self._ILLUSTRATE) is None
+
+    def test_ambient_storybook_honours_the_cooldown(self, plugin_env, mocker, tmp_path):
+        """The first illustrate reserves the cooldown; a second inside it
+        falls through instead of firing another multi-image storybook."""
+        plugin, msg, pf = self._ambient_env(
+            plugin_env, mocker, tmp_path, verseStorybookCooldownSeconds=300
+        )
+
+        assert plugin._ambient_storybook_brief(msg, pf, self._ILLUSTRATE) == self._ILLUSTRATE
+        assert plugin._ambient_storybook_brief(msg, pf, self._ILLUSTRATE) is None
+
+    def _pinned_archie(self, plugin_env, mocker, tmp_path, *, verse_enabled=True):
+        from llm.verse.store import VerseStore
+
+        plugin, _irc, _msg = plugin_env
+        store = VerseStore(tmp_path, "#test")
+        archie = store.add_entity("npc", "Archie", "the windbag")
+        store.apply_direct(
+            op="set_pinned",
+            payload={"entity_id": archie, "pinned": True},
+            source="operator",
+            provenance="t",
+        )
+        get_store = mocker.patch.object(plugin, "_get_or_create_verse_store", return_value=store)
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect(
+                {
+                    "verseEnabled": verse_enabled,
+                    "verseTriggerRegex": "",
+                    "verseRosterMaxChars": 2000,
+                }
+            )
+        )
+        pf = PreflightResult(False, Caller(Identity("testnick", None), "#test"))
+        return plugin, pf, get_store
+
+    def test_verse_context_for_suspended_verse_injects_nothing(self, plugin_env, mocker, tmp_path):
+        """verseEnabled off suspends the verse: no canon block, no store opened."""
+        plugin, pf, get_store = self._pinned_archie(
+            plugin_env, mocker, tmp_path, verse_enabled=False
+        )
+
+        assert plugin._verse_context_for(pf, "what does Archie think?") is None
+        get_store.assert_not_called()
+
+    def test_verse_context_for_unrelated_chat_gets_no_lore(self, plugin_env, mocker, tmp_path):
+        """Pinned canon exists, but a line that names nothing gets no block."""
+        plugin, pf, _ = self._pinned_archie(plugin_env, mocker, tmp_path)
+
+        assert plugin._verse_context_for(pf, "hello there") is None
+        assert plugin._verse_context_for(pf, "what does Archie think?") is not None
+
     def test_ambient_inline_story_gates(self, plugin_env, mocker, tmp_path):
         """Any canon mention from an avatar-holder → True (inline prose tale),
         questions included; draw/illustrate, non-canon, no-avatar, flag-off →
@@ -3667,6 +3756,36 @@ class TestVerseStorybook:
         # Only the first call scheduled a job.
         assert submit.call_count == 1
 
+    def test_one_storybook_per_turn_even_without_cooldown(self, plugin_env, mocker):
+        """The per-turn cap bounds image spend on its own: with the cooldown
+        at 0 a second call in the same turn is still refused."""
+        import json
+
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect(
+                {"verseStorybookEnabled": True, "verseStorybookCooldownSeconds": 0}
+            )
+        )
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        submit = mocker.patch.object(plugin._llm_executor, "submit")
+        handler = self._build(plugin, mock_irc, mock_msg, mocker)
+
+        assert json.loads(handler({"brief": "first"}).content)["status"] == "ok"
+        second = json.loads(handler({"brief": "second"}).content)
+        assert second == {"status": "error", "error": "already told a tale this turn"}
+        assert submit.call_count == 1
+
+    def test_brief_reaches_the_job(self, plugin_env, mocker):
+        plugin, mock_irc, mock_msg = plugin_env
+        self._enable_storybook(plugin, mocker)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        job = mocker.patch.object(plugin, "_submit_storybook_job")
+
+        self._build(plugin, mock_irc, mock_msg, mocker)({"brief": "the lads win"})
+
+        assert job.call_args.kwargs["brief"] == "the lads win"
+
     def test_happy_path_returns_ok_and_schedules_job(self, plugin_env, mocker):
         import json
 
@@ -3727,8 +3846,10 @@ class TestVerseStorybook:
 
         assert submit.call_count == 1
         plugin.llm_service.generate_storybook.assert_called_once()
-        # Delivered the URL to the channel.
-        assert safe_queue.called
+        # Delivered the URL to the channel, not PM'd to the requester.
+        line = safe_queue.call_args.args[1]
+        assert line.command == "PRIVMSG"
+        assert line.args == ("#test", "the tale is told — A Tale: http://h/x.md")
 
 
 class TestStoryCommand:

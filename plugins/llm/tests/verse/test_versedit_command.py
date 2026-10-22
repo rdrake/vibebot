@@ -126,6 +126,14 @@ class TestVerseditCommand:
         assert store.get_entity(eid).name == "Archibald"
         assert "renamed" in irc.reply.call_args[0][0]
 
+    def test_name_without_new_name_is_refused(self, verse_env):
+        plugin, irc, msg, store = verse_env
+        eid = store.add_entity("npc", "Archie")
+        plugin.versedit(irc, msg, ["name", f"#{eid}"])
+        errors = [c.args[0] for c in irc.error.call_args_list]
+        assert any("usage: versedit name" in e for e in errors)
+        assert store.get_entity(eid).name == "Archie"
+
     def test_name_duplicate_errors(self, verse_env):
         plugin, irc, msg, store = verse_env
         eid = store.add_entity("npc", "Archie")

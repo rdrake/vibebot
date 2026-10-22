@@ -793,6 +793,19 @@ class TestVersepurgeCommand:
 
         assert expires_at > _time.time()
 
+    def test_no_channel_argument_targets_this_channel(self, purge_env) -> None:
+        """In-channel @versepurge with no #chan issues the token for, and
+        confirms against, the channel it was issued in."""
+        plugin, irc, msg, _store = purge_env
+
+        plugin.versepurge(irc, msg, [])
+
+        assert "Confirm with @versepurge #afnet" in irc.reply.call_args[0][0]
+        assert list(plugin._versepurge_tokens) == ["#afnet"]
+        token, _ = plugin._versepurge_tokens["#afnet"]
+        plugin.versepurge(irc, msg, [token])
+        assert irc.reply.call_args[0][0] == "Verse for #afnet purged."
+
     # ------------------------------------------------------------------
     # Test 2: correct token purges
     # ------------------------------------------------------------------
@@ -1135,6 +1148,30 @@ class TestVersedumpCommand:
     # ------------------------------------------------------------------
     # Test 12: lacking capability is denied
     # ------------------------------------------------------------------
+
+    def test_no_channel_argument_dumps_this_channel(self, dump_env) -> None:
+        plugin, irc, msg, _store = dump_env
+
+        plugin.versedump(irc, msg, [])
+
+        plugin._get_or_create_verse_store.assert_called_once_with("#afnet")
+        irc.error.assert_not_called()
+
+    def test_named_channel_wins_over_this_one(self, dump_env) -> None:
+        plugin, irc, msg, _store = dump_env
+
+        plugin.versedump(irc, msg, ["#other"])
+
+        plugin._get_or_create_verse_store.assert_called_once_with("#other")
+
+    def test_no_channel_in_pm_is_an_error(self, dump_env) -> None:
+        plugin, irc, msg, _store = dump_env
+        msg.args = ("testbot", "@versedump")
+
+        plugin.versedump(irc, msg, [])
+
+        irc.error.assert_called_once_with("Specify a channel: @versedump #chan", prefixNick=False)
+        plugin._get_or_create_verse_store.assert_not_called()
 
     def test_dump_publishes_to_pastebin_when_available(self, dump_env, mocker) -> None:
         """WHEN save_markdown_to_http returns URL THEN reply is just the URL.
@@ -1638,6 +1675,15 @@ class TestVerseRouteForC7c:
             )
             is None
         )
+
+    def test_no_avatar_falls_through_even_with_rp(self, verse_env, mocker) -> None:
+        """GIVEN bob never opted in WHEN @rp forces roleplay THEN chat path:
+        no roleplay prompt is built for a caller with no avatar."""
+        plugin, _irc, _msg, _store = verse_env
+        build = mocker.patch("llm.plugin.build_verse_system_prompt", return_value="SCENE")
+
+        assert plugin._verse_route_for("#afnet", "bob", None, "hello", force_roleplay=True) is None
+        build.assert_not_called()
 
     def test_route_tools_have_expected_names(self, verse_env) -> None:
         """Returned tools must be the six verse tool specs (incl. verse_edit)."""
@@ -2194,6 +2240,30 @@ class TestRunCompactionPassCallsAging:
         assert len(seen) == 2
 
 
+class TestCompactionOutcomeLine:
+    """Each documented outcome state reads as itself; only a real compaction
+    says "compacted" (docs/guide/operator/verse.md outcome reference)."""
+
+    @pytest.mark.parametrize(
+        ("state", "total", "expected"),
+        [
+            ("compacted", 30, "compacted 30 events"),
+            ("skipped_below_floor", 5, "skipped (only 5 events; floor is 20)"),
+            ("skipped_no_events", 30, "skipped (no events past retention; total 30)"),
+            ("skipped_disabled", 0, "skipped (retention disabled)"),
+        ],
+    )
+    def test_state_heads(self, state, total, expected) -> None:
+        from llm.plugin import _format_compaction_outcome
+        from llm.verse.compaction import CompactionOutcome
+
+        line = _format_compaction_outcome(
+            CompactionOutcome(state, total, 0), None, min_keep_events=20
+        )
+
+        assert line == expected
+
+
 class TestVersecompactCommand:
     """E4: @versecompact owner command — manual retention compaction.
 
@@ -2290,6 +2360,24 @@ class TestVersecompactCommand:
         assert "compaction outcome for #afnet" in reply_text
         assert "compacted" in reply_text
         assert captured_models == [_VERSE_COMPACTION_MODEL]
+
+    def test_manual_compaction_does_not_age_entities(self, compact_env, mocker) -> None:
+        """@versecompact compacts without the daily pass's aging sweep, and a
+        skipped run does not claim it compacted."""
+        plugin, irc, msg, _store = compact_env
+        self._override_registry(plugin, mocker, verse_enabled=True)
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm."),
+        )
+        mocker.patch("llm.verse.compaction.ProviderVerseClient", return_value=mocker.MagicMock())
+        aging = mocker.patch("llm.verse.aging.age_auto_created_entities")
+
+        plugin.versecompact(irc, msg, ["#afnet"])
+
+        aging.assert_not_called()
+        reply_text = irc.reply.call_args[0][0]
+        assert reply_text.startswith("compaction outcome for #afnet: skipped")
 
     def test_disabled_verse_says_so(self, compact_env, mocker) -> None:
         """GIVEN verseEnabled=False WHEN @versecompact THEN reply names verseEnabled."""

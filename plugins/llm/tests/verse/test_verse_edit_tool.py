@@ -169,6 +169,9 @@ def test_handler_authorized_user_applies(tmp_path, mocker):
 
     parsed = json.loads(result.content)
     assert parsed["status"] == "ok"
+    # No "error" key: the assistant loop's success detector counts this as
+    # a success, so the model does not tell the user the edit failed.
+    assert "error" not in parsed
     assert [e.name for e in store.list_entities_by_kind("npc")] == ["Archie"]
 
 
