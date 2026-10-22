@@ -87,6 +87,27 @@ class TestWhowas:
         }
 
 
+class TestNickTargets:
+    @pytest.mark.parametrize("kind", ["whowas", "ctcp_version", "ctcp_ping"])
+    @pytest.mark.parametrize("target", ["#afternet", "", "n" * 65])
+    def test_non_nick_target_is_refused_without_sending(self, env, kind, target) -> None:
+        """A CTCP to "#afternet" would go to the whole channel."""
+        plugin, irc, _ = env
+
+        assert lookup(plugin, irc, kind=kind, target=target) == {"error": "target must be a nick"}
+        irc.queueMsg.assert_not_called()
+
+
+def test_unknown_kind_sends_nothing(env, mocker) -> None:
+    """An unknown kind is an error and fetches nothing, chat history included."""
+    plugin, irc, _ = env
+    irc.state.capabilities_ack = {"draft/chathistory"}
+    mocker.patch.object(type(plugin), "_IRC_QUERY_TIMEOUT", 0.05)
+
+    assert lookup(plugin, irc, kind="bogus") == {"error": "unknown kind"}
+    irc.queueMsg.assert_not_called()
+
+
 class TestWho:
     def test_flags_become_fields(self, env) -> None:
         plugin, irc, _ = env
@@ -154,10 +175,27 @@ class TestTopic:
         assert payload["topic"] == "Kernel talk"
         assert "set_by" not in payload
 
+    def test_unjoined_topic_is_the_named_channels_row(self, env) -> None:
+        plugin, irc, _ = env
+
+        def replies(_m) -> None:
+            plugin.do322(irc, numeric("322", "#a", "3", "Not this one"))
+            plugin.do322(irc, numeric("322", "#linux", "40", "Kernel talk"))
+            plugin.do323(irc, numeric("323", "End of /LIST"))
+
+        serve(irc, "LIST", replies)
+
+        assert lookup(plugin, irc, kind="topic", target="#LINUX")["topic"] == "Kernel talk"
+        assert lookup(plugin, irc, kind="topic", target="#missing") == {
+            "error": "no such public channel"
+        }
+
 
 class TestNetwork:
     def test_lusers_version_admin(self, env) -> None:
         plugin, irc, _ = env
+
+        closed_on_admin_end = []
 
         def replies(_m) -> None:
             plugin.do251(irc, numeric("251", "There are 237 users and 93 invisible on 9 servers"))
@@ -169,11 +207,16 @@ class TestNetwork:
             plugin.do256(irc, numeric("256", "Fractal.AfterNET.Org", "Administrative info"))
             plugin.do257(irc, numeric("257", "Toronto, Canada"))
             plugin.do259(irc, numeric("259", "ibutsu"))
+            # The ADMIN end closes the lookup at once, not at the timeout.
+            closed_on_admin_end.append(not plugin._irc_queries.pending("network", "afternet", "*"))
 
         serve(irc, "ADMIN", replies)
 
         payload = lookup(plugin, irc, kind="network")
 
+        assert closed_on_admin_end == [True]
+        assert "There are 237 users and 93 invisible on 9 servers" in payload["users"]
+        assert "Current global users: 327 Max: 347" in payload["users"]
         assert "23 operator(s) online" in payload["users"]
         assert payload["server"] == ["u2.10.12.14+Nefarious(2.0.0) on Fractal.AfterNET.Org"]
         assert payload["admin"] == ["Toronto, Canada", "ibutsu"]
@@ -306,6 +349,49 @@ class TestHistory:
         ]
         # Replayed lines must not refill the react memory either.
         assert not plugin._last_msgids
+
+    def test_batch_opener_does_not_end_the_lookup(self, env) -> None:
+        """Limnoria tags the BATCH + opener with its batch before inFilter
+        sees it; only the - end closes the lookup."""
+        plugin, irc, _ = env
+        irc.state.capabilities_ack = {"draft/chathistory"}
+        batch = self._batch()
+        irc.state.getParentBatches = lambda m: [batch]
+
+        def replies(_m) -> None:
+            start = ircmsgs.IrcMsg(command="BATCH", args=("+ref", "chathistory", "#test"))
+            start.tag("batch", batch)
+            plugin.inFilter(irc, start)
+            for ts, nick in (
+                ("2026-10-10T01:11:39.000Z", "rdrake"),
+                ("2026-10-10T01:12:03.000Z", "Larry"),
+            ):
+                line = ircmsgs.IrcMsg(prefix=f"{nick}!u@h", command="PRIVMSG", args=("#test", "hi"))
+                line.server_tags.update({"batch": "ref", "time": ts})
+                plugin.inFilter(irc, line)
+            end = ircmsgs.IrcMsg(command="BATCH", args=("-ref",))
+            end.tag("batch", batch)
+            plugin.inFilter(irc, end)
+
+        serve(irc, "CHATHISTORY", replies)
+
+        assert lookup(plugin, irc, kind="history")["lines"] == [
+            "01:11 <rdrake> hi",
+            "01:12 <Larry> hi",
+        ]
+
+    @pytest.mark.parametrize("batch_type", ["netjoin", "draft/multiline"])
+    def test_lines_in_other_batches_are_live(self, env, batch_type) -> None:
+        """Only chathistory is replay; a netjoin or multiline line is handled."""
+        plugin, irc, _ = env
+        batch = Batch(
+            name="ref", type=batch_type, arguments=("#test",), messages=[], parent_batch=None
+        )
+        irc.state.getParentBatches = lambda m: [batch]
+        line = ircmsgs.IrcMsg(prefix="bob!u@h", command="PRIVMSG", args=("#test", "vibebot hi"))
+        line.server_tags["batch"] = "ref"
+
+        assert plugin.inFilter(irc, line) is not None
 
     def test_other_channel_is_refused(self, env) -> None:
         plugin, irc, _ = env

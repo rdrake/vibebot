@@ -228,6 +228,27 @@ class TestCtcpTimeProbe:
         assert sent.args == ("rdrake", "\x01TIME\x01")
         assert plugin._ctcp_tz_waiters == {}
 
+    def test_other_notices_do_not_answer_the_probe(self, plugin, mocker: MockerFixture) -> None:
+        """GIVEN the probed client sends an auto-away NOTICE before its TIME
+        reply WHEN the probe waits THEN only the TIME reply is read."""
+        plugin, mock_irc = plugin
+        local = datetime.now(UTC).astimezone(timezone(timedelta(hours=-4)))
+        away = self._notice(mocker, "rdrake", "I am away right now")
+        reply = self._notice(
+            mocker, "rdrake", f"\x01TIME {local.strftime('%a %b %d %H:%M:%S %Y')}\x01"
+        )
+
+        def on_queue(_msg):
+            def deliver() -> None:
+                plugin.inFilter(mock_irc, away)
+                plugin.inFilter(mock_irc, reply)
+
+            threading.Thread(target=deliver).start()
+
+        mock_irc.queueMsg.side_effect = on_queue
+
+        assert LLM._probe_ctcp_tz(plugin, mock_irc, "rdrake") == timezone(timedelta(hours=-4))
+
     def test_silence_is_none(self, plugin, monkeypatch: pytest.MonkeyPatch) -> None:
         plugin, mock_irc = plugin
         monkeypatch.setattr(LLM, "_CTCP_TIME_TIMEOUT_SECONDS", 0.0)
