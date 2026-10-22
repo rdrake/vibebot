@@ -244,6 +244,37 @@ class TestPictureFromThePicker:
         assert plugin.llm_service.image_edit.call_args.args == (CAPTIONED, "make drake a sysadmin")
         assert payload == {"status": "ok", "message": EDITED}
 
+    @pytest.mark.parametrize("picker_draw", ["a different picture", None])
+    def test_the_users_picture_beats_the_pickers(self, meme_plugin, picker_draw) -> None:
+        """A picture instruction the user gave is kept; the picker's only
+        fills in when there is none."""
+        from llm.service import MemePick
+
+        plugin, _, mock_msg = meme_plugin
+        pick = {"template": "drake", "lines": ["a", "b"]}
+        if picker_draw:
+            pick["draw"] = picker_draw
+        plugin.llm_service.meme_pick.return_value = MemePick(json.dumps(pick), "test-model")
+        _, handlers = plugin._build_meme_tool(mock_msg)
+
+        handlers["make_meme"]({"brief": "drake on ci", "draw": "make drake a sysadmin"})
+
+        assert plugin.llm_service.image_edit.call_args.args == (CAPTIONED, "make drake a sysadmin")
+
+    def test_a_picked_meme_that_fails_to_render_is_an_error(self, meme_plugin) -> None:
+        from llm.service import MemePick
+
+        plugin, mock_irc, mock_msg = meme_plugin
+        plugin.llm_service.meme_pick.return_value = MemePick(
+            '{"template": "drake", "lines": ["a", "b"]}', "test-model"
+        )
+        plugin.llm_service._save_image_bytes.return_value = None
+
+        plugin.meme(mock_irc, mock_msg, ["waiting for ci"])
+
+        mock_irc.reply.assert_not_called()
+        assert mock_irc.error.call_args.args[0].startswith("Could not save that meme.")
+
     def test_tool_draw_with_a_brief_reaches_the_picker(self, meme_plugin) -> None:
         plugin, _, mock_msg = meme_plugin
         _, handlers = plugin._build_meme_tool(mock_msg)
