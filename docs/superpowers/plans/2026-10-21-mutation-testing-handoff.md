@@ -58,7 +58,19 @@ A job that dies resumes when resubmitted with the same arguments.
 
   The suite now stands at 3,544 tests and 95.2% coverage.
 - **Job B:** DONE at 06:42. Results are in `~/.cache/vibebot-mutation/afterB/`. The overall kill rate rose from 68.3% to 72.4% counting uncovered mutants, and from 77.6% to 81.0% over covered mutants only. Survivors fell from 2,090 to 1,752 and uncovered from 1,274 to 1,099. The biggest gains: meme_render +32, ircquery +13, compaction +12. plugin.py moved only +0.5 because part A's tests landed after `7f8412e`. The one regression: `taste_mine` line 104, the `name[:1]` capitalisation, flipped from killed to survived.
-- **Part-B evaluation:** `wf_138fa122-568`, args in `eval/args_plugin_b.json`. It covers the other 726 records: 305 survived and 421 uncovered. Resume either one with the same script.
+- **Part-B evaluation:** `wf_138fa122-568`, args in `eval/args_plugin_b.json`. It covers the other 726 records: 305 survived and 421 uncovered.
+  - DONE and on main as `cec7843..71d3b73`: 83 confirmed (6 high), 55 tests, and 1 fix (@meme with no catalog now fails once and spends nothing).
+  - The suite now stands at 3,605 tests and 95.6% coverage.
+  - The report is `eval/report_plugin_b.md`, and the result is `eval/result_plugin_b.json`.
+  - 176 low gaps are left unverified.
+
+**All planned evaluation is complete.** What's left is backlog:
+- the `provider.py` Anthropic reply and cost tests;
+- the `taste_mine` line-104 regression;
+- the low gaps;
+- `github` and `persistence`, the weakest modules.
+
+Future replay-heavy work goes on gpu05, not the laptop, because Defender plus the local replays froze the GUI.
 
 ## Evaluation results: 33 modules DONE and on main (2026-10-22)
 
