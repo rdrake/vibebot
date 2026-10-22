@@ -1,4 +1,4 @@
-# Mutation testing: handoff (2026-10-21)
+# Mutation testing: handoff (2026-10-21), CLOSED 2026-10-22
 
 Pick up from here in any session. Goal (owner): find out whether the test suite actually proves the code, or only gives a false sense of security.
 
@@ -70,13 +70,24 @@ A job that dies resumes when resubmitted with the same arguments.
 - **Docs audit:** 90 defects fixed in 24 files.
 - **Report:** `eval/report_round2.md`. It wrongly calls 49 gaps "unadjudicated": they are all low severity, and the skeptics skip low findings by design.
 
-**Final sweep: job 2144 (`C-final-ad26bfa`), RUNNING.**
-- **Where:** gpu05, 96 cores, 512 GB. Results go to `fs01:~/vibebot-mut/runs/C-final-ad26bfa/mut/`.
-- **When it logs SWEEPDONE:**
-  - Rsync the results to `~/.cache/vibebot-mutation/final/`.
-  - Compare per-module kill rates against `mut/` (68.3% overall, before any new tests) and `afterB/` (72.4%).
-  - Evaluate only a module that shows new med/high survivors, then close this doc out.
+**Final sweep: job 2144 (`C-final-ad26bfa`), DONE 2026-10-22 11:58.**
+- **Results:** `~/.cache/vibebot-mutation/final/`.
+- **Overall kill rate,** all 34 modules, with uncovered mutants counted as not killed:
+
+  | Run | Commit | Kill rate | Covered only | Survived | Uncovered |
+  |---|---|--:|--:|--:|--:|
+  | `mut/` | `48b2f5e`, before any new tests | 68.8% | 78.2% | 2,035 | 1,274 |
+  | `afterB/` | `7f8412e` | 72.5% | 81.1% | 1,739 | 1,099 |
+  | `final/` | `ad26bfa` | **74.9%** | **83.3%** | **1,556** | **1,041** |
+
+- **`plugin.py`:** 71.4% → 76.9%, with survivors down from 753 to 559.
+- **Newly surviving** (killed in `afterB`, survived in `final`): three mutants, all low or equivalent, so not evaluated.
+  - `plugin.py` `_infer_meme`: the `catalog is None` guard. The guard is redundant now, because the `71d3b73` caller fails first.
+  - `spaceweather` `sun_altitude`: the omega nutation term, a sub-arcminute effect.
+  - `spaceweather` `_gunzip`: `limit + 1` → `limit + 2`. This is equivalent, because the length check still rejects.
 - **Missing from the sweep:** the 4 provider tests in `e8069bb` landed after `ad26bfa`.
+
+For new work, the `writing-tests` skill (`.claude/skills/writing-tests/`) runs a scoped check in the checkout: `mutate.py --wt . --scope NAME`. Use it instead of a full sweep.
 
 **All planned evaluation is complete.** What's left is backlog:
 - the `provider.py` Anthropic reply and cost tests;
