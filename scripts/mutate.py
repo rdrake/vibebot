@@ -3,9 +3,11 @@
 usage: scripts/mutate.py MODULE_REL_PATH --out FILE [--workers N] [--cov cov.json]
        scripts/mutate.py MODULE_REL_PATH --out FILE --wt . --scope NAME [--scope NAME]
 
-The second form is the quick check after writing tests: it mutates only the
-named functions or classes, in this checkout, one mutant at a time. The
-module is restored after each mutant; `git diff` it if a run is killed.
+The second form is the quick check while writing tests: it mutates only the
+named functions or classes (`name` or `Class.method`), in this checkout, one
+mutant at a time, after checking the module's tests pass unmutated. The module
+is restored after each mutant, and its original is kept at FILE.orig until the
+run ends; if a run is killed hard, copy that file back over the module.
 
 Setup and the full-codebase sweep: scripts/mutation_sweep.sh. The work
 directory (worktrees wt0..wtN-1, coverage, results) is $MUTATION_DIR,
@@ -25,7 +27,9 @@ import json
 import os
 import pathlib
 import re
+import signal
 import subprocess
+import sys
 import time
 
 HERE = pathlib.Path(os.environ.get("MUTATION_DIR", "~/.cache/vibebot-mutation")).expanduser()
@@ -191,12 +195,17 @@ def pytest(wt, tests, timeout):
     return f"error{r.returncode}"
 
 
+def _interrupt(*_):
+    # SIGTERM unwinds like Ctrl-C, so the finally that restores the module runs.
+    raise KeyboardInterrupt
+
+
 def run_one(job):
     wt, module, src, idx, tier1, tier2, timeout = job
     path = wt / module
-    path.write_text(mutant_source(src, idx))
     t0 = time.time()
     try:
+        path.write_text(mutant_source(src, idx))
         st = pytest(wt, tier1, timeout) if tier1 else "survived"
         tier = 1
         if st == "survived" and tier2:
@@ -215,11 +224,18 @@ def main():
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--cov")
     ap.add_argument("--wt", help="run in this one checkout instead of $MUTATION_DIR/wt*")
-    ap.add_argument("--scope", action="append", help="only mutants inside this function/class")
+    ap.add_argument(
+        "--scope", action="append", help="only mutants inside this function/class (name or A.b)"
+    )
     a = ap.parse_args()
     if a.wt:
         a.workers = 1
     wts = [pathlib.Path(a.wt).resolve()] if a.wt else [HERE / f"wt{i}" for i in range(a.workers)]
+    backup = pathlib.Path(a.out + ".orig")
+    if a.wt and backup.exists():
+        sys.exit(
+            f"{backup} exists: an earlier run was killed. Restore {a.module} from it, then delete it."
+        )
     src = (wts[0] / a.module).read_text()
     lines = src.splitlines()
     tree = ast.parse(src)
@@ -243,6 +259,15 @@ def main():
         hits = sorted((hi - lo, name) for lo, hi, name in scopes if lo <= ln <= hi)
         return [name for _, name in hits]
 
+    def in_scope(ln):
+        """True when a --scope selector (`f` or `A.f`) names this line's scope or an outer one."""
+        path = list(reversed(scope_names(ln)))
+        for sel in a.scope:
+            want = sel.split(".")
+            if any(path[i : i + len(want)] == want for i in range(len(path))):
+                return True
+        return False
+
     test_files = sorted(str(p.relative_to(wts[0])) for p in (wts[0] / TESTS).rglob("test_*.py"))
     texts = {f: (wts[0] / f).read_text() for f in test_files}
     modname = pathlib.Path(a.module).stem
@@ -260,10 +285,11 @@ def main():
                 return fs
         return []
 
-    # A crashed run resumes from its checkpoint instead of starting over.
+    # A crashed sweep resumes from its checkpoint instead of starting over. A
+    # --wt run is short and its tests are changing, so it always starts fresh.
     partial = pathlib.Path(a.out + ".partial")
     checkpointed = {}
-    if partial.exists():
+    if partial.exists() and not a.wt:
         checkpointed = {r["idx"]: r for r in json.loads(partial.read_text())}
 
     muts = enumerate_mutants(tree)
@@ -275,7 +301,7 @@ def main():
         s = text.strip()
         if s.startswith("@") or re.search(r"\b(log|logger)\.\w+\(", text) or "__all__" in text:
             continue
-        if a.scope and not set(a.scope) & set(scope_names(ln)):
+        if a.scope and not in_scope(ln):
             continue
         rec = {
             "idx": i,
@@ -299,7 +325,27 @@ def main():
         f"{sum(r['status'] == 'uncovered' for r in results)} uncovered",
         flush=True,
     )
+    if a.scope and not jobs and not results:
+        sys.exit(f"--scope {a.scope} matched no mutants in {a.module}")
+    if a.wt:
+        # A mutant counts as killed when a test fails, so the tests must pass
+        # unmutated first, or every mutant would read as killed.
+        base = pytest(wts[0], tier2_all, a.timeout)
+        if base != "survived":
+            sys.exit(f"{a.module}'s tests do not pass unmutated ({base}); fix that first")
+        backup.write_text(src)
+        signal.signal(signal.SIGTERM, _interrupt)
+    try:
+        run_all(a, wts, jobs, results, partial, src)
+    finally:
+        if a.wt:
+            module = wts[0] / a.module
+            if module.read_text() != src:
+                module.write_text(src)
+            backup.unlink()
 
+
+def run_all(a, wts, jobs, results, partial, src):
     free = list(wts)
     with cf.ThreadPoolExecutor(a.workers) as ex:
         pending = {}
@@ -327,7 +373,7 @@ def main():
                 rec.update(status=st, tier=tier, secs=secs)
                 results.append(rec)
                 done_n += 1
-                if done_n % 50 == 0:
+                if done_n % 50 == 0 and not a.wt:
                     partial.write_text(json.dumps([r for r in results if r["tier"]], indent=0))
                 if done_n % 100 == 0:
                     print(f"  {done_n}/{len(jobs)}", flush=True)
