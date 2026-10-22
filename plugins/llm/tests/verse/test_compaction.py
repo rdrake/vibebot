@@ -145,6 +145,10 @@ class TestCompactVerse:
         assert rows[-1][1] == "llm"
         assert "Past events" in rows[-1][0]
         assert client.calls and client.calls[0]["op"] == "compact"
+        # The chronicler can only summarise what it is shown: every
+        # compacted (deleted) event's summary must be in the prompt.
+        prompt_lines = client.calls[0]["messages"][1]["content"].splitlines()
+        assert sorted(prompt_lines) == sorted(f"- old{i}" for i in range(25))
         assert len(usage_calls) == 1
         assert usage_calls[0]["op"] == "compact"
 
@@ -299,6 +303,15 @@ class TestCompactVerse:
         assert len(bullets) <= _MAX_BULLET_BLOCK_CHARS
         kept_bullet_lines = bullets.count("\n") + 1 if bullets else 0
         assert kept_bullet_lines < n_events  # i.e. some were trimmed
+        # Only the overflow is trimmed: the prompt keeps the largest oldest
+        # prefix that fits. Every bullet here is the same length, so that is
+        # the biggest N with N bullets + (N - 1) newlines under the cap.
+        bullet_len = len("- ") + _MAX_SUMMARY_CHARS_PER_EVENT
+        fits = max(
+            n for n in range(1, n_events + 1) if n * bullet_len + (n - 1) <= _MAX_BULLET_BLOCK_CHARS
+        )
+        assert kept_bullet_lines == fits > 0
+        assert bullets.startswith("- e000-")
 
         # After compaction, surviving events = (n_events - kept) originals
         # + 1 digest. The bullet block trims the NEWEST events off the end so
@@ -316,6 +329,7 @@ class TestCompactVerse:
         # Survivors are the NEWEST events (end-trimmed off the prompt); the
         # oldest were compacted into the digest and deleted.
         assert survivor_ids == ids[kept_bullet_lines:]
+        assert len(survivor_ids) < n_events  # the pass made forward progress
 
     def test_per_event_summary_cap_truncates_long_summaries(self, verse_db_dir: Path) -> None:
         from llm.verse.compaction import (
@@ -437,8 +451,9 @@ class TestNextLocalTime:
         struct = _t.struct_time((2026, 5, 8, 3, 0, 0, 4, 128, -1))
         now_ts = _t.mktime(struct)
         out = _next_local_time("10:00", now=lambda: now_ts)
-        assert out > now_ts
-        assert (out - now_ts) < 86400  # under one day away
+        assert out == now_ts + 7 * 3600
+        fired = _t.localtime(out)
+        assert (fired.tm_mday, fired.tm_hour, fired.tm_min) == (8, 10, 0)
 
     def test_returns_tomorrow_when_hhmm_already_passed(self) -> None:
         import time as _t
@@ -448,8 +463,23 @@ class TestNextLocalTime:
         struct = _t.struct_time((2026, 5, 8, 14, 0, 0, 4, 128, -1))
         now_ts = _t.mktime(struct)
         out = _next_local_time("10:00", now=lambda: now_ts)
-        assert (out - now_ts) > 0
-        assert (out - now_ts) < 86400  # under one day away
+        assert out == now_ts + 20 * 3600
+        fired = _t.localtime(out)
+        assert (fired.tm_mday, fired.tm_hour, fired.tm_min) == (9, 10, 0)
+
+    def test_minute_zero_is_a_valid_time(self) -> None:
+        """Prod fires at "03:00"; minute 00 must not read as malformed (that
+        would fall back to +1 h and run compaction hourly)."""
+        import time as _t
+
+        from llm.verse.compaction import _next_local_time
+
+        struct = _t.struct_time((2026, 5, 8, 1, 0, 0, 4, 128, -1))
+        now_ts = _t.mktime(struct)
+        out = _next_local_time("03:00", now=lambda: now_ts)
+        assert out == now_ts + 2 * 3600
+        fired = _t.localtime(out)
+        assert (fired.tm_hour, fired.tm_min) == (3, 0)
 
     def test_malformed_hhmm_falls_back_to_one_hour(self) -> None:
         from llm.verse.compaction import _next_local_time
@@ -462,3 +492,61 @@ class TestNextLocalTime:
 
         out = _next_local_time("25:99", now=lambda: 1000.0)
         assert 3590.0 < (out - 1000.0) < 3610.0
+
+
+class _FakeSchedule:
+    """Stands in for supybot's ``schedule`` module: records addEvent calls."""
+
+    def __init__(self) -> None:
+        self.added: list[tuple[object, float, str]] = []
+
+    def addEvent(self, f, t, name=None):  # noqa: N802 - supybot API name
+        self.added.append((f, t, name))
+        return name
+
+    def removeEvent(self, name):  # noqa: N802 - supybot API name
+        raise KeyError(name)
+
+
+class TestRegisterDailyTimer:
+    def test_arms_next_0300_from_supplied_clock(self) -> None:
+        import time as _t
+
+        from llm.verse.compaction import register_daily_timer
+
+        struct = _t.struct_time((2026, 5, 8, 1, 0, 0, 4, 128, -1))
+        now_ts = _t.mktime(struct)
+        sched = _FakeSchedule()
+
+        def callback() -> None:
+            return None
+
+        register_daily_timer(
+            schedule_module=sched,
+            fire_at_local="03:00",
+            callback=callback,
+            name="t",
+            now=lambda: now_ts,
+        )
+        assert len(sched.added) == 1
+        f, fire_at, name = sched.added[0]
+        assert f is callback and name == "t"
+        assert fire_at == now_ts + 2 * 3600
+        fired = _t.localtime(fire_at)
+        assert (fired.tm_mday, fired.tm_hour, fired.tm_min) == (8, 3, 0)
+
+    def test_without_now_uses_wall_clock(self) -> None:
+        """Prod omits ``now``; the timer must arm off the real clock."""
+        import time as _t
+
+        from llm.verse.compaction import register_daily_timer
+
+        sched = _FakeSchedule()
+        before = _t.time()
+        register_daily_timer(schedule_module=sched, fire_at_local="03:00", callback=lambda: None)
+        after = _t.time()
+        assert len(sched.added) == 1
+        fire_at = sched.added[0][1]
+        assert before < fire_at <= after + 86400
+        fired = _t.localtime(fire_at)
+        assert (fired.tm_hour, fired.tm_min) == (3, 0)
