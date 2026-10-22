@@ -48,7 +48,11 @@ Jobs:
 - **Job 2062 (A):** finishes `plugin.py` at `48b2f5e`. It resumed from the local checkpoint with 2,600 done, leaving 1,083 to run on 88 workers.
 - **Job 2063 (B):** re-sweeps every module on main at `7f8412e`, the code with the 213 new tests, to measure how far the kill rates moved.
 
-A job that dies resumes when resubmitted with the same arguments. The `plugin.py` part-A evaluation (`wf_48ed1eba-06a`) covers the 448 survivors from the first 2,500 mutants. Part B gets the rest.
+A job that dies resumes when resubmitted with the same arguments.
+
+- **Job A:** DONE at 05:31. `plugin.py` at `48b2f5e` killed 2,930, survived 753 and left 421 uncovered, for a 79.6% kill rate.
+- **Part-A evaluation:** `wf_48ed1eba-06a`, args in `eval/args_plugin_a.json`. It covers the 448 survivors from the first 2,500 mutants.
+- **Part-B evaluation:** `wf_138fa122-568`, args in `eval/args_plugin_b.json`. It covers the other 726 records: 305 survived and 421 uncovered. Resume either one with the same script.
 
 ## Evaluation results: 33 modules DONE and on main (2026-10-22)
 
