@@ -390,6 +390,19 @@ class TestXaiChat:
         assert "x-grok-conv-id" not in post.calls[-1]["headers"]
         assert post.calls[-1]["url"] == captured["url"]
 
+    @pytest.mark.parametrize("tools", [None, []])
+    def test_toolless_call_sends_no_tools_key(
+        self, post: FakePost, tools: list[dict[str, Any]] | None
+    ) -> None:
+        # Verse, the meme picker and JSON calls send no tools. litellm left
+        # the key out, and an OpenAI-compatible API wants a non-empty array
+        # whenever "tools" is present.
+        provider.chat(GROK, [{"role": "user", "content": "x"}], timeout=30, tools=tools)
+        assert post.body == {
+            "model": "grok-4-1-fast-non-reasoning",
+            "messages": [{"role": "user", "content": "x"}],
+        }
+
     def test_json_reply(self, post: FakePost) -> None:
         provider.chat(GROK, [{"role": "user", "content": "x"}], timeout=30, json_reply=True)
         assert post.body["response_format"] == {"type": "json_object"}
@@ -537,6 +550,26 @@ class TestSearch:
         # 200 fresh × 1.25 + 800 cached × 0.20 + 10 output × 2.50, per million
         assert reply.cost == pytest.approx((250 + 160 + 25) / 1e6)
 
+    def test_citations_alone_ground_the_reply(self, post: FakePost) -> None:
+        # A reply that cites results consulted the web, even when the output
+        # carries no *search* item; it still earns the grounding icon.
+        post.reply = {
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "It rained.",
+                            "annotations": [{"type": "url_citation", "url": "https://a.example"}],
+                        }
+                    ],
+                }
+            ]
+        }
+        reply = provider.search("xai/grok-4.3", "q", timeout=60)
+        assert (reply.text, reply.grounded) == ("It rained.", True)
+
     def test_ungrounded(self, post: FakePost) -> None:
         post.reply = {
             "output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}]
@@ -588,6 +621,15 @@ class TestDraw:
 
     def test_priced_from_table_without_ticks(self, post: FakePost) -> None:
         post.reply = {"data": [{"b64_json": base64.b64encode(b"PNG").decode()}]}
+        assert provider.draw("xai/grok-imagine-image", "a cat", timeout=60).cost == 0.02
+
+    def test_zero_ticks_priced_from_table(self, post: FakePost) -> None:
+        # Zero ticks must not book the draw as free: draw spend once sat at
+        # $0.00 for four months.
+        post.reply = {
+            "data": [{"b64_json": base64.b64encode(b"PNG").decode()}],
+            "usage": {"cost_in_usd_ticks": 0},
+        }
         assert provider.draw("xai/grok-imagine-image", "a cat", timeout=60).cost == 0.02
 
     def test_needs_xai(self, post: FakePost) -> None:
