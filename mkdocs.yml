@@ -1,4 +1,4 @@
-site_name: VibeBot v8
+site_name: VibeBot
 site_url: https://rdrake.github.io/vibebot-v8/
 repo_url: https://github.com/rdrake/vibebot-v8
 repo_name: rdrake/vibebot-v8
@@ -8,12 +8,27 @@ strict: true
 theme:
   name: material
   palette:
-    scheme: slate
-    primary: black
-    accent: light blue
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to system preference
   font:
-    text: Inter
-    code: JetBrains Mono
+    text: IBM Plex Sans
+    code: IBM Plex Mono
   icon:
     repo: fontawesome/brands/github
   features:
@@ -22,9 +37,16 @@ theme:
     - navigation.tabs
     - navigation.sections
     - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - navigation.path
+    - toc.follow
     - search.suggest
     - search.highlight
     - content.code.copy
+
+extra_css:
+  - stylesheets/extra.css
 
 plugins:
   - search
@@ -55,6 +77,7 @@ markdown_extensions:
       anchor_linenums: true
   - pymdownx.inlinehilite
   - attr_list
+  - md_in_html
   - def_list
   - tables
   - toc:

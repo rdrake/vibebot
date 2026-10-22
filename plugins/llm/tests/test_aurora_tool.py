@@ -245,10 +245,10 @@ def test_expired_cloud_entries_evicted(env) -> None:
     _payload(plugin, "Ottawa", now=NOW + timedelta(minutes=30))
     assert len([k for k in plugin._sw_cache if k.startswith("clouds:")]) == 2  # both fresh
 
-    geo.return_value = Place("Toronto, Ontario", 43.7, -79.42, "America/Toronto")
-    _payload(plugin, "Toronto", now=NOW + timedelta(hours=1, seconds=1))
+    geo.return_value = Place("Hamilton, Ontario", 43.26, -79.87, "America/Toronto")
+    _payload(plugin, "Hamilton", now=NOW + timedelta(hours=1, seconds=1))
     assert sorted(k for k in plugin._sw_cache if k.startswith("clouds:")) == [
-        "clouds:43.7,-79.42",
+        "clouds:43.26,-79.87",
         "clouds:45.42,-75.7",
     ]
     assert "ovation" in plugin._sw_cache  # other feeds untouched

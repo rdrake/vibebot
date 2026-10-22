@@ -11,7 +11,7 @@ be while it is. It is on in every channel; see
 **Users.** Mention the bot and name a place:
 
 ```
-<you> VibeBot, any aurora tonight in Toronto?
+<you> VibeBot, any aurora tonight in Thunder Bay?
 ```
 
 The reply covers the aurora odds overhead and toward the pole, the solar wind
@@ -34,7 +34,7 @@ A runtime `@config` change is lost when the bot restarts; to keep it, set it in
 Ask in plain language. There is no command.
 
 ```
-<you>     VibeBot, any aurora tonight in Toronto?
+<you>     VibeBot, any aurora tonight in Thunder Bay?
 <VibeBot> Unlikely overhead (4%), but up to 35% toward the northern horizon
           around 50°N. Bz is -12 nT at 610 km/s, so storm conditions have
           held for about 95 minutes. Dark from 19:42, clouds 20% at 21:00.
