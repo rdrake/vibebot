@@ -51,7 +51,12 @@ Jobs:
 A job that dies resumes when resubmitted with the same arguments.
 
 - **Job A:** DONE at 05:31. `plugin.py` at `48b2f5e` killed 2,930, survived 753 and left 421 uncovered, for a 79.6% kill rate.
-- **Part-A evaluation:** `wf_48ed1eba-06a`, args in `eval/args_plugin_a.json`. It covers the 448 survivors from the first 2,500 mutants.
+- **Part-A evaluation:** `wf_48ed1eba-06a`, args in `eval/args_plugin_a.json`. It covers the 448 survivors from the first 2,500 mutants. DONE: merged and pushed at `41cac69`. 95 confirmed (19 high), 80 tests, 3 fixes:
+  - notify_when_online comma lists;
+  - lapsed watches free their MONITOR slot;
+  - irc_lookup comma targets.
+
+  The suite now stands at 3,544 tests and 95.2% coverage.
 - **Part-B evaluation:** `wf_138fa122-568`, args in `eval/args_plugin_b.json`. It covers the other 726 records: 305 survived and 421 uncovered. Resume either one with the same script.
 
 ## Evaluation results: 33 modules DONE and on main (2026-10-22)
