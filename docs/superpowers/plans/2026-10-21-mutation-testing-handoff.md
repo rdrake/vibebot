@@ -57,6 +57,7 @@ A job that dies resumes when resubmitted with the same arguments.
   - irc_lookup comma targets.
 
   The suite now stands at 3,544 tests and 95.2% coverage.
+- **Job B:** DONE at 06:42. Results are in `~/.cache/vibebot-mutation/afterB/`. The overall kill rate rose from 68.3% to 72.4% counting uncovered mutants, and from 77.6% to 81.0% over covered mutants only. Survivors fell from 2,090 to 1,752 and uncovered from 1,274 to 1,099. The biggest gains: meme_render +32, ircquery +13, compaction +12. plugin.py moved only +0.5 because part A's tests landed after `7f8412e`. The one regression: `taste_mine` line 104, the `name[:1]` capitalisation, flipped from killed to survived.
 - **Part-B evaluation:** `wf_138fa122-568`, args in `eval/args_plugin_b.json`. It covers the other 726 records: 305 survived and 421 uncovered. Resume either one with the same script.
 
 ## Evaluation results: 33 modules DONE and on main (2026-10-22)
