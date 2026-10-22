@@ -64,6 +64,20 @@ A job that dies resumes when resubmitted with the same arguments.
   - The report is `eval/report_plugin_b.md`, and the result is `eval/result_plugin_b.json`.
   - 176 low gaps are left unverified.
 
+**Round 2 (2026-10-22): DONE and on main.**
+- **Scope:** `provider`, `persistence`, `github` and `taste_mine`, from the `afterB` survivors.
+- **Result:** 8 medium gaps got tests and no code bugs were found. Everything left is low severity.
+- **Docs audit:** 90 defects fixed in 24 files.
+- **Report:** `eval/report_round2.md`. It wrongly calls 49 gaps "unadjudicated": they are all low severity, and the skeptics skip low findings by design.
+
+**Final sweep: job 2144 (`C-final-ad26bfa`), RUNNING.**
+- **Where:** gpu05, 96 cores, 512 GB. Results go to `fs01:~/vibebot-mut/runs/C-final-ad26bfa/mut/`.
+- **When it logs SWEEPDONE:**
+  - Rsync the results to `~/.cache/vibebot-mutation/final/`.
+  - Compare per-module kill rates against `mut/` (68.3% overall, before any new tests) and `afterB/` (72.4%).
+  - Evaluate only a module that shows new med/high survivors, then close this doc out.
+- **Missing from the sweep:** the 4 provider tests in `e8069bb` landed after `ad26bfa`.
+
 **All planned evaluation is complete.** What's left is backlog:
 - the `provider.py` Anthropic reply and cost tests;
 - the `taste_mine` line-104 regression;
