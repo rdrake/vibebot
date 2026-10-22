@@ -66,7 +66,7 @@ Your memories are filed under your authenticated account, and only there. The bo
 
 ## Custom instructions
 
-Set a persistent instruction that shapes how the bot answers you. On every path but one it rides along as a user-role message fenced in `<user_instruction>` markers rather than as part of the system prompt, so it steers the reply but cannot override the bot's identity or its safety rules.
+Set a persistent instruction that shapes how the bot answers you. It rides along as a user-role message fenced in `<user_instruction>` markers rather than as part of the system prompt, so it steers the reply but cannot override the bot's identity or its safety rules.
 
 ```
 @instruct Always respond in French

@@ -77,7 +77,7 @@ VibeBot, every Monday at 9am check my PRs and message me directly
 
 ## What a task can do at run time
 
-A fire runs on the reminder-action profile — the one a `@remind` action fire uses, not the chat profile you get from `@ask`. It is the only route that sees all 20 of the bot's model-facing tools; chat sees at most ten of them. A fire happens with nobody present to type a command, so it keeps the bookkeeping tools too. Capabilities are fixed at `llm.ask` and `llm.draw`, so owner and admin powers are never inherited.
+A fire runs on the reminder-action profile — the one a `@remind` action fire uses, not the chat profile you get from `@ask`. It sees all 20 of the built-in tools, including the bookkeeping ones chat hides, but not the chat-only extras (aurora, irc_lookup, reactions, make_meme, the Limnoria bridge). A fire happens with nobody present to type a command, so it keeps the bookkeeping tools too. Capabilities are fixed at `llm.ask` and `llm.draw`, so owner and admin powers are never inherited.
 
 - **Search** the web.
 - **Fetch** URLs.
@@ -87,7 +87,7 @@ A fire runs on the reminder-action profile — the one a `@remind` action fire u
 
 The Limnoria bridge is not available at fire time — it rides `@ask`, mentions and PMs only. Neither is scheduling: a task can set a follow-up reminder, but it cannot schedule another task.
 
-Each run counts against your normal `@ask` rate limit. One person may hold at most five active tasks *in a channel*.
+A run is skipped while you're over your `@ask` rate limit, but runs don't use up that limit. One person may hold at most five active tasks *in a channel*.
 
 ## Recurring schedules
 

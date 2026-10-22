@@ -39,7 +39,7 @@ A reminder has to fire between 10 seconds and 7 days from now, the text after `@
 
 ## Action reminders
 
-If your reminder asks the bot to *perform a task* (look something up, check a status, fetch a URL, summarise something), the bot runs the task as a fresh AI query when the timer fires. The query has the bot's full tool surface: web search, URL fetch, code, drawing, memory, and nested reminders.
+If your reminder asks the bot to *perform a task* (look something up, check a status, fetch a URL, summarise something), the bot runs the task as a fresh AI query when the timer fires. The query can search the web, fetch URLs, draw, read and edit your memories, check status pages, and list or cancel your pending tasks. It cannot set another reminder.
 
 ```
 @remind in 2 hours check the status of CVE-2026-31431 in Debian 12 and 13
@@ -71,13 +71,13 @@ VibeBot, every weekday at 9 a.m. summarize the overnight CVE feed
 
 Anything that needs tools at fire time becomes a [scheduled task](scheduled-tasks.md). Plain echo reminders also recur: `@remind every Friday at 5 p.m. switch laundry over` schedules one reminder that re-arms itself after each fire, up to 50 times, before you have to set it again. It keeps the same id the whole way, so the id `@remind list` showed you still cancels it after it has fired.
 
-None of it can be listed or cancelled by talking to the bot — creating is all chat can do. Everything you own, reminders and scheduled tasks alike, comes back through `@remind list` and `@remind delete`, below.
+Where an operator has turned on `pendingTasksEnabled`, you can also ask the bot to list or cancel them. `@remind list` and `@remind delete`, below, always work and cover reminders and scheduled tasks alike.
 
 Things to know:
 
-- **Action reminders count against your `@ask` rate limit.** If you're over the limit when one fires, the bot delivers your original text as a plain reminder with a note, and makes no API call.
+- **Action reminders respect your `@ask` rate limit but don't use it up.** If you're over the limit when one fires, the bot delivers your original text as a plain reminder with a note, and makes no API call.
 - **No elevated capabilities at fire time.** Even if an owner or admin scheduled the action, it runs without those rights.
-- **A fired scheduled task cannot schedule another one.** The depth cap is one. A recurring reminder also loses `set_reminder` at fire time, so it cannot double-book against the scheduler's own re-arm.
+- **A fired scheduled task cannot schedule another one.** The depth cap is one. An action reminder also loses `set_reminder` at fire time, so it cannot set another reminder or double-book against a recurring chain's own re-arm.
 - **Recurring chains cap at 50 fires.** After that, re-arm the reminder.
 - **Scheduled tasks need an authenticated account.** Log in to your network account first.
 - **Conversational scheduling is per channel.** The plain-English forms in this section need `pendingTasksEnabled` on that channel; `@remind` does not.
@@ -93,7 +93,7 @@ Things to know:
 
 `list` marks action reminders `[auto]` and [scheduled tasks](scheduled-tasks.md) `[task]`. Delete either kind by the id `list` shows it under.
 
-`@remind clear` cancels every reminder and scheduled task you own. It says what went, so `Cleared 2 reminders and 1 scheduled task.` is your receipt.
+`@remind clear` cancels every reminder and scheduled task you own. It reacts 👍 to your message. On a server without reactions it replies with what went instead, such as `Cleared 2 reminders and 1 scheduled task.`
 
 ## Delivery
 
