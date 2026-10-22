@@ -209,6 +209,59 @@ class TestAnthropicRequest:
         assert "cache_control" not in post.body["system"][1]
         assert post.body["messages"] == expected["messages"]
 
+    # The Messages API rejects an empty text block, and empty message content,
+    # with a 400, so empty input must leave nothing on the wire.
+
+    def test_empty_system_message_is_dropped_and_breakpoint_skips_it(self, post: FakePost) -> None:
+        provider.chat(
+            HAIKU,
+            [
+                {"role": "system", "content": ""},
+                {"role": "system", "content": "A"},
+                {"role": "user", "content": "u"},
+            ],
+            timeout=30,
+        )
+        assert post.body["system"] == [
+            {"type": "text", "text": "A", "cache_control": {"type": "ephemeral"}}
+        ]
+
+    def test_empty_turn_adds_nothing_and_neighbours_merge(self, post: FakePost) -> None:
+        provider.chat(
+            HAIKU,
+            [
+                {"role": "user", "content": "a"},
+                {"role": "assistant", "content": ""},
+                {"role": "user", "content": "b"},
+            ],
+            timeout=30,
+        )
+        assert post.body["messages"] == [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}],
+            }
+        ]
+
+    def test_image_only_user_message_sends_no_empty_text_block(self, post: FakePost) -> None:
+        url = "https://h/cat.png"
+        provider.chat(
+            HAIKU,
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": ""},
+                        {"type": "image_url", "image_url": {"url": url}},
+                    ],
+                }
+            ],
+            timeout=30,
+        )
+        assert post.body["messages"] == [
+            {"role": "user", "content": [{"type": "image", "source": {"type": "url", "url": url}}]}
+        ]
+
     def test_missing_key_is_auth_failure(
         self, post: FakePost, monkeypatch: pytest.MonkeyPatch
     ) -> None:
