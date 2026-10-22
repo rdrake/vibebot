@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import urllib.error
 
@@ -53,6 +54,24 @@ def _never(url: str, raw: bool) -> str:
     raise AssertionError(f"unexpected fetch {url}")
 
 
+class _RawFile:
+    """A contents-API body that answers the way GitHub does for each Accept.
+
+    ``application/vnd.github.raw`` gets the file text; the default JSON Accept
+    gets a metadata envelope with the text base64-encoded, which is no use in a
+    digest.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def serve(self, raw: bool) -> str:
+        if raw:
+            return self.text
+        encoded = base64.b64encode(self.text.encode()).decode()
+        return json.dumps({"type": "file", "encoding": "base64", "content": encoded})
+
+
 def _fake(routes: dict[str, object]):
     calls: list[str] = []
 
@@ -61,6 +80,8 @@ def _fake(routes: dict[str, object]):
         body = routes[url]
         if isinstance(body, Exception):
             raise body
+        if isinstance(body, _RawFile):
+            return body.serve(raw)
         return body if isinstance(body, str) else json.dumps(body)
 
     return fetch, calls
@@ -165,6 +186,42 @@ class TestDigest:
         assert text is not None
         assert "Repository o/r: A bot" in text
         assert "README" not in text
+
+    def test_repo_includes_readme_text(self) -> None:
+        fetch, _ = _fake(
+            {
+                BASE: {"full_name": "o/r", "description": "A bot"},
+                f"{BASE}/readme": _RawFile("# Title\nWelcome aboard."),
+            }
+        )
+        text = github.digest("https://github.com/o/r", fetch=fetch)
+        assert text is not None
+        assert "README:\n# Title\nWelcome aboard." in text
+
+    def test_blob_shows_the_file_text_at_its_ref(self) -> None:
+        fetch, _ = _fake({f"{BASE}/contents/src/a.c?ref=main": _RawFile("int answer = 42;")})
+        text = github.digest("https://github.com/o/r/blob/main/src/a.c", fetch=fetch)
+        assert text is not None
+        assert "File src/a.c @ main:\nint answer = 42;" in text
+
+    def test_gist_shows_owner_description_and_each_file(self) -> None:
+        fetch, _ = _fake(
+            {
+                "https://api.github.com/gists/491f": {
+                    "owner": {"login": "MrLenin"},
+                    "description": "notes on push",
+                    "files": {
+                        "a.md": {"content": "first file body"},
+                        "b.sh": {"content": "echo second"},
+                    },
+                }
+            }
+        )
+        text = github.digest("https://gist.github.com/MrLenin/491f", fetch=fetch)
+        assert text is not None
+        assert "Gist by MrLenin: notes on push" in text
+        assert "--- a.md\nfirst file body" in text
+        assert "--- b.sh\necho second" in text
 
     def test_raw_is_fetched_verbatim(self) -> None:
         url = "https://raw.githubusercontent.com/o/r/main/x.txt"
