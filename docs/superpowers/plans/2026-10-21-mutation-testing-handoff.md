@@ -2,6 +2,8 @@
 
 Pick up from here in any session. Goal (owner): find out whether the test suite actually proves the code, or only gives a false sense of security.
 
+> **Owner authorization (2026-10-21):** "you can edit and push as you'd like". The owner expects this pass to uncover many bugs. Fix real code bugs, not only tests, and push from the main session in reviewed batches, each with `make test-all` green. Subagents still never push: a push is a prod deploy.
+>
 > **Owner rule: the tests prove the code, not the other way around.** When a mutant survives, take the intended behaviour from the docs, the user-visible contract, or the incident the code guards, never from what the code does today. If the original code is what's wrong, report a code bug; don't write a test that pins it.
 
 ## State at hand-off
@@ -51,7 +53,7 @@ Once `SWEEPDONE` appears:
    - Is the claimed intended behaviour grounded in the spec, or is it derived from the code?
 
    A finding is kept unless refuted.
-4. **Write tests** (one agent per module, in an isolated worktree off **current main**). Write the tests that kill the confirmed gaps, asserting the intended behaviour. Prove each one passes on the original code and fails on the mutant. Put them in the existing test file for that module. Commit locally in the worktree. **Never push**: a push to main is a prod deploy. `code-bug` findings are reported, not "fixed" by a test.
+4. **Write tests** (one agent per module, in an isolated worktree off **current main**). Write the tests that kill the confirmed gaps, asserting the intended behaviour. Prove each one passes on the original code and fails on the mutant. Put them in the existing test file for that module. Commit locally in the worktree. Subagents never push. The main session reviews each worktree's commits, cherry-picks them, runs `make test-all` and pushes. A `code-bug` finding gets a test asserting the *intended* behaviour (red on the current code), plus a code fix that turns it green. It is never fixed by pinning what the code does now.
 5. **Synthesize** a report: the per-module kill rate with uncovered counted separately, confirmed gaps by severity, code bugs, and what the thinning cost (compared with `pre_thinning/`).
 
 Early readings, partial: `meme_render.py` 137 of 273 survived, `github.py` 37 of 94 survived with 31 uncovered, `verse/compaction.py` 33 of 72 survived. `agenda.py`, `identity.py` and `tracing.py` kill nearly everything.
