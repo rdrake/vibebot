@@ -4448,7 +4448,8 @@ Examples (echo → action_prompt: ""):
 
             rewritten = reply.text
             if not rewritten.strip():
-                return None, 0, 0, 0.0
+                # No rewrite, but the call was made and billed: book it.
+                return None, reply.usage.input_tokens, reply.usage.output_tokens, reply.cost
 
             rewritten = rewritten.strip()
             grew_by = len(rewritten) - len(original_prompt)

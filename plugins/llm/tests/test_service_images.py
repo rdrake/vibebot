@@ -745,12 +745,18 @@ class TestImageGenerationPaths:
         )
 
     def test_rewrite_empty_response(self) -> None:
-        """GIVEN LLM returns empty content WHEN _rewrite_prompt_for_safety called THEN returns None tuple."""
-        self.mocker.patch("llm.service.provider.chat", return_value=make_completion_response(""))
+        """GIVEN the rewriter answers with nothing THEN there is no rewrite, but
+        the call was made and billed, so its usage still comes back."""
+        self.mocker.patch(
+            "llm.service.provider.chat",
+            return_value=make_completion_response(
+                "  ", prompt_tokens=10, completion_tokens=5, cost=0.002
+            ),
+        )
 
         result = self.service._rewrite_prompt_for_safety("bad prompt", "blocked", [], "#chan")
 
-        assert result == (None, 0, 0, 0.0)
+        assert result == (None, 10, 5, 0.002)
 
     def test_xai_model_kwargs(self) -> None:
         """GIVEN xai model WHEN _attempt_image_generation called THEN asks for high quality."""
