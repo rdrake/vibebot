@@ -289,6 +289,25 @@ class TestSendPipeline:
         )
         assert plugin.llm_service.sanitize_output.called
 
+    def test_multiline_rewrite_goes_out_as_one_line(self, announcing_plugin):
+        """A rewrite with a newline is collapsed before the send; left raw,
+        safeArgument would repr() it and the channel would see a quoted
+        string with a literal \\n."""
+        from llm.plugin import LLM
+
+        plugin = announcing_plugin
+        plugin._collapse_for_irc = LLM._collapse_for_irc
+        plugin._status_rewrite = MagicMock(return_value="Claude is wobbly\nErrors on Opus 4.5")
+
+        plugin._announce_status(
+            "https://status.claude.com",
+            statuspage.Delta(opened=(incident(),)),
+            plugin._status_read_cache["https://status.claude.com"],
+            lines_left=5,
+        )
+
+        assert plugin._sent_text == ["Claude is wobbly | Errors on Opus 4.5"]
+
     def test_line_is_truncated_at_a_word_boundary(self, announcing_plugin):
         """Chopping mid-word (or mid-URL) can change the registrable domain
         of a truncated link; truncation must fall back to the last space."""
@@ -652,6 +671,20 @@ class TestIrcForChannel:
 
         mocker.patch("llm.plugin.world").ircs = []
         assert LLM._irc_for_channel.__get__(announcing_plugin)("#nowhere") is None
+
+    def test_a_connection_without_the_channel_is_not_it(self, announcing_plugin, mocker):
+        """The bot parted #b: no connection is returned for it, so the
+        announcer skips it before spending a completion."""
+        from llm.plugin import LLM
+        from supybot import ircutils
+
+        conn = mocker.MagicMock()
+        conn.state.channels = ircutils.IrcDict({"#a": object()})
+        mocker.patch("llm.plugin.world").ircs = [conn]
+        find = LLM._irc_for_channel.__get__(announcing_plugin)
+
+        assert find("#b") is None
+        assert find("#a") is conn
 
     def test_finds_a_mixed_case_channel(self, announcing_plugin, mocker):
         from llm.plugin import LLM

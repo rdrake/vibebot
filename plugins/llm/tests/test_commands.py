@@ -564,6 +564,29 @@ class TestSendLongReplyMultiline:
         assert batch[0].server_tags == {"+draft/reply": "abc123"}
         assert all(set(m.server_tags) <= {"batch", "draft/multiline-concat"} for m in batch[1:])
 
+    def test_three_lines_still_batch(self, env):
+        """Replies up to 3 IRC lines go inline: exactly three is a batch."""
+        plugin, mock_irc, mock_msg = env
+
+        assert plugin._send_long_reply(mock_irc, mock_msg, "a\nb\nc") is True
+
+        batch = self._batch(mock_irc)
+        assert [m.args[1] for m in batch[1:-1]] == ["a", "b", "c"]
+        plugin.llm_service.save_markdown_to_http.assert_not_called()
+
+    def test_batched_reply_counts_as_delivered(self, env):
+        """A queued batch is a delivered reply: the turn is stored and booked
+        as a success, not as an undelivered error."""
+        plugin, mock_irc, mock_msg = env
+        result = AssistantResult(content="one\ntwo", spend=Spend.ZERO)
+
+        stored, delivered = plugin._dispatch_assistant_reply(
+            mock_irc, mock_msg, result, caller=Caller.from_msg(mock_msg), response="one\ntwo"
+        )
+
+        assert (stored, delivered) == ("one\ntwo", True)
+        mock_irc.queueBatch.assert_called_once()
+
     def test_over_cap_still_pastebins(self, env):
         """GIVEN 4 wire-lines against a cap of 3 WHEN sent THEN teaser + URL."""
         plugin, mock_irc, mock_msg = env

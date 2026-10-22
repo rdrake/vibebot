@@ -191,6 +191,19 @@ class TestDeliverPendingResult:
         # ...and no raw newline reaches the wire payload.
         assert "\n" not in msg_text.removesuffix("\r\n")
 
+    def test_failed_save_keeps_the_whole_collapsed_line(
+        self, plugin, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a completed result too long for one line WHEN the pastebin
+        save fails THEN the whole collapsed line goes out, not a bare teaser."""
+        mocker.patch.object(plugin, "_reply_mores_length", return_value=100)
+        plugin.llm_service.save_markdown_to_http.return_value = None
+        content = "first part of the answer\n" + "word " * 40
+
+        line = plugin._format_pending_completed_reply("alice", content, "#test")
+
+        assert line == plugin._collapse_for_irc(f"alice: {content}")
+
     def test_nul_in_completed_content_still_delivers(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN recovered content carrying a NUL byte WHEN delivered THEN the
         body is neutralized and the message still goes out.
