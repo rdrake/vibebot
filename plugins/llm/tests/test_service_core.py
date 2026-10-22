@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import TYPE_CHECKING
 
 import pytest
@@ -1628,13 +1629,40 @@ class TestBuildMessages:
         self.mocker = mocker
         self.service, self.mock_plugin = make_service()
 
-    def test_build_messages_with_images(self) -> None:
-        """GIVEN image URL list WHEN _build_messages called THEN last message has multimodal content."""
-        msgs = self.service._build_messages("describe this", ["https://img.png"])
-        last_msg = msgs[-1]
-        assert isinstance(last_msg["content"], list)
-        assert any(p["type"] == "image_url" for p in last_msg["content"])
-        assert any(p["type"] == "text" for p in last_msg["content"])
+    PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 16
+
+    def test_build_messages_inlines_the_image_bytes(self) -> None:
+        """The bot fetches the image itself and sends the bytes.
+
+        Anthropic fetches a URL source on its own and obeys robots.txt, so an
+        image on a host that disallows crawlers failed the whole turn with
+        HTTP 400 (2026-10-22, #linux).
+        """
+        self.mocker.patch.object(
+            self.service, "_download_image_bytes", return_value=(self.PNG, "png")
+        )
+        msgs = self.service._build_messages("describe this", ["https://i.example/cat.png"])
+        parts = msgs[-1]["content"]
+        assert parts[0] == {"type": "text", "text": "describe this"}
+        assert parts[1] == {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64," + base64.b64encode(self.PNG).decode()},
+        }
+
+    @pytest.mark.parametrize(
+        "fetched",
+        [None, (b"<!doctype html><html>", "png"), (b"\xff\xd8\xff" + b"\0" * (5 * 2**20), "jpg")],
+        ids=["download-failed", "not-an-image", "over-5MB"],
+    )
+    def test_build_messages_says_when_an_image_could_not_be_loaded(self, fetched) -> None:
+        """An image the bot cannot send is left out and named, so the model
+        neither fails the turn nor describes a picture it never saw."""
+        self.mocker.patch.object(self.service, "_download_image_bytes", return_value=fetched)
+        msgs = self.service._build_messages("describe this", ["https://i.example/cat.png"])
+        parts = msgs[-1]["content"]
+        assert [p["type"] for p in parts] == ["text", "text"]
+        assert "https://i.example/cat.png" in parts[1]["text"]
+        assert "could not be loaded" in parts[1]["text"]
 
     def test_build_messages_with_channel_history(self) -> None:
         """GIVEN channel history WHEN _build_messages called THEN 'channel discussion' appears."""

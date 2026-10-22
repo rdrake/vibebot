@@ -433,8 +433,16 @@ def _anthropic_user_blocks(content: Any) -> list[dict[str, Any]]:
         elif part.get("type") == "image_url":
             url = (part.get("image_url") or {}).get("url")
             if url:
-                blocks.append({"type": "image", "source": {"type": "url", "url": url}})
+                blocks.append({"type": "image", "source": _anthropic_image_source(url)})
     return blocks
+
+
+def _anthropic_image_source(url: str) -> dict[str, str]:
+    """A ``data:<type>;base64,`` URL goes inline; anything else Anthropic fetches."""
+    head, sep, data = url.partition(";base64,")
+    if sep and head.startswith("data:"):
+        return {"type": "base64", "media_type": head.removeprefix("data:"), "data": data}
+    return {"type": "url", "url": url}
 
 
 def _tool_input(arguments: Any) -> dict[str, Any]:

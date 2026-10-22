@@ -262,6 +262,28 @@ class TestAnthropicRequest:
             {"role": "user", "content": [{"type": "image", "source": {"type": "url", "url": url}}]}
         ]
 
+    def test_inline_image_is_sent_as_base64(self, post: FakePost) -> None:
+        provider.chat(
+            HAIKU,
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/webp;base64,UklGRg=="},
+                        },
+                    ],
+                }
+            ],
+            timeout=30,
+        )
+        assert post.body["messages"][0]["content"][1] == {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/webp", "data": "UklGRg=="},
+        }
+
     def test_missing_key_is_auth_failure(
         self, post: FakePost, monkeypatch: pytest.MonkeyPatch
     ) -> None:

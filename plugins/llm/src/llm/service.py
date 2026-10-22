@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import functools
 import hashlib
@@ -1841,6 +1842,19 @@ if TYPE_CHECKING:
     from .context import ConversationContext
     from .persistence import LLMDatabase, MemoryRow
     from .plugin import LLM
+
+
+# What a chat image may be: the formats Anthropic and xAI both take, told
+# apart by their leading bytes (WebP also needs "WEBP" at offset 8), and
+# Anthropic's per-image ceiling.
+_IMAGE_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"RIFF", "image/webp"),
+)
+_INLINE_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 
 
 def validate_external_url(url: str) -> bool:
@@ -6385,6 +6399,28 @@ Examples (echo → action_prompt: ""):
             self.log.warning("Failed to download image from %s: %s", url[:200], e)
             return None
 
+    def _inline_image(self, url: str) -> str | None:
+        """The image at ``url`` as a ``data:`` URL, or None if it can't be sent.
+
+        The bot fetches it rather than the provider: Anthropic fetches a URL
+        source itself and obeys robots.txt, so a host that disallows crawlers
+        failed the whole turn with HTTP 400 (2026-10-22). The type comes from
+        the bytes, since a host can serve an HTML page under an image URL.
+        """
+        fetched = self._download_image_bytes(url)
+        if fetched is None:
+            return None
+        data, _ext = fetched
+        media_type = next((t for magic, t in _IMAGE_MAGIC if data.startswith(magic)), None)
+        if media_type == "image/webp" and data[8:12] != b"WEBP":
+            media_type = None
+        if media_type is None or len(data) > _INLINE_IMAGE_MAX_BYTES:
+            self.log.warning(
+                "image_not_inlined url=%s bytes=%i type=%s", url[:200], len(data), media_type
+            )
+            return None
+        return f"data:{media_type};base64,{base64.b64encode(data).decode()}"
+
     def _filter_images(self, images: list[str] | None) -> list[str] | None:
         """Drop invalid URLs, log how many were dropped, return None if empty."""
         if not images:
@@ -6530,7 +6566,13 @@ Examples (echo → action_prompt: ""):
             # Multi-modal message with images
             content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
             for img_url in images:
-                content.append({"type": "image_url", "image_url": {"url": img_url}})
+                inline = self._inline_image(img_url)
+                if inline:
+                    content.append({"type": "image_url", "image_url": {"url": inline}})
+                else:
+                    content.append(
+                        {"type": "text", "text": f"(The image at {img_url} could not be loaded.)"}
+                    )
             messages.append({"role": Role.USER, "content": content})
         else:
             # Simple text message
