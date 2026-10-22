@@ -17,7 +17,7 @@ The **contract** is what the behaviour is meant to be. In order of authority, it
 
 The value the code returns today is never the contract. Write the assertion from the contract first, then run the test.
 
-When the code disagrees with the contract, you have found a code bug. Keep the test red, fix the code, and say so in the commit. Check the contract twice before you change behaviour. In the evaluation (`~/.cache/vibebot-mutation/eval/report.md`), claims that "the code is wrong" were refuted about 40% of the time, against about 5% for claims that "this is untested". A test written from a misread contract changes prod behaviour for no reason.
+When the code disagrees with the contract, you have found a code bug. Keep the test red, fix the code, and say so in the commit. Check the contract twice before you change behaviour. In the evaluation (`eval/report.md` in the results archive the handoff doc names), claims that "the code is wrong" were refuted about 40% of the time, against about 5% for claims that "this is untested". A test written from a misread contract changes prod behaviour for no reason.
 
 ## 2. Assert the observable effect at the seam
 

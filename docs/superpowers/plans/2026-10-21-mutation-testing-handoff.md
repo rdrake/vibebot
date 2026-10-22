@@ -70,6 +70,8 @@ A job that dies resumes when resubmitted with the same arguments.
 - **Docs audit:** 90 defects fixed in 24 files.
 - **Report:** `eval/report_round2.md`. It wrongly calls 49 gaps "unadjudicated": they are all low severity, and the skeptics skip low findings by design.
 
+**Archive.** Every result, report and audit TSV is archived in `mutation-results-2026-10-22.tar.xz` (434 KB), kept in two places: `~/Documents/vibebot/` and `fs01:~/vibebot-mut/`. Paths below that start `~/.cache/vibebot-mutation/` are inside it. The sweep worktrees were deleted; `scripts/mutation_sweep.sh --setup <commit>` rebuilds them.
+
 **Final sweep: job 2144 (`C-final-ad26bfa`), DONE 2026-10-22 11:58.**
 - **Results:** `~/.cache/vibebot-mutation/final/`.
 - **Overall kill rate,** all 34 modules, with uncovered mutants counted as not killed:
