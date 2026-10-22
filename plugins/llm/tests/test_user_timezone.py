@@ -64,6 +64,17 @@ class TestTzCommand:
 
         assert _replies(mock_irc)[-1].startswith("Your time zone: Europe/London")
 
+    def test_shows_none_set(self, plugin_env) -> None:
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_user_timezone.return_value = None
+
+        plugin.tz(mock_irc, mock_msg, [])
+
+        assert _replies(mock_irc) == [
+            "No time zone set, so reminders use your client's clock or UTC. "
+            "Set one with @tz <Area/City>, e.g. @tz America/Toronto"
+        ]
+
     def test_clear(self, plugin_env) -> None:
         plugin, mock_irc, mock_msg = plugin_env
         plugin.db.delete_user_timezone.return_value = True

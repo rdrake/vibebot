@@ -1266,6 +1266,25 @@ class TestAvatarVerseSync:
         assert result.entity_id is not None
         return result.entity_id
 
+    def test_bare_avatar_shows_the_persona(self, avatar_verse_env) -> None:
+        plugin, irc, msg, _store = avatar_verse_env
+        plugin.db.get_avatar_persona.return_value = "a sly fox"
+
+        plugin.avatar(irc, msg, [])
+
+        irc.reply.assert_called_once_with("Current persona: a sly fox", prefixNick=False)
+        plugin.db.save_avatar_persona.assert_not_called()
+
+    def test_bare_avatar_without_one_says_how(self, avatar_verse_env) -> None:
+        plugin, irc, msg, _store = avatar_verse_env
+
+        plugin.avatar(irc, msg, [])
+
+        irc.reply.assert_called_once_with(
+            "No persona set. Use @avatar <text> to set one.", prefixNick=False
+        )
+        plugin.db.save_avatar_persona.assert_not_called()
+
     def test_in_verse_channel_with_avatar_updates_both(self, avatar_verse_env) -> None:
         """GIVEN verse-enabled channel + active avatar WHEN @avatar THEN both updated."""
         plugin, irc, msg, store = avatar_verse_env

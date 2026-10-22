@@ -1162,6 +1162,42 @@ class TestForgetCommand:
         # Other channel context should be untouched
         assert len(plugin.context.get_messages("!testnick", "#other")) == 1
 
+    def test_forget_in_a_pm_clears_the_pm_thread(self, plugin_env):
+        """Bare @forget in a PM clears the caller's PM conversation."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_msg.args = ("testbot", "@forget")
+        mock_msg.channel = None
+        plugin.context.add_message("!testnick", "testnick", "user", "secret plans")
+
+        plugin.forget(mock_irc, mock_msg, [])
+
+        assert plugin.context.get_messages("!testnick", "testnick") == []
+        assert mock_irc.reply.call_args[0][0] == "Context cleared."
+
+    def test_forget_named_channel_clears_only_your_thread_there(self, plugin_env):
+        """@forget #other from #test clears the caller's #other thread, and
+        cannot wipe #other's shared history from outside it."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.context.add_message("!testnick", "#other", "user", "my thread")
+        plugin.context.add_channel_message("#other", "bob", "user", "their chat")
+        plugin.context.add_channel_message("#test", "bob", "user", "here")
+
+        plugin.forget(mock_irc, mock_msg, ["#other"])
+
+        assert plugin.context.get_messages("!testnick", "#other") == []
+        assert len(plugin.context.get_channel_messages("#other")) == 1
+        assert len(plugin.context.get_channel_messages("#test")) == 1
+
+    def test_forget_from_a_pm_cannot_wipe_a_channel(self, plugin_env):
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_msg.args = ("testbot", "@forget #other")
+        mock_msg.channel = None
+        plugin.context.add_channel_message("#other", "bob", "user", "their chat")
+
+        plugin.forget(mock_irc, mock_msg, ["#other"])
+
+        assert len(plugin.context.get_channel_messages("#other")) == 1
+
 
 # ---------------------------------------------------------------------------
 # usage
@@ -1309,6 +1345,40 @@ class TestUsageCommand:
         # Not sent privately
         assert mock_irc.reply.call_args.kwargs.get("private") is not True
         assert mock_irc.reply.call_args.kwargs.get("prefixNick") is False
+
+    def test_usage_this_month_excludes_older_spend(self, plugin_env, test_db, mocker):
+        """ "This month" counts spend since the 1st, not all-time spend."""
+        plugin, mock_irc, mock_msg = plugin_env
+        real_db, plugin.db = plugin.db, test_db
+        try:
+            test_db.log_usage("!testnick", "#test", "ask", "m", 10, 10, 1.0, prompt="old")
+            with test_db._write_txn() as conn:
+                conn.execute("UPDATE usage SET timestamp = timestamp - 40 * 86400")
+            test_db.log_usage("!testnick", "#test", "ask", "m", 10, 10, 0.01, prompt="new")
+
+            plugin.usage(mock_irc, mock_msg, [])
+        finally:
+            plugin.db = real_db
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert reply_text.startswith("#test this month: $0.0100 (1 requests")
+        assert "You: $0.0100 (1 requests" in reply_text
+
+    def test_usage_context_expiry_uses_the_channel_timeout(self, plugin_env, test_db):
+        """A per-channel contextTimeoutMinutes override is the one applied."""
+        plugin, mock_irc, mock_msg = plugin_env
+        base = make_registry_side_effect()
+        plugin.registryValue.side_effect = lambda key, *a: (
+            10 if key == "contextTimeoutMinutes" and a == ("#test",) else base(key, *a)
+        )
+        plugin.context.add_message("!testnick", "#test", "user", "hi")
+        real_db, plugin.db = plugin.db, test_db
+        try:
+            plugin.usage(mock_irc, mock_msg, [])
+        finally:
+            plugin.db = real_db
+
+        assert mock_irc.reply.call_args[0][0].endswith("Context: 1/20 msgs, expires in 9m")
 
     def test_usage_channel_works_without_admin(self, plugin_env, mocker: MockerFixture):
         """GIVEN non-admin in channel WHEN usage called THEN stats shown (no error)."""
@@ -2757,6 +2827,16 @@ class TestInstructCommand:
         plugin.instruct(mock_irc, mock_msg, [])
         mock_irc.reply.assert_called_once()
         assert "Picard" in mock_irc.reply.call_args.args[0]
+
+    def test_instruct_no_args_and_none_set_says_how(self, plugin_env):
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.db.get_instruction.return_value = None
+
+        plugin.instruct(mock_irc, mock_msg, [])
+
+        mock_irc.reply.assert_called_once_with(
+            "No instruction set. Use @instruct <text> to set one.", prefixNick=False
+        )
 
     def test_instruct_clear_removes(self, plugin_env):
         """GIVEN 'clear' WHEN instruct called THEN deletes and confirms."""
