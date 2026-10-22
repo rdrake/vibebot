@@ -2306,10 +2306,9 @@ class LLMService:
         """Return the channel topic as a standalone user message, or None.
 
         Lives *outside* the cacheable prefix (system + context + ack) so
-        topic edits don't reset xAI's automatic prompt cache. The anti-
-        injection preamble in the system prompt still warns the model to
-        treat topic content as data, not instructions — that warning is
-        unaffected by where the topic sits in the message stream.
+        topic edits don't reset xAI's automatic prompt cache. Line breaks
+        are collapsed so a topic can't forge a new line of conversation;
+        nothing else marks it as data.
         """
         if not irc or not msg:
             return None
@@ -6470,8 +6469,8 @@ Examples (echo → action_prompt: ""):
                     nick = ircutils.nickFromHostmask(msg.prefix)
             memory_lines = "\n".join(f"- {fact}" for fact in memories)
             # Memories are user-authored and persistent — a poisoned fact must
-            # not be able to pose as an instruction. Fence them in markers the
-            # system preamble tells the model to treat strictly as data.
+            # not be able to pose as an instruction. Fence them in markers
+            # labelled as data; the system prompt itself says nothing about them.
             messages.append(
                 {
                     "role": Role.USER,
