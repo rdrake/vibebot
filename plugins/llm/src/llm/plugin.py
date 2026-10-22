@@ -4880,7 +4880,13 @@ class LLM(callbacks.Plugin):
             if action == "list":
                 mine = self.db.list_nick_watches(net, requester, max_age=_WATCH_MAX_AGE)
                 return result({"status": "ok", "watching": mine})
-            if not nick or len(nick) > 64 or not ircutils.isNick(nick, strictRfc=False):
+            # MONITOR targets are comma-separated: "a,b" would watch two.
+            if (
+                not nick
+                or len(nick) > 64
+                or "," in nick
+                or not ircutils.isNick(nick, strictRfc=False)
+            ):
                 return result({"error": "nick must be an IRC nick"})
             if ircutils.strEqual(nick, irc.nick):
                 return result({"error": "that is me"})
@@ -4947,8 +4953,9 @@ class LLM(callbacks.Plugin):
                 self._safe_queue(
                     irc, ircmsgs.privmsg(target, f"{requester}: {nick} is online now.")
                 )
-            if watchers:
-                self._safe_queue(irc, ircmsgs.IrcMsg(command="MONITOR", args=("-", nick)))
+            # Every row is gone, lapsed ones too: nothing watches the nick, so
+            # free its server slot (the list is capped; 734 means full).
+            self._safe_queue(irc, ircmsgs.IrcMsg(command="MONITOR", args=("-", nick)))
 
     do731 = do730  # RPL_MONOFFLINE
 
