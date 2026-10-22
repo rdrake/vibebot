@@ -146,6 +146,9 @@ class TestDigest:
         text = github.digest("https://github.com/o/r/commit/abc123", fetch=fetch)
         assert text is not None
         assert "Commit abc1234567 by Ann" in text
+        # The head carries the commit's own totals from the API's stats object.
+        head_line = next(ln for ln in text.splitlines() if ln.startswith("Commit "))
+        assert "(+1/-0)" in head_line
         assert "Do the thing" in text
         assert "- b.py (added, +1/-0)" in text
 
