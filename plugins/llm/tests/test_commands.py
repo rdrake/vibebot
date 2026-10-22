@@ -2990,6 +2990,69 @@ class TestCheckPendingTasks:
 # ---------------------------------------------------------------------------
 
 
+class TestPlaybackIsIgnored:
+    """A line that predates startup is bouncer or server playback. Replaying
+    @draw, @meme, @story or @rp would spend again and post again."""
+
+    @pytest.mark.parametrize(
+        ("command", "args"),
+        [
+            ("draw", ["a cat"]),
+            ("meme", ["drake | left on unread | left on read"]),
+            ("story", ["a tale of the lads"]),
+            ("rp", ["Archie kicks the door"]),
+        ],
+    )
+    def test_old_line_does_nothing(self, plugin_env, mocker, command, args) -> None:
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "acct"
+        mock_msg.time = plugin.startup_time - 10
+        preflight = mocker.patch.object(plugin, "_run_preflight")
+        dispatch = mocker.patch.object(plugin, "_dispatch_with_verse_routing")
+        before = list(plugin.llm_service.method_calls)
+
+        getattr(plugin, command)(mock_irc, mock_msg, args)
+
+        preflight.assert_not_called()
+        dispatch.assert_not_called()
+        assert plugin.llm_service.method_calls == before
+        mock_irc.reply.assert_not_called()
+        mock_irc.error.assert_not_called()
+        mock_irc.queueMsg.assert_not_called()
+
+
+class TestAskImplOverlay:
+    """What _ask_impl actually sends as the system overlay."""
+
+    def _run(self, plugin_env, mocker, **kwargs) -> str:
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"assistantSystemPrompt": "TALL TALES"})
+        )
+        mocker.patch.object(plugin, "_reply_and_book")
+        plugin.db.get_memories.return_value = []
+        plugin.db.get_instruction.return_value = None
+        plugin.llm_service.detect_images.return_value = []
+        pf = PreflightResult(False, Caller(Identity("alice", "acct"), "#test"))
+
+        plugin._ask_impl(mock_irc, mock_msg, "who got rid of school milk", pf, **kwargs)
+
+        return plugin.llm_service.assistant_completion.call_args.kwargs["system_prompt"]
+
+    def test_overlay_override_replaces_the_channel_overlay(self, plugin_env, mocker) -> None:
+        """A real-world question on a verse channel gets the factual overlay
+        instead of the tall-tale one, not as well as it."""
+        prompt = self._run(plugin_env, mocker, overlay_override="FACTUAL")
+
+        assert "FACTUAL" in prompt
+        assert "TALL TALES" not in prompt
+
+    def test_canon_block_is_appended_after_the_overlay(self, plugin_env, mocker) -> None:
+        prompt = self._run(plugin_env, mocker, verse_context="CANON BLOCK")
+
+        assert prompt == "TALL TALES\n\nCANON BLOCK"
+
+
 class TestVerseStorybook:
     """Cover the gated verse_storybook tool: spec parity + handler gates."""
 

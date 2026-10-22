@@ -580,6 +580,24 @@ class TestInvalidCommand:
         plugin._ask_impl.assert_called_once()
         plugin._run_preflight.assert_called_once()
 
+    def test_invalid_command_blocked_preflight_dispatches_nothing(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
+        """GIVEN a caller over the ask rate limit WHEN they address the bot
+        with an unknown command THEN no LLM turn is dispatched."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin._run_preflight = mocker.MagicMock(
+            return_value=PreflightResult(True, Caller(Identity("testuser", None), "#channel"))
+        )
+        dispatch = mocker.patch.object(plugin, "_dispatch_addressed_async")
+        plugin._ask_impl = mocker.MagicMock()
+        plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
+
+        dispatch.assert_not_called()
+        plugin._ask_impl.assert_not_called()
+
     def test_invalid_command_routes_through_verse_dispatch(
         self, plugin_with_mocks: tuple, mocker: MockerFixture
     ) -> None:
@@ -764,6 +782,47 @@ class TestInvalidCommand:
 
         plugin._ambient_inline_story.assert_not_called()
         assert plugin._verse_route_for.call_args.kwargs["force_roleplay"] is False
+
+
+class TestRouteAddressedGates:
+    """Nick-addressed chat ("vibebot hi") spends an assistant turn, so it
+    passes the same capability and preflight gates as @ask."""
+
+    def test_without_llm_ask_nothing_runs(self, plugin_env, mocker: MockerFixture) -> None:
+        plugin, irc, msg = plugin_env
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm.") and cap != "llm.ask",
+        )
+        preflight = mocker.patch.object(plugin, "_run_preflight")
+        dispatch = mocker.patch.object(plugin, "_dispatch_addressed_async")
+
+        plugin._route_addressed_to_assistant(irc, msg, "hi")
+
+        preflight.assert_not_called()
+        dispatch.assert_not_called()
+
+    def test_blocked_preflight_stops_the_turn(self, plugin_env, mocker: MockerFixture) -> None:
+        plugin, irc, msg = plugin_env
+        mocker.patch.object(
+            plugin, "_run_preflight", return_value=PreflightResult(True, Caller.from_msg(msg))
+        )
+        dispatch = mocker.patch.object(plugin, "_dispatch_addressed_async")
+
+        plugin._route_addressed_to_assistant(irc, msg, "hi")
+
+        dispatch.assert_not_called()
+
+    def test_passing_gates_dispatch_once(self, plugin_env, mocker: MockerFixture) -> None:
+        plugin, irc, msg = plugin_env
+        mocker.patch.object(
+            plugin, "_run_preflight", return_value=PreflightResult(False, Caller.from_msg(msg))
+        )
+        dispatch = mocker.patch.object(plugin, "_dispatch_addressed_async")
+
+        plugin._route_addressed_to_assistant(irc, msg, "hi")
+
+        dispatch.assert_called_once()
 
 
 class TestGetPluginHelp:

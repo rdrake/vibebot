@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from llm.identity import Caller, Identity
-from llm.plugin import _VERSE_COMPACTION_MODEL
+from llm.plugin import _VERSE_COMPACTION_MODEL, PreflightResult
 from llm.service import AssistantResult, Spend
 
 from .conftest import make_completion_response
@@ -2238,6 +2238,46 @@ class TestRunCompactionPassCallsAging:
         plugin._run_compaction_pass()
 
         assert len(seen) == 2
+
+
+class TestRpCommandGates:
+    """@rp shares @ask's rate limit, and on/off toggle without a turn."""
+
+    @pytest.fixture
+    def rp_env(self, plugin_env, mocker: MockerFixture):
+        plugin, irc, msg = plugin_env
+        dispatch = mocker.patch.object(plugin, "_dispatch_with_verse_routing")
+        return plugin, irc, msg, dispatch
+
+    def test_rate_limited_caller_gets_no_turn(self, rp_env, mocker: MockerFixture) -> None:
+        plugin, irc, msg, dispatch = rp_env
+        mocker.patch.object(
+            plugin, "_run_preflight", return_value=PreflightResult(True, Caller.from_msg(msg))
+        )
+
+        plugin.rp(irc, msg, ["on"])
+        plugin.rp(irc, msg, ["Archie kicks the door"])
+
+        dispatch.assert_not_called()
+        assert not plugin._roleplay_sticky_active(PreflightResult(False, Caller.from_msg(msg)))
+
+    @pytest.mark.parametrize(
+        ("toggle", "active", "reply"),
+        [
+            ("on", True, "Roleplay mode ON"),
+            ("off", False, "Roleplay mode off — back to normal chat."),
+        ],
+    )
+    def test_on_and_off_toggle_sticky_mode(self, rp_env, toggle, active, reply) -> None:
+        plugin, irc, msg, dispatch = rp_env
+        pf = PreflightResult(False, Caller.from_msg(msg))
+        plugin._roleplay_sticky_set(pf, not active)
+
+        plugin.rp(irc, msg, [toggle])
+
+        dispatch.assert_not_called()
+        assert plugin._roleplay_sticky_active(pf) is active
+        assert irc.reply.call_args.args[0].startswith(reply)
 
 
 class TestCompactionOutcomeLine:

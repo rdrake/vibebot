@@ -312,6 +312,20 @@ class TestBotLoopCap:
 
         assert dispatch.call_count == 3
 
+    def test_an_unknown_speaker_is_probed_and_let_through(self, wired) -> None:
+        """GIVEN a nick with no bot host, no bot tag and no WHO answer WHEN it
+        addresses the bot THEN its line is answered and a WHO goes out, so
+        the next line can be decided (nothing else ever asks)."""
+        plugin, mock_irc, mock_msg, dispatch = wired
+        self._as(mock_msg, "stranger")
+
+        plugin._route_addressed_to_assistant(mock_irc, mock_msg, "hello")
+
+        assert dispatch.call_count == 1
+        whos = [c.args[0] for c in mock_irc.queueMsg.call_args_list if c.args[0].command == "WHO"]
+        assert len(whos) == 1
+        assert whos[0].args[0] == "stranger"
+
     def test_an_unflagged_nick_is_never_capped(self, wired) -> None:
         """Nobody who has not been proven a bot is ever silenced."""
         plugin, mock_irc, mock_msg, dispatch = wired
