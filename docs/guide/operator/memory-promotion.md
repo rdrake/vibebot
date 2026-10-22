@@ -44,7 +44,7 @@ Candidates have no user-facing surface. Operators with database access can inspe
 
 The bot writes memories after these events:
 
-- Successful `@ask` responses, on the user who asked. Nick-addressed chat and verse turns share the `@ask` path and count as `@ask`; `@draw` and `@story` never extract.
+- Successful, delivered `@ask` responses from an authenticated user, on that user. Unauthenticated callers never extract. Nick-addressed chat and verse turns share the `@ask` path and count as `@ask`; `@draw` and `@story` never extract.
 - Explicit `save_memory` tool calls, when a user asks the bot to remember something.
 
 The candidate path applies only to automatic extraction. Anything the assistant chooses to remember through its own tool skips the candidate stage, so the model can record explicit user preferences in one shot. `save_memory` writes straight to the durable table and does not check the per-user cap, so an explicit "remember this" can carry a user past the ceiling.
@@ -53,7 +53,7 @@ The candidate path applies only to automatic extraction. Anything the assistant 
 
 | Setting | Interaction |
 |---------|-------------|
-| `memoryModel` | Memory extraction calls this model, or `assistantModel` when empty, so that model's provider needs its environment variable set (see [Configuration](configuration.md#api-keys)). Without it, extraction fails silently and no candidates accumulate |
+| `memoryModel` | Memory extraction calls this model, or `assistantModel` when empty, so that model's provider needs its environment variable set (see [Configuration](configuration.md#api-keys)). Without it, extraction fails on every pass (logged as `extract_memories failed: no API key for <provider> (set <VAR>)`), users see nothing, and no candidates accumulate |
 
 ## Operational notes
 

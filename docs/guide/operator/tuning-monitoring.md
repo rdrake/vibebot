@@ -2,7 +2,7 @@
 
 ## Choosing models
 
-The model surface splits by workload so cost and quality can differ per task. The three model settings below are channel-overridable; the other roles run on fixed models listed under [Configuration → Model selection](configuration.md#model-selection): images on `xai/grok-imagine-image`, search and subject research on `xai/grok-4.3`, the `@meme` picker and verse compaction on `anthropic/claude-haiku-5-5`.
+The model surface splits by workload so cost and quality can differ per task. The three model settings below are channel-overridable; the other roles run on fixed models listed under [Configuration → Model selection](configuration.md#model-selection): images on `xai/grok-imagine-image`, search and subject research on `xai/grok-4.3`, the `@meme` picker and verse compaction on `anthropic/claude-haiku-5-5`, and refused chat turns are re-run once on `xai/grok-4-1-fast-non-reasoning`.
 
 | Setting | Used for |
 |---------|----------|
@@ -59,14 +59,14 @@ With `bridgeAllowedPlugins` empty, the bridge exposes:
 
 `Misc Time Math Utilities Seen Web Later Note Karma QuoteGrabs RSS DDG Network`
 
-Each is pure-read or has its write commands listed in `MUTATING_COMMANDS`, which the bridge never exposes. The list lives in `DEFAULT_ALLOWED_PLUGINS` (`plugins/llm/src/llm/limnoria_bridge.py`).
+Each is pure-read or has its write commands listed in `MUTATING_COMMANDS`, which the bridge never exposes; `Network`'s connection-management and re-dispatch commands are hard-denied instead (see below). The list lives in `DEFAULT_ALLOWED_PLUGINS` (`plugins/llm/src/llm/limnoria_bridge.py`).
 
 ### Security model
 
 Three independent layers limit what the bridge reaches:
 
 1. **Hard-denied plugins**, never bridged regardless of config: `LLM` (recursion), `Owner`, `Admin`, `Config`, `Channel`, `User` (bot, channel, and account management).
-2. **Hard-denied commands**, blocked even inside allowlisted plugins: every URL-fetching `Web` read — `fetch`, `location`, `headers`, `doctype`, `size`, `title` — because each hands the bot's network position to a caller-supplied URL; `Utilities.apply` and `Utilities.let` (re-dispatch bypass); `Misc.more` and `Misc.clearmores` (interactive scrollback only). Those six `Web` reads are not writes, so `MUTATING_COMMANDS` does not cover them, and `Web` ships in the curated default set, so the deny is unconditional.
+2. **Hard-denied commands**, blocked even inside allowlisted plugins: every URL-fetching `Web` read — `fetch`, `location`, `headers`, `doctype`, `size`, `title` — because each hands the bot's network position to a caller-supplied URL; `Utilities.apply` and `Utilities.let` (re-dispatch bypass); `Network.connect`, `disconnect`, `reconnect` and `authenticate` (connection management), and `Network.command` and `cmdall` (the same re-dispatch bypass as `apply`/`let`); `Misc.more` and `Misc.clearmores` (interactive scrollback only). Those six `Web` reads are not writes, so `MUTATING_COMMANDS` does not cover them, and `Web` ships in the curated default set, so the deny is unconditional.
 3. **Limnoria capabilities**, applied per command at dispatch time. Commands guarded by default-deny anti-capabilities are refused unless explicitly granted.
 
 ### Write-command gate
@@ -82,7 +82,7 @@ The `schedule_llm_task` tool schedules a future assistant turn. At fire time the
 
 Operational properties:
 
-- Each creator can hold at most 5 active schedules per channel. Each fire still counts against the creator's `ask` rate-limit bucket.
+- Each creator can hold at most 5 active schedules per channel. Each fire checks the creator's `ask` rate-limit bucket without using it up: a fire is skipped with a notice when the creator has already hit their limit, but the fire itself doesn't count toward that limit.
 - Schedules bind to the creator's account at create time; the tool refuses unauthenticated callers.
 - A schedule auto-cancels the first time it fires after its creator loses `llm.ask`: the row is deleted, the reply target gets a one-line notice, and that notice is the only trace: the matching log line is `INFO`, below the plugin's fixed `WARNING` level.
 - A fired task cannot schedule another task (depth cap of 1), which blocks recursion.
@@ -171,14 +171,14 @@ Three structured lines record what a call cost, what the history guards removed,
 
 | Line | Level | Emitted | Fields |
 |------|-------|---------|--------|
-| `completion_timing` | `WARNING` | Once per model call | `op` (call-site label: `assistant_step_N`, `run_completion_<command>`, `grounded_<kind>` — `xai_responses_<kind>` instead when the resolved model is an xAI one — `image_generation`, `prompt_rewrite`, `reminder_parse`, `pending_retry`, `status_announce`, `compaction:<op>`), `model`, `msgs`, `msg_chars`, `tools`, `prefix_hash`, `gap_s`, `elapsed_ms`, `prompt_tokens`, `cached_tokens`, `completion_tokens`, `tool_calls`. A failed call ends `result=error error_type=<class>` in place of the token fields |
-| `history_strip` | `WARNING` | Once per turn that dropped poisoned history; silent when nothing was stripped | `model`, `channel`, `route`, `assistant_turns`, `removed`, then one field per guard that fired: `safety_refusal`, `image_failure`, `tool_complaint`, `degraded`, `repeat`, `verse_denial` |
+| `completion_timing` | `WARNING` | Once per model call | `op` (call-site label: `assistant_step_N`, `xai_responses_<kind>` for search, URL fetch and subject research, `image_generation`, `image_edit`/`image_generate` for meme pictures, `prompt_rewrite`, `reminder_parse`, `pending_retry`, `status_announce`, `ask_helper`, `extract_memories`, `cleanup_memories`, `meme_pick`, `compaction:<op>`), `model`, `msgs`, `msg_chars`, `tools`, `prefix_hash`, `gap_s`, `elapsed_ms`, `prompt_tokens`, `cached_tokens`, `completion_tokens`, `tool_calls`. A failed call ends `result=error error_type=<class>` in place of the token fields |
+| `history_strip` | `WARNING` | Once per turn that dropped poisoned history; silent when nothing was stripped | `model`, `channel`, `route`, `assistant_turns`, `removed`, then one field per guard that fired: `safety_refusal`, `image_failure`, `job_marker`, `tool_complaint`, `degraded`, `repeat`, `verse_denial` |
 | `prompt_rewrite_fidelity` | `WARNING` | Only when a safety rewording came back padded | `orig_chars`, `new_chars`. Needs both 20% growth and 40 absolute characters, so an ordinary rewording that runs a little long stays silent |
 | `llm_executor submit` and `llm_executor done` | `INFO` | Once each per background submission | `submit`: `label`, `running`, `queued`, `max`. `done`: `label`, `elapsed_ms`, `queued_ms` |
 
-`completion_timing` and `history_strip` sit at `WARNING`, so they are present in the log; the `llm_executor` pair is `INFO`, below the plugin's fixed `WARNING` level, so it is not emitted. Three `completion_timing` variants carry a reduced field set: `op=image_generation` logs `prompt_chars` and `elapsed_ms` only, since an image response carries no message or token shape; `op=xai_responses_<kind>` omits `prefix_hash` and `gap_s`; `op=compaction:<op>` logs `elapsed_ms` and the two token counts plus a `cost` field found on no other line.
+`completion_timing` and `history_strip` sit at `WARNING`, so they are present in the log; the `llm_executor` pair is `INFO`, below the plugin's fixed `WARNING` level, so it is not emitted. Some `completion_timing` variants carry a reduced field set: `op=image_generation` logs `prompt_chars` and `elapsed_ms` only, since an image response carries no message or token shape; `op=image_edit` and `op=image_generate` (meme pictures) log `model` and `elapsed_ms` only; `op=xai_responses_<kind>` carries `prefix_hash=-` and `gap_s=-1` as placeholders, since no prefix fingerprint or cache gap is measured; `op=compaction:<op>` logs `elapsed_ms` and the two token counts plus a `cost` field found on no other line.
 
-A refused draw that recovered is three `completion_timing` lines under one request id, in order: `op=image_generation` ending `result=error`, then `op=prompt_rewrite`, then a second `op=image_generation` with no `result=error`. Counting those is how to tell whether the rewrite loop is working. Do not grep for `Image generation blocked, attempting auto-rewrite` or `Rewrite attempt N`: both are `INFO`, so they never reach the log, and their absence reads as a loop that never fired.
+A refused draw that recovered is three `completion_timing` lines under one request id, in order: `op=image_generation` (ending `result=error` for a filter rejection, or with no error field when the provider returned no picture), then `op=prompt_rewrite`, then a second `op=image_generation` with no `result=error`. Counting those is how to tell whether the rewrite loop is working. Do not grep for `Image generation blocked, attempting auto-rewrite` or `Rewrite attempt N`: both are `INFO`, so they never reach the log, and their absence reads as a loop that never fired.
 
 On `completion_timing`, read `gap_s` next to `prefix_hash` when `cached_tokens` is 0: `gap_s` is the seconds since the last call on the same model and cache lane (`-1` on the first call) and is the dominant predictor of a cache hit, so a large gap means a cold cache while a changed `prefix_hash` means the cacheable head of the request moved.
 
@@ -206,7 +206,7 @@ Reminders, usage statistics, and memories live in one SQLite database, `data/LLM
 
 **API key not working.**
 
-- The error names the missing variable: `no API key configured for provider 'xai' (set XAI_API_KEY)`. Grep logs for `no API key configured` rather than the old "API key not configured" wording, which no longer appears anywhere.
+- The reply names the missing variable: `Error: no API key configured for provider 'xai' (set XAI_API_KEY)`. That text is not logged. In the logs, grep `no API key for`, which background calls such as memory extraction log as `extract_memories failed: no API key for xai (set XAI_API_KEY)`.
 - Confirm the key is set in the container, without printing it, by comparing a hash rather than a prefix:
 
   ```bash
@@ -224,10 +224,11 @@ Reminders, usage statistics, and memories live in one SQLite database, `data/LLM
 
 **The bot says a request was refused.**
 
-- A refusal is not a fault. The provider turned the content down, and the reply says so and asks the user to reword it or pick a different subject. Nothing needs restarting.
-- The provider's own category for the refusal is deliberately kept out of the channel, because these filters produce false positives and the category reads as an accusation of whoever happened to be talking. It goes to the log instead: grep `refused on content grounds`, which carries the full provider error.
+- A chat refusal is normally re-run once on `xai/grok-4-1-fast-non-reasoning`, and the user gets that answer. The re-run is skipped when that is already the turn's model, when `XAI_API_KEY` is unset, or once a tool that isn't read-only has run. Grep `refusal_fallback_served`; its `trigger=` field is `stop_reason`, `text` or `provider_error`.
+- Only when no fallback is possible does the user see a refusal. A refusal is not a fault. The provider turned the content down, and the reply says so and asks the user to reword it or pick a different subject. Nothing needs restarting.
+- The provider's own category for the refusal is deliberately kept out of the channel, because these filters produce false positives and the category reads as an accusation of whoever happened to be talking. It goes to the log instead: grep `refused on content grounds`, which carries the full provider error. That line, like `assistant_completion failed`, appears only for refusals raised as HTTP errors; Anthropic's usual refusal arrives as a normal response with `stop_reason` `refusal` and logs neither.
 - A refusal is not the same event as an outage. Every other failure class now names itself in the reply — a timeout says it timed out, a bad key names the variable — so a generic `Error: Unable to complete` is the one that means look at the logs.
-- Refusals can arrive on the chat call itself, not just on a draw, in which case no image was ever attempted. The log line is `assistant_completion failed`, and it is one turn, not a stuck bot: successful turns in the same channel either side of it are normal, because the refused message is never written to history.
+- Refusals can arrive on the chat call itself, not just on a draw, in which case no image was ever attempted. The log line is `refusal_fallback_served` when the fallback answered, or `assistant_completion failed` for a refusal raised as an HTTP error, and it is one turn, not a stuck bot: successful turns in the same channel either side of it are normal, because the refused message is never written to history.
 
 **Bot does not remember previous messages.**
 
@@ -263,7 +264,7 @@ Seeing that line means the guard worked and the user received a real image. If t
 
 **The bot repeats a stock failure line instead of retrying.**
 
-The model imitates its own recent output, so a message like "Image generation failed." left in the conversation history teaches it to answer the *next* request the same way, without calling the tool at all. The bot strips its own past refusals, policy-refusals, collapsed replies, repeated replies, image-failure reports, and tool complaints in any wording from the history before each turn, precisely so they cannot seed the next one.
+The model imitates its own recent output, so a message like "Image generation failed." left in the conversation history teaches it to answer the *next* request the same way, without calling the tool at all. The bot strips its own past refusals, policy-refusals, collapsed replies, repeated replies, image-failure reports, internal job markers, and tool complaints in any wording from the history before each turn, precisely so they cannot seed the next one.
 
 The last of those is the general case, and it also catches a reply that blames a tool the turn never called at all — the wording drifts ("the tool's broken", "tool refused", "still choking on the request") long after the failure that started it. When one is caught mid-turn the bot re-rolls the reply once and logs:
 
