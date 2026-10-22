@@ -2018,6 +2018,21 @@ class TestRemindUserScheduledTasks:
             creator_nick="testnick", account=None
         )
 
+    def test_list_truncates_a_long_task_prompt(self, plugin_env, mocker: MockerFixture):
+        """A task prompt over 40 characters shows its opening and '...'."""
+        plugin, mock_irc, mock_msg = plugin_env
+        prompt = "c" * 40 + "TAIL-NOT-SHOWN" + "d" * 46
+        plugin.llm_service.list_scheduled_llm_tasks.return_value = [
+            _fake_task(mocker, "llm_task_abc123", prompt),
+        ]
+
+        plugin.remind(mock_irc, mock_msg, ["list"])
+
+        mock_irc.error.assert_not_called()
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert f"#abc123: {'c' * 40}... [task]" in reply_text
+        assert "TAIL" not in reply_text
+
     def test_identified_caller_forwards_the_account(self, plugin_env, mocker: MockerFixture):
         """GIVEN an identified caller WHEN remind list/del THEN the account is used.
 

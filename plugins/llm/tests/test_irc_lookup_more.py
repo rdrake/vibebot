@@ -8,6 +8,7 @@ AfterNET actually sent (captured 2026-10-10) back through the handlers.
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 from supybot import ircmsgs
@@ -87,6 +88,54 @@ class TestWhowas:
         }
 
 
+def bounded(fn, limit: float = 2.0):
+    """Run ``fn`` on a thread; fail if it is still waiting after ``limit`` s."""
+    out: list = []
+    worker = threading.Thread(target=lambda: out.append(fn()), daemon=True)
+    worker.start()
+    worker.join(limit)
+    assert not worker.is_alive(), "the lookup never gave up waiting"
+    return out[0]
+
+
+class TestBoundedWaits:
+    """A lookup nobody answers falls silent; it never holds a worker forever."""
+
+    def test_an_unanswered_whowas_gives_up_at_the_query_timeout(self, env, mocker) -> None:
+        plugin, irc, _ = env
+        mocker.patch.object(type(plugin), "_IRC_QUERY_TIMEOUT", 0.05)
+
+        payload = bounded(lambda: lookup(plugin, irc, kind="whowas", target="ghost"))
+
+        assert payload == {"error": plugin._IRC_QUERY_SILENT}
+
+    def test_an_unanswered_ctcp_gives_up_at_its_own_timeout(self, env, mocker) -> None:
+        plugin, irc, _ = env
+        mocker.patch.object(type(plugin), "_CTCP_TIMEOUT", 0.05)
+
+        payload = bounded(lambda: lookup(plugin, irc, kind="ctcp_ping", target="larry"))
+
+        assert payload["reply"] is None
+
+
+class TestWhowasKeying:
+    def test_entries_are_keyed_by_the_nick_not_the_username(self, env) -> None:
+        """A real WHOWAS user field rarely equals the nick (~rd, not rdrake)."""
+        plugin, irc, _ = env
+
+        def replies(_m) -> None:
+            plugin.do314(irc, numeric("314", "rdrake", "~rd", "rd.example", "*", "R"))
+            plugin.do369(irc, numeric("369", "rdrake", "End of WHOWAS"))
+
+        serve(irc, "WHOWAS", replies)
+
+        payload = lookup(plugin, irc, kind="whowas", target="rdrake")
+
+        assert payload["entries"] == [
+            {"nick": "rdrake", "user": "~rd", "host": "rd.example", "realname": "R"}
+        ]
+
+
 class TestNickTargets:
     @pytest.mark.parametrize("kind", ["whowas", "ctcp_version", "ctcp_ping"])
     @pytest.mark.parametrize("target", ["#afternet", "", "n" * 65, "larry,curly"])
@@ -162,6 +211,23 @@ class TestTopic:
         assert payload["set_by"] == "rdrake"
         assert payload["set_at"].startswith("2023-11-14")
 
+    def test_joined_channel_with_no_topic_says_so(self, env, mocker) -> None:
+        """RPL_NOTOPIC answers the lookup at once: no topic, and why."""
+        plugin, irc, _ = env
+        mocker.patch.object(type(plugin), "_IRC_QUERY_TIMEOUT", 0.05)
+        serve(
+            irc, "TOPIC", lambda _m: plugin.do331(irc, numeric("331", "#test", "No topic is set"))
+        )
+
+        payload = lookup(plugin, irc, kind="topic", target="#test")
+
+        assert payload == {
+            "status": "ok",
+            "channel": "#test",
+            "topic": None,
+            "note": "no topic is set",
+        }
+
     def test_unjoined_channel_uses_list(self, env) -> None:
         plugin, irc, _ = env
 
@@ -222,6 +288,21 @@ class TestNetwork:
         assert payload["server"] == ["u2.10.12.14+Nefarious(2.0.0) on Fractal.AfterNET.Org"]
         assert payload["admin"] == ["Toronto, Canada", "ibutsu"]
 
+    def test_a_server_that_never_ends_admin_still_gives_what_arrived(self, env, mocker) -> None:
+        plugin, irc, _ = env
+        mocker.patch.object(type(plugin), "_IRC_QUERY_TIMEOUT", 0.05)
+
+        def replies(_m) -> None:
+            plugin.do251(irc, numeric("251", "There are 237 users and 93 invisible on 9 servers"))
+            plugin.do351(irc, numeric("351", "u2.10.12.14", "Fractal.AfterNET.Org", "B"))
+
+        serve(irc, "ADMIN", replies)
+
+        payload = lookup(plugin, irc, kind="network")
+
+        assert payload["users"] == ["There are 237 users and 93 invisible on 9 servers"]
+        assert payload["server"] == ["u2.10.12.14 on Fractal.AfterNET.Org"]
+
 
 class TestCtcp:
     def _reply(self, plugin, irc, nick: str, body: str) -> None:
@@ -249,6 +330,21 @@ class TestCtcp:
         payload = lookup(plugin, irc, kind="ctcp_ping", target="larry")
 
         assert payload["lag_ms"] >= 0
+
+    def test_ping_lag_is_the_round_trip_in_milliseconds(self, env, mocker) -> None:
+        plugin, irc, _ = env
+        clock = [1_700_000_000.0]
+        mocker.patch("llm.plugin.time.time", side_effect=lambda: clock[0])
+
+        def answer(m) -> None:
+            clock[0] += 0.25
+            self._reply(plugin, irc, "larry", m.args[1])
+
+        serve(irc, "PRIVMSG", answer)
+
+        payload = lookup(plugin, irc, kind="ctcp_ping", target="larry")
+
+        assert payload == {"status": "ok", "nick": "larry", "lag_ms": 250}
 
     def test_silence_is_not_an_error(self, env, mocker) -> None:
         plugin, irc, _ = env
@@ -350,6 +446,54 @@ class TestHistory:
         ]
         # Replayed lines must not refill the react memory either.
         assert not plugin._last_msgids
+
+    @pytest.mark.parametrize(("count", "sent"), [(2, "2"), (500, "100"), (0, "1"), (None, "50")])
+    def test_count_is_the_limit_asked_for(self, env, mocker, count, sent) -> None:
+        """count is 1-100, default 50, and is what CHATHISTORY is sent."""
+        plugin, irc, _ = env
+        irc.state.capabilities_ack = {"draft/chathistory"}
+        mocker.patch.object(type(plugin), "_IRC_QUERY_TIMEOUT", 0.05)
+        args = {"count": count} if count is not None else {}
+
+        lookup(plugin, irc, kind="history", **args)
+
+        (chathistory,) = [
+            c.args[0] for c in irc.queueMsg.call_args_list if c.args[0].command == "CHATHISTORY"
+        ]
+        assert chathistory.args == ("LATEST", "#test", "*", sent)
+
+    def test_another_batch_ending_does_not_end_the_lookup(self, env, mocker) -> None:
+        """A draft/multiline batch for #test ending mid-replay is not the history end."""
+        plugin, irc, _ = env
+        irc.state.capabilities_ack = {"draft/chathistory"}
+        mocker.patch.object(type(plugin), "_IRC_QUERY_TIMEOUT", 0.05)
+        history = self._batch()
+        multiline = Batch(
+            name="ml", type="draft/multiline", arguments=("#test",), messages=[], parent_batch=None
+        )
+        irc.state.getParentBatches = lambda m: [history]
+
+        def feed(nick: str) -> None:
+            line = ircmsgs.IrcMsg(prefix=f"{nick}!u@h", command="PRIVMSG", args=("#test", "hi"))
+            line.server_tags.update({"batch": "ref", "time": "2026-10-10T01:11:39.000Z"})
+            plugin.inFilter(irc, line)
+
+        def replies(_m) -> None:
+            feed("rdrake")
+            other_end = ircmsgs.IrcMsg(command="BATCH", args=("-ml",))
+            other_end.tag("batch", multiline)
+            plugin.inFilter(irc, other_end)
+            feed("Larry")
+            end = ircmsgs.IrcMsg(command="BATCH", args=("-ref",))
+            end.tag("batch", history)
+            plugin.inFilter(irc, end)
+
+        serve(irc, "CHATHISTORY", replies)
+
+        assert lookup(plugin, irc, kind="history")["lines"] == [
+            "01:11 <rdrake> hi",
+            "01:11 <Larry> hi",
+        ]
 
     def test_batch_opener_does_not_end_the_lookup(self, env) -> None:
         """Limnoria tags the BATCH + opener with its batch before inFilter

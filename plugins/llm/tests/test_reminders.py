@@ -443,6 +443,47 @@ class TestReminderHelperMethods:
         assert out.ok is True
         assert "now pending: ping in 60s" in out.message
 
+    def test_the_chat_set_reminder_callback_reports_the_result(
+        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """The callback the chat tool calls hands back the scheduling result.
+
+        Without it the tool sees a failure for a reminder that was set, and a
+        model that retries sets it twice.
+        """
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        self._stub_parse_for_schedule(plugin)
+        mocker.patch("llm.plugin.schedule.addEvent")
+        mocker.patch.object(plugin, "_react")
+        fns = plugin._pending_task_fns(
+            caller=Caller.from_row("alice", "alice", "#chan"),
+            irc=mock_irc,
+            msg=self._amend_msg(mocker),
+        )
+
+        out = fns["set_reminder_fn"]("in 60s ping")
+
+        assert out.ok is True
+        assert "now pending: ping in 60s" in out.message
+        assert [row.message for row in plugin.agenda.pending_reminders()] == ["ping"]
+
+    def test_a_reminder_keeps_the_request_msgid_to_thread_under(
+        self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """The fire threads under the message that set it (+draft/reply)."""
+        plugin._MetaSynchronized_rlock = threading.RLock()
+        self._stub_parse_for_schedule(plugin)
+        mocker.patch("llm.plugin.schedule.addEvent")
+        msg = self._amend_msg(mocker)
+        msg.server_tags = {"msgid": "abc"}
+
+        result = plugin._schedule_reminder(
+            mock_irc, msg=msg, caller=Caller.from_row("alice", "alice", "#chan"), text="in 60s ping"
+        )
+
+        assert result.ok is True
+        assert [row.reply_msgid for row in plugin.agenda.pending_reminders()] == ["abc"]
+
     def test_schedule_reminder_amends_a_recent_equivalent_reminder(
         self, plugin: MagicMock, mock_irc: MagicMock, mocker: MockerFixture
     ) -> None:

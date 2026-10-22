@@ -1013,6 +1013,50 @@ class TestPendingTaskFns:
         assert cancelled_reminder["kind"] == "reminder"
         stand_in._remind_delete_for_assistant.assert_called_once()
 
+    def test_cancel_all_reports_only_the_tasks_that_went(self, mocker: MockerFixture) -> None:
+        """The model repeats the count to the user, so it must be the truth.
+
+        A task whose cancel failed still fires, and must not be counted.
+        """
+        from llm.identity import Caller, Identity
+        from llm.plugin import LLM
+        from llm.service import ScheduleLlmTaskResult
+
+        stand_in = mocker.MagicMock()
+        stand_in.llm_service.list_scheduled_llm_tasks.return_value = [
+            mocker.MagicMock(event_name=f"llm_task_{n}") for n in ("a", "b", "c")
+        ]
+        stand_in.llm_service.cancel_scheduled_llm_task.side_effect = [
+            ScheduleLlmTaskResult(status=status, event_name=f"llm_task_{n}", message="")
+            for n, status in (("a", "ok"), ("b", "error"), ("c", "ok"))
+        ]
+        stand_in._remind_clear_for_assistant.return_value = "Cancelled 1 reminder."
+        fns = LLM._pending_task_fns.__get__(stand_in, LLM)(
+            caller=Caller(Identity(raw_nick="rdrake", account="rdrake_a"), "#t"),
+            irc=mocker.MagicMock(),
+            msg=mocker.MagicMock(),
+        )
+
+        assert fns["cancel_all_pending_tasks_fn"]() == {
+            "reminders_message": "Cancelled 1 reminder.",
+            "scheduled_tasks_cancelled": 2,
+        }
+
+    def test_cancel_all_with_no_tasks_reports_zero(self, mocker: MockerFixture) -> None:
+        from llm.identity import Caller, Identity
+        from llm.plugin import LLM
+
+        stand_in = mocker.MagicMock()
+        stand_in.llm_service.list_scheduled_llm_tasks.return_value = []
+        stand_in._remind_clear_for_assistant.return_value = "No reminders."
+        fns = LLM._pending_task_fns.__get__(stand_in, LLM)(
+            caller=Caller(Identity(raw_nick="rdrake", account="rdrake_a"), "#t"),
+            irc=mocker.MagicMock(),
+            msg=mocker.MagicMock(),
+        )
+
+        assert fns["cancel_all_pending_tasks_fn"]()["scheduled_tasks_cancelled"] == 0
+
 
 class TestAgendaWakeup:
     """The one wakeup timer for reminders and scheduled tasks (real SQLite)."""
