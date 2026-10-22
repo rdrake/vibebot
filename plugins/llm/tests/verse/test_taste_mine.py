@@ -219,3 +219,22 @@ def test_nearest_source_skips_url_returns_earlier_valid_line():
     praise = [c for c in cands if c.kind == "praise"]
     assert len(praise) == 1
     assert "stinky lads" in praise[0].text
+
+
+def test_extract_mines_only_the_taste_setter_not_other_nicks():
+    """Only fc42's lines are candidate sources (docs/guide/operator/verse.md: a
+    channel without the taste-setter yields nothing). The bot's own long verse
+    output and other nicks' prose/praise must not be mined, even when they name
+    a multiword entity that would otherwise be auto-trusted."""
+    store = FakeStore(["stinky lads", "Ripping Robert"])
+    prose = (
+        "the stinky lads marched into the assembly hall and Ripping Robert let "
+        "off a perfectly timed duet that turned the leaves yellow indeed"
+    )
+    assert len(prose) >= 120
+    lines = [
+        f"2026-06-22T00:01:00  <vibebot> {prose}",  # bot's own verse output
+        f"2026-06-22T00:02:00  <Larry> {prose} again",  # another nick's prose
+        "2026-06-22T00:03:00  <Larry> haha this is a good one",  # non-fc42 praise
+    ]
+    assert extract_candidates(lines, store) == []
