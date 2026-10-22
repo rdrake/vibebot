@@ -2158,6 +2158,72 @@ class TestChatProfileBridgeWiring:
             "search_bridge_commands",
         }
 
+    def _ask_after_one_bridge_call(self, plugin, mock_irc, mock_msg, mocker, *, debug: bool):
+        """Run @ask where one bridge command ran during the completion."""
+        plugin.registryValue.side_effect = make_registry_side_effect(
+            {
+                "bridgeEnabled": True,
+                "bridgeAllowedPlugins": ["Misc"],
+                "bridgeDebugInChannel": debug,
+            }
+        )
+        fake_cmd = mocker.MagicMock(
+            plugin="Misc", command="ping", arg_syntax="", description="Replies with pong."
+        )
+        mocker.patch("llm.limnoria_bridge.enumerate_commands", return_value=[fake_cmd])
+        real_build = plugin._build_bridge_tool
+
+        def build(irc, msg, channel, trace=None):
+            built = real_build(irc, msg, channel, trace=trace)
+            assert trace is not None
+            trace.append(("Misc", "ping", "", "ok"))
+            return built
+
+        mocker.patch.object(plugin, "_build_bridge_tool", side_effect=build)
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_completion.return_value = self._make_assistant_result()
+
+        plugin.llm_service.save_markdown_to_http.return_value = "http://h/a.html"
+
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        saved = plugin.llm_service.save_markdown_to_http.call_args
+        return mock_irc.reply.call_args[0][0], saved[0][0] if saved else None
+
+    def test_no_bridge_debug_footer_unless_the_channel_opts_in(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """bridgeDebugInChannel defaults off: a public reply carries no debug line."""
+        plugin, mock_irc, mock_msg = plugin_env
+
+        reply, saved = self._ask_after_one_bridge_call(
+            plugin, mock_irc, mock_msg, mocker, debug=False
+        )
+
+        assert (reply, saved) == ("bridge wiring reply", None)
+
+    def test_bridge_debug_footer_when_the_channel_opts_in(self, plugin_env, mocker: MockerFixture):
+        plugin, mock_irc, mock_msg = plugin_env
+
+        _reply, saved = self._ask_after_one_bridge_call(
+            plugin, mock_irc, mock_msg, mocker, debug=True
+        )
+
+        assert saved is not None and "[bridge: Misc.ping [ok]]" in saved
+
+    def test_irc_lookup_gets_the_requesting_channel(self, plugin_env, mocker: MockerFixture):
+        """With privacyOptInOnly off, kind=history reads the channel the ask came from."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.registryValue.side_effect = make_registry_side_effect({"privacyOptInOnly": False})
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_completion.return_value = self._make_assistant_result()
+
+        plugin.ask(mock_irc, mock_msg, ["what did I miss"])
+
+        tools = plugin.llm_service.assistant_completion.call_args.kwargs["extra_tools"]
+        (lookup,) = [t for t in tools if t["function"]["name"] == "irc_lookup"]
+        assert "history" in lookup["function"]["parameters"]["properties"]["kind"]["enum"]
+
     def test_typing_done_is_sent_after_reply_dispatch(
         self, plugin_env, mocker: MockerFixture
     ) -> None:

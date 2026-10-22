@@ -375,6 +375,29 @@ class TestVerseCommand:
         assert "You are at The Mill." in reply_text
         assert "A sunlit glade." in reply_text
 
+    def test_a_retired_place_of_the_same_name_is_never_the_scene(self, verse_env) -> None:
+        """Dedup leaves retired duplicates behind; the scene is the live one."""
+        plugin, irc, msg, store = verse_env
+        entity_id = self._opt_in(plugin, irc, msg, store)
+        retired = store.add_entity("place", "The Docks", "Burned down years ago.")
+        store.set_status(retired, "retired")
+        store.add_entity("place", "The Docks", "Gulls and rope.")
+        store.set_attribute(entity_id, "location", "The Docks")
+
+        plugin.verse(irc, msg, [])
+
+        assert irc.reply.call_args[0][0] == "You are at The Docks. Gulls and rope."
+
+    def test_a_location_naming_only_a_retired_place_is_nowhere(self, verse_env) -> None:
+        plugin, irc, msg, store = verse_env
+        entity_id = self._opt_in(plugin, irc, msg, store)
+        store.set_status(store.add_entity("place", "The Docks", "Burned down."), "retired")
+        store.set_attribute(entity_id, "location", "The Docks")
+
+        plugin.verse(irc, msg, [])
+
+        assert irc.reply.call_args[0][0] == "You are nowhere in particular."
+
     def test_verse_after_opt_in_names_starter_place(self, verse_env) -> None:
         """GIVEN a fresh opt-in WHEN @verse THEN the reply names the starter place
         opt_in_avatar wrote, not 'nowhere in particular'."""
@@ -1168,6 +1191,51 @@ class TestVersedumpCommand:
         plugin._get_or_create_verse_store.assert_called_once_with("#afnet")
         irc.error.assert_not_called()
 
+    def test_dump_is_a_faithful_backup_field_for_field(self, dump_env) -> None:
+        """The dump is the backup taken before an irreversible purge, so every
+        exported field must be the stored value, retired entities and aliases
+        included."""
+        import json as _json
+
+        plugin, irc, msg, store = dump_env
+        alice_id = store.opt_in_avatar("alice", None, "").entity_id
+        sam_id = store.add_entity("npc", "Old Sam", "a sailor who swallowed a compass")
+        store.set_status(sam_id, "retired")
+        with store.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO entity_alias (entity_id, alias) VALUES (?, ?)", (sam_id, "sam")
+            )
+        with store.read_connection() as conn:
+            created_at, updated_at = conn.execute(
+                "SELECT created_at, updated_at FROM entities WHERE id = ?", (sam_id,)
+            ).fetchone()
+
+        plugin.versedump(irc, msg, ["#afnet"])
+
+        data = _json.loads(irc.reply.call_args[0][0])
+        sam = next(e for e in data["entities"] if e["id"] == sam_id)
+        assert sam == {
+            "id": sam_id,
+            "kind": "npc",
+            "name": "Old Sam",
+            "summary": "a sailor who swallowed a compass",
+            "status": "retired",
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "attributes": {},
+        }
+        alice = next(e for e in data["entities"] if e["id"] == alice_id)
+        assert (alice["kind"], alice["name"], alice["status"]) == ("avatar", "alice", "active")
+        assert data["avatar_links"] == [{"entity_id": alice_id, "nick": "alice", "account": None}]
+        assert {"entity_id": sam_id, "alias": "sam"} in data["aliases"]
+
+    def test_a_stray_word_does_not_pick_the_channel(self, dump_env) -> None:
+        plugin, irc, msg, _store = dump_env
+
+        plugin.versedump(irc, msg, ["foo"])
+
+        plugin._get_or_create_verse_store.assert_called_once_with("#afnet")
+
     def test_named_channel_wins_over_this_one(self, dump_env) -> None:
         plugin, irc, msg, _store = dump_env
 
@@ -1838,6 +1906,41 @@ class TestAskWithVerseRoute:
         }
         assert expected.issubset(tool_names)
 
+    def test_every_advertised_tool_on_a_roleplay_turn_can_be_dispatched(
+        self, verse_ask_env
+    ) -> None:
+        """The roleplay turn keeps react, aurora, irc_lookup et al. alongside verse."""
+        plugin, irc, msg, _store = verse_ask_env
+
+        plugin.rp(irc, msg, ["hello"])
+
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
+        handlers = kwargs["extra_handlers"]
+        assert {"react", "aurora", "irc_lookup", "verse_act"} <= set(handlers)
+        assert {t["function"]["name"] for t in kwargs["extra_tools"]} <= set(handlers)
+
+    def test_chat_record_lets_an_opted_in_avatar_save_canon_from_chat(
+        self, verse_ask_env, mocker: MockerFixture
+    ) -> None:
+        """verseChatRecordEnabled frees verse_record on an ordinary chat turn."""
+        import json
+
+        plugin, irc, msg, store = verse_ask_env
+        original = plugin.registryValue.side_effect
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=lambda key, *a: (
+                True if key == "verseChatRecordEnabled" else original(key, *a)
+            )
+        )
+
+        plugin.ask(irc, msg, ["hello"])
+
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
+        assert kwargs["route_profile"] == "chat"
+        result = kwargs["extra_handlers"]["verse_record"]({"summary": "alice found the brass key"})
+        assert json.loads(result.content)["status"] == "ok"
+        assert any("brass key" in e.summary for e in store.recent_events(limit=10))
+
     def test_ask_in_verse_bypasses_token_cap(self, verse_ask_env, mocker: MockerFixture) -> None:
         """GIVEN verse route WHEN @ask THEN route_profile is PROFILE_VERSE.
 
@@ -2026,6 +2129,16 @@ class TestAskOnVerseChannelWithoutOptIn:
             payload = json.loads(handlers[name]({}).content)
             assert "error" in payload
             assert "opt-in" in payload["error"].lower()
+
+    def test_non_verse_tools_stay_dispatchable_for_a_non_opted_in_speaker(self, env) -> None:
+        """Only the verse tools are denied; react, aurora and the rest still run."""
+        plugin, irc, msg = env
+        plugin.ask(irc, msg, ["hello"])
+
+        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
+        handlers = kwargs["extra_handlers"]
+        assert {"react", "aurora", "irc_lookup"} <= set(handlers)
+        assert {t["function"]["name"] for t in kwargs["extra_tools"]} <= set(handlers)
 
     def test_profile_stays_chat_for_non_opted_in_speaker(self, env) -> None:
         """The advertised tool surface widens, but the system prompt /

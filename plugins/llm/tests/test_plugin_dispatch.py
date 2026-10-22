@@ -179,6 +179,8 @@ class TestDoPrivmsg:
         call_args = plugin.context.add_message.call_args
         assert call_args[0] == ("!usernick", "#channel", "user", "hello world")
         assert "config" in call_args[1]
+        # Unaddressed chatter is memory-only: no DB write per IRC line.
+        assert call_args.kwargs["persist"] is False
         plugin._route_addressed_to_assistant.assert_not_called()
 
     def test_doprivmsg_routes_nick_addressed_channel_message(
@@ -454,6 +456,12 @@ class TestInFilter:
         assert "[" not in result.args[1]
         assert "\uff3b" in result.args[1]
 
+    def test_a_rewritten_line_keeps_its_target(self, plugin: object, irc: object) -> None:
+        """Sanitizing touches only the text; the line still goes to #test."""
+        msg = self._privmsg("explain array[0")
+        result = plugin.inFilter(irc, msg)
+        assert result.args == ("#test", "explain array\uff3b0")
+
     def test_balanced_brackets_preserved(self, plugin: object, irc: object) -> None:
         """GIVEN matched brackets WHEN inFilter THEN original brackets kept."""
         msg = self._privmsg("run [echo hello]")
@@ -579,6 +587,22 @@ class TestInvalidCommand:
 
         plugin._ask_impl.assert_called_once()
         plugin._run_preflight.assert_called_once()
+
+    def test_a_plain_addressed_line_is_a_chat_turn_not_roleplay(
+        self, plugin_with_mocks: tuple, mocker: MockerFixture
+    ) -> None:
+        """Roleplay is entered only by @rp, sticky @rp or the ambient-story
+        promotion; addressing the bot by nick is ordinary chat."""
+        plugin, mock_irc, mock_msg = plugin_with_mocks
+
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        plugin._run_preflight = mocker.MagicMock(
+            return_value=PreflightResult(False, Caller(Identity("testuser", None), "#channel"))
+        )
+        plugin._ask_impl = mocker.MagicMock()
+        plugin.invalidCommand(mock_irc, mock_msg, ["hello", "there"])
+
+        assert plugin._verse_route_for.call_args.kwargs["force_roleplay"] is False
 
     def test_invalid_command_blocked_preflight_dispatches_nothing(
         self, plugin_with_mocks: tuple, mocker: MockerFixture
@@ -823,6 +847,24 @@ class TestRouteAddressedGates:
         plugin._route_addressed_to_assistant(irc, msg, "hi")
 
         dispatch.assert_called_once()
+
+    @pytest.mark.parametrize("entry", ["nick_addressed", "invalid_command"])
+    def test_an_unauthenticated_caller_can_chat(
+        self, plugin_env, mocker: MockerFixture, entry: str
+    ) -> None:
+        """Addressed chat needs llm.ask, like @ask; only commands such as
+        @draw and @story need an account."""
+        plugin, irc, msg = plugin_env
+        dispatch = mocker.patch.object(plugin, "_dispatch_addressed_async")
+
+        if entry == "nick_addressed":
+            plugin._route_addressed_to_assistant(irc, msg, "hi")
+        else:
+            plugin.invalidCommand(irc, msg, ["hi"])
+
+        irc.error.assert_not_called()
+        dispatch.assert_called_once()
+        assert dispatch.call_args.args[3].caller.identity.account is None
 
 
 class TestGetPluginHelp:

@@ -3517,6 +3517,20 @@ class TestVerseStorybook:
         assert plugin._roleplay_sticky_active(pf) is False
         assert ("#test", "!alice") not in plugin._roleplay_sticky
 
+    def test_each_in_character_turn_restarts_the_sticky_clock(self, plugin_env, mocker):
+        """Sliding window: an active turn pushes the lapse to now + 15 minutes."""
+        import time as _t
+
+        plugin, _i, _m = plugin_env
+        pf = PreflightResult(False, Caller(Identity("alice", None), "#test"))
+        plugin._roleplay_sticky_set(pf, True)
+        plugin._roleplay_sticky[("#test", "!alice")] = _t.time() + 5  # about to lapse
+
+        assert plugin._roleplay_sticky_active(pf) is True
+        expiry = plugin._roleplay_sticky[("#test", "!alice")]
+        assert abs(expiry - (_t.time() + 900)) < 5
+        assert plugin._roleplay_sticky_active(pf) is True
+
     def test_roleplay_sticky_keyed_by_account_over_nick(self, plugin_env, mocker):
         """Account identity wins so a nick change doesn't drop the session."""
         plugin, _i, _m = plugin_env
@@ -3861,6 +3875,28 @@ class TestVerseStorybook:
         assert job.call_args.kwargs["brief"] == "illustrate the lads' saga"
         ask.assert_not_called()
 
+    def test_ambient_storybook_is_in_the_speakers_avatar_voice(self, plugin_env, mocker):
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch.object(plugin, "_verse_route_for", return_value=None)
+        mocker.patch.object(plugin, "_roleplay_sticky_active", return_value=False)
+        mocker.patch.object(plugin, "_ambient_inline_story", return_value=False)
+        mocker.patch.object(plugin, "_ambient_storybook_brief", return_value="illustrate it")
+        plugin.db.get_avatar_persona = mocker.MagicMock(return_value="a sly fox")
+        job = mocker.patch.object(plugin, "_submit_storybook_job")
+        mocker.patch.object(plugin, "_ask_impl")
+        plugin.registryValue = mocker.MagicMock(
+            side_effect=make_registry_side_effect({"verseEnabled": True})
+        )
+        mock_msg.prefix = "alice!u@h"
+        pf = PreflightResult(False, Caller(Identity("alice", "acct"), "#test"))
+
+        plugin._dispatch_with_verse_routing(
+            mock_irc, mock_msg, "illustrate it", pf, entry_route="addressed"
+        )
+
+        assert job.call_args.kwargs["persona"] == "a sly fox"
+        plugin.db.get_avatar_persona.assert_called_once_with("acct")
+
     def test_ambient_storybook_delivers_to_irc_nick_not_account(self, plugin_env, mocker):
         """GIVEN alice authenticated as acct WHEN an ambient storybook fires THEN
         the job delivers to alice (a PM to acct reaches someone else, or no
@@ -4114,6 +4150,18 @@ class TestStoryCommand:
         job.assert_called_once()
         assert job.call_args.kwargs["brief"] == "illustrated tale of lads"
         assert job.call_args.kwargs["caller"].reply_target == "#test"
+
+    @pytest.mark.parametrize(("stored", "persona"), [("a sly fox", "a sly fox"), (None, "")])
+    def test_story_is_told_in_the_callers_avatar_voice(self, plugin_env, mocker, stored, persona):
+        """The stored avatar persona colours @story pages in any channel."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_irc.state.nickToAccount.return_value = "acct"
+        plugin.db.get_avatar_persona.return_value = stored
+        job = mocker.patch.object(plugin, "_submit_storybook_job")
+
+        plugin.story(mock_irc, mock_msg, ["a", "tale"])
+
+        assert job.call_args.kwargs["persona"] == persona
 
     def test_story_from_pm_delivers_to_irc_nick_not_account(self, plugin_env, mocker):
         """GIVEN testnick authenticated as acct PMs @story THEN the job is told

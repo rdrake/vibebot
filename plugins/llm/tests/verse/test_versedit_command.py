@@ -117,6 +117,12 @@ class TestVerseditCommand:
         assert store.list_attributes(eid)["mood"] == "grumpy"
         assert "set mood" in irc.reply.call_args[0][0]
 
+    def test_set_keeps_a_multi_word_value_whole(self, verse_env):
+        plugin, irc, msg, store = verse_env
+        eid = store.add_entity("npc", "Archie")
+        plugin.versedit(irc, msg, ["set", f"#{eid}", "mood", "very", "grumpy", "indeed"])
+        assert store.list_attributes(eid)["mood"] == "very grumpy indeed"
+
     # --- name / desc ---------------------------------------------------
 
     def test_name_renames(self, verse_env):
