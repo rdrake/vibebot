@@ -77,7 +77,7 @@ Set a persistent instruction that shapes how the bot answers you. On every path 
 
 Setting one is command-only. Asking the bot in conversation to change how it answers shapes that conversation and nothing more; `@instruct` is what makes it stick.
 
-The instruction applies to `@ask`, to plain messages addressed to the bot, to `@rp` and verse turns, and to tasks the bot runs for you from a reminder or a schedule — on the scheduled-task path it is folded into the system prompt instead. `@draw` ignores it, and ignores your saved memories too.
+The instruction applies to `@ask`, to plain messages addressed to the bot, to `@rp` and verse turns, and to tasks the bot runs for you from a reminder or a schedule. `@draw` ignores it, and ignores your saved memories too.
 
 ## Avatar persona
 

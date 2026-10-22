@@ -3620,7 +3620,6 @@ class LLM(callbacks.Plugin):
         bot_nick: str,
         entry_route: str,
         exclude_tools: frozenset[str] = frozenset(),
-        fold_instruction_into_prompt: bool = False,
     ) -> AssistantResult:
         """Fire an LLM action outside the normal command preflight.
 
@@ -3632,11 +3631,9 @@ class LLM(callbacks.Plugin):
         wiring live here. Callers keep their own rate-limit/capability
         policy, delivery, usage logging, and reschedule logic.
 
-        ``fold_instruction_into_prompt`` preserves the scheduled-task
-        variant, which folds the user's @instruct into the system prompt
-        (and passes no channel overlay when there is no instruction). The
-        reminder path instead rides the @instruct as user-role data (see
-        assistant_completion ``user_instruction``) and always passes the overlay.
+        The user's @instruct rides as user-role data (assistant_completion
+        ``user_instruction``), never inside the system prompt, and the channel
+        overlay is always the system prompt.
         """
         request_context = AssistantRequestContext(
             entry_route=entry_route,
@@ -3651,12 +3648,7 @@ class LLM(callbacks.Plugin):
         personal_key = caller.identity.personal_key
         memories = self._get_user_memories(personal_key) if personal_key else []
         user_instruction = self.db.get_instruction(personal_key) if personal_key else None
-        ask_prompt = self.registryValue(PROFILES[PROFILE_REMIND_ACTION].overlay_setting, channel)
-        if fold_instruction_into_prompt:
-            system_prompt = f"{user_instruction}\n\n{ask_prompt}" if user_instruction else None
-            user_instruction = None
-        else:
-            system_prompt = ask_prompt
+        system_prompt = self.registryValue(PROFILES[PROFILE_REMIND_ACTION].overlay_setting, channel)
         return self.llm_service.assistant_completion(
             prompt=prompt,
             **request_context.completion_kwargs(),

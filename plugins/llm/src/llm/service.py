@@ -7057,8 +7057,6 @@ Examples (echo → action_prompt: ""):
 
         # The depth tag on ``msg`` keeps schedule_llm_task itself off the tool
         # surface for this turn (the tool refuses on depth>=1).
-        # fold_instruction_into_prompt preserves this path's historical
-        # instruction handling (folded into the system prompt, not user-role).
         result = plugin._run_unattended_assistant(
             irc=irc,
             msg=msg,
@@ -7066,7 +7064,6 @@ Examples (echo → action_prompt: ""):
             caller=Caller.from_row(row.creator_nick, row.account, row.channel),
             bot_nick=irc.nick,
             entry_route="scheduled_llm_task",
-            fold_instruction_into_prompt=True,
         )
 
         response = (result.content or "").strip()
