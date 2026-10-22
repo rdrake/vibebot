@@ -8,7 +8,7 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
-from llm.identity import Caller
+from llm.identity import Caller, Identity
 from llm.service import AssistantResult, ReminderParseResult, Spend
 
 from .conftest import (
@@ -2125,3 +2125,149 @@ class TestRoutingGateAndMechanicalReschedule:
 
         args = plugin.llm_service.send_reaction.call_args.args
         assert args[2:] == ("m1", "⏰")
+
+    def test_empty_action_response_still_delivers_the_reminder(
+        self, plugin: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN an action reminder whose LLM call comes back empty WHEN it
+        fires THEN the user still gets the reminder's message, marked empty."""
+        active_irc = self._wire_active_irc(plugin, mocker)
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
+            content="", spend=Spend.ZERO
+        )
+
+        self._fire(plugin, "llm_remind_empty", action_prompt="check build")
+
+        lines = [c.args[0].args[1] for c in active_irc.queueMsg.call_args_list]
+        assert lines == ["alice: Reminder: watch (action returned empty response)"]
+
+
+class TestReminderAcks:
+    """Reactions and texts that tell the user a reminder command landed."""
+
+    @pytest.fixture
+    def env(self, plugin_env):
+        plugin, irc, msg = plugin_env
+        msg.server_tags = {"msgid": "req-1"}
+        plugin.llm_service.send_reaction.return_value = True
+        return plugin, irc, msg
+
+    @staticmethod
+    def _reactions(plugin) -> list[str]:
+        return [c.args[3] for c in plugin.llm_service.send_reaction.call_args_list]
+
+    def test_delivered_reaction_sends_no_text(self, env) -> None:
+        plugin, irc, msg = env
+
+        plugin._ack(irc, msg, "⏰", "Reminder set.")
+
+        assert self._reactions(plugin) == ["⏰"]
+        irc.reply.assert_not_called()
+
+    def test_undeliverable_reaction_falls_back_to_text_once(self, env) -> None:
+        plugin, irc, msg = env
+        plugin.llm_service.send_reaction.return_value = False
+
+        plugin._ack(irc, msg, "⏰", "Reminder set.")
+
+        irc.reply.assert_called_once_with("Reminder set.", prefixNick=False)
+
+    def test_pm_reaction_goes_to_the_sender(self, env) -> None:
+        """In a PM args[0] is the bot's own nick; the TAGMSG must go to the
+        person, or they never see the ack."""
+        plugin, irc, msg = env
+        msg.args = ("testbot", "remind me in 5m tea")
+
+        assert plugin._react(irc, msg, "⏰") is True
+        plugin.llm_service.send_reaction.assert_called_once_with(irc, "testnick", "req-1", "⏰")
+
+    def _two_reminders(self, plugin) -> None:
+        for event_name, text in (("llm_remind_a_1", "first"), ("llm_remind_b_2", "second")):
+            put_reminder(
+                plugin,
+                make_reminder_row(event_name=event_name, nick="testnick", message=text),
+            )
+
+    def test_find_by_id_returns_only_that_reminder(self, env) -> None:
+        plugin, _irc, _msg = env
+        self._two_reminders(plugin)
+        me = Identity(raw_nick="testnick", account=None)
+
+        assert plugin._find_user_reminder(me, "2") == "llm_remind_b_2"
+        assert plugin._find_user_reminder(me, "999") is None
+
+    def test_delete_by_id_leaves_the_others(self, env) -> None:
+        plugin, irc, msg = env
+        self._two_reminders(plugin)
+        me = Identity(raw_nick="testnick", account=None)
+
+        out = plugin._remind_delete_for_assistant(me, "2", irc=irc, msg=msg)
+
+        assert out.ok is True
+        assert reminder_names(plugin) == {"llm_remind_a_1"}
+        assert self._reactions(plugin) == ["👍"]
+
+    def test_delete_unknown_id_reacts_cross(self, env) -> None:
+        plugin, irc, msg = env
+        self._two_reminders(plugin)
+        me = Identity(raw_nick="testnick", account=None)
+
+        out = plugin._remind_delete_for_assistant(me, "999", irc=irc, msg=msg)
+
+        assert out.ok is False
+        assert reminder_names(plugin) == {"llm_remind_a_1", "llm_remind_b_2"}
+        assert self._reactions(plugin) == ["❌"]
+
+    def test_clear_reacts_thumbs_up_then_ok_hand(self, env) -> None:
+        plugin, irc, msg = env
+        self._two_reminders(plugin)
+        me = Identity(raw_nick="testnick", account=None)
+
+        plugin._remind_clear_for_assistant(me, irc=irc, msg=msg)
+        plugin._remind_clear_for_assistant(me, irc=irc, msg=msg)
+
+        assert reminder_names(plugin) == set()
+        assert self._reactions(plugin) == ["👍", "👌"]
+
+    def test_failed_set_reports_nothing_pending(self, env, mocker: MockerFixture) -> None:
+        """A refused set must not tell the model something is now pending;
+        that feeds fabricated "[reminder set: ...]" acks."""
+        from llm.plugin import LLM
+
+        plugin, irc, msg = env
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="schedule", seconds=60, message="ping", confirmation="OK."
+        )
+        mocker.patch("llm.plugin.schedule.addEvent")
+        for i in range(LLM._REMINDER_MAX_PENDING_PER_USER):
+            put_reminder(
+                plugin,
+                make_reminder_row(
+                    event_name=f"llm_remind_{i}_x{i}", nick="testnick", message=f"r{i}"
+                ),
+            )
+
+        out = plugin._remind_set_for_assistant(
+            irc, msg, Caller.from_row("testnick", None, "#test"), "in 1m ping"
+        )
+
+        assert out.ok is False
+        assert "now pending" not in out.message
+        assert self._reactions(plugin) == ["❌"]
+
+
+class TestFinishAgendaWhileClosing:
+    def test_dying_plugin_leaves_a_fired_row_to_fire_again(self, plugin_env, mocker) -> None:
+        """GIVEN a claimed one-shot reminder WHEN its fire finishes while the
+        plugin shuts down THEN the row stays, so it fires on the next start."""
+        from llm import agenda
+
+        plugin, _irc, _msg = plugin_env
+        due_reminder(plugin, "testnick", "#test", "tea", "llm_remind_tea_1")
+        assert [d.row.event_name for d in plugin.agenda.claim_due().due] == ["llm_remind_tea_1"]
+        plugin._llm_executor = mocker.MagicMock()
+        plugin._llm_executor.closing = True
+
+        plugin._finish_agenda(agenda.Kind.REMINDER, "llm_remind_tea_1", time.time())
+
+        assert reminder_names(plugin) == {"llm_remind_tea_1"}
