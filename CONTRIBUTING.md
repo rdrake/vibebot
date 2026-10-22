@@ -72,18 +72,22 @@ Write [conventional commits](https://www.conventionalcommits.org/): `type(scope)
 | Prefix | Changelog section |
 |--------|-------------------|
 | `feat` | Features |
-| `fix` | Bug fixes |
+| `fix` | Bug Fixes |
 | `perf` | Performance |
 | `refactor` | Refactor |
 | `docs` | Documentation |
 | `test` | Tests |
-| `ci`, `build`, `deps`, `chore` | Maintenance |
+| `ci` | CI |
+| `build` | Build |
+| `deps` | Dependencies |
+| `chore` | Chores |
+| `revert` | Reverts |
 
 ## Branches and pull requests
 
 The maintainer commits to `main` directly. Outside contributions arrive as pull requests from feature branches, and CI must pass before merge:
 
-- `lint`: prek hooks plus the syntax check
+- `lint`: the prek hooks (ruff, ruff format, ty, gitleaks, hygiene)
 - `check (3.14 / 3.15)`: the full test suite on the image's Python and the next one
 - `secrets`: gitleaks scanning
 - `docker`: builds the container image on pull requests; advisory, never a required check

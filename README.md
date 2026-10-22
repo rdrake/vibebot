@@ -10,6 +10,7 @@ The full guide lives at **[rdrake.github.io/vibebot-v8](https://rdrake.github.io
 - **Assistant with tools**: `@ask` answers with conversation context, vision for image URLs, web search, and a bounded tool loop
 - **Image generation**: `@draw` renders images with xAI's `xai/grok-imagine-image`
 - **Illustrated pages**: `@story` builds an illustrated story or explainer and posts the link
+- **Memes**: `@meme` captions a meme template
 - **Two memory layers**: volatile conversation context that expires on its own, plus durable per-user facts — picked up automatically once they recur, or saved at once when you say "remember this"
 - **Reminders and scheduled tasks**: `@remind` parses natural language and handles recurrence; letting the model create them from `@ask` is opt-in per channel via `pendingTasksEnabled`
 - **Verse mode**: an opt-in persistent fiction layer with avatars, a world store, and canon editing
@@ -24,6 +25,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 make install        # uv sync
 make install-hooks  # prek git hooks
+uv run limnoria-wizard  # write a config; save it as bot.conf (gitignored)
 make run            # start Limnoria with bot.conf
 ```
 
@@ -41,24 +43,29 @@ export XAI_API_KEY=...
 | `@ask <question>` | Ask the assistant; supports context, vision, and tools |
 | `@draw <prompt>` | Generate an image (authenticated account required) |
 | `@story <brief>` | Generate an illustrated story or explainer page |
-| `@forget [channel]` | Clear your conversation context |
+| `@forget [channel]` | Clear your conversation context; in a channel, also clears that channel's shared recent history |
 | `@memories [subcommand]` | List, edit, or delete your stored facts |
 | `@instruct [text \| clear]` | Set a persistent instruction for `@ask` |
 | `@remind [text \| list \| del \| clear]` | Set and manage reminders |
 | `@usage [nick \| #channel]` | View API usage statistics |
+| `@meme <template or idea>` | Make a template meme (authenticated account required) |
+| `@tz [zone \| clear]` | Set or clear your time zone |
+| `@model [channel]` | Show which model answered the bot's last reply |
+| `@channels [--min n] [glob]` | List the network's busiest public channels |
+| `@names [channel]` | List who is in a channel |
 
 Verse channels add more: `@verseopt`, `@rp`, `@verse`, `@look`, `@who`, `@avatar`, and editor and GM commands. The [command reference](https://rdrake.github.io/vibebot-v8/reference/commands/) covers the full list.
 
 ## Configuration
 
-Models and behaviour live in the Limnoria registry under `supybot.plugins.LLM.*`. Most keys support per-channel overrides. API keys are the exception: they come from environment variables, not the registry (see [Quick start](#quick-start)).
+Models and behaviour live in the Limnoria registry under `supybot.plugins.LLM.*`. Models, prompts, context, verse, bridge and announcement keys support per-channel overrides. Rate limits, HTTP paths, the request timeout and the status-page list are global. API keys are the exception: they come from environment variables, not the registry (see [Quick start](#quick-start)).
 
 ```
 supybot.plugins.LLM.assistantModel: anthropic/claude-haiku-5-5
 supybot.plugins.LLM.verseModel: xai/grok-4-1-fast-non-reasoning
 ```
 
-Model names must start with `anthropic/` or `xai/`. The [operator configuration guide](https://rdrake.github.io/vibebot-v8/operator/configuration/) for every key, including rate limits, memory, context, and verse settings.
+Model names must start with `anthropic/` or `xai/`. The [operator configuration guide](https://rdrake.github.io/vibebot-v8/operator/configuration/) covers every key, including rate limits, memory, context, and verse settings.
 
 ## Production deployment
 
@@ -158,7 +165,7 @@ vibebot-v8/
 ├── docs/guide/              # MkDocs source for the published guide
 ├── docs/plans/              # Design and implementation plans
 ├── scripts/                 # Maintenance and compatibility scripts
-├── bot.conf                 # Development bot configuration
+├── bot.conf                 # Local development config (gitignored; create it yourself)
 └── pyproject.toml           # Workspace and tool configuration
 ```
 

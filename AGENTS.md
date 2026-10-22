@@ -18,7 +18,7 @@ Core documentation and tools:
 - `Makefile`: standard development entry points
 - `pyproject.toml`: workspace, Ruff, pytest, coverage, and ty configuration
 
-The bot's command prefix on AfterNet is `@` (for example `@ask`). The `%` prefix in the repo's `bot.conf` is a development artifact; docs use `@`.
+The bot's command prefix on AfterNet is `@` (for example `@ask`). The `%` prefix in a local development `bot.conf` (gitignored, not in the repo) is a development artifact; docs use `@`.
 
 ## Working in this repo
 
@@ -60,8 +60,8 @@ For `plugins/llm/src/llm/`:
 - `apikeys.py`: provider-scoped key resolution (model → provider → environment variable) and the `SecretFilter` that scrubs key values out of every log handler
 - `agenda.py`: the agenda — when reminders and scheduled LLM tasks fire: the one-minute cadence floor, next-fire anchoring, per-kind chain caps, the row-is-the-cancel-truth check, restart recovery, and the next due time the plugin's single wakeup timer is armed for; free of Limnoria imports, tested against real SQLite and a fake clock
 - `statuspage.py`: Atlassian Statuspage v2 model — fetch, strict parse, incident classification, sanitisation, line rendering; deliberately free of Limnoria and `service` imports
-- `tracing.py`: structured trace severity helpers
-- `verse/`: the verse subsystem (SQLite world store, avatars, aging, compaction, reactions, taste command-line tools, validation, purge)
+- `tracing.py`: per-request trace ids (`request_id` ContextVar, `generate_request_id`, and `TraceFilter`, which prefixes log lines with the id)
+- `verse/`: the verse subsystem (SQLite world store, avatars, aging, compaction, reactions, taste command-line tools, validation); the two-step `@versepurge` lives in `plugin.py`
 
 Keep those boundaries intact:
 

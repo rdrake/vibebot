@@ -17,7 +17,21 @@ src/llm/
 ├── limnoria_bridge.py  # Allowlisted Limnoria-as-tool surface
 ├── config.py           # Registry configuration (supybot.plugins.LLM.*)
 ├── context.py          # Volatile conversation history, thread-safe
-├── tracing.py          # Structured trace severity helpers
+├── identity.py         # Identity and Caller value types
+├── apikeys.py          # Provider-scoped key resolution and the log SecretFilter
+├── agenda.py           # When reminders and scheduled tasks fire
+├── profile.py          # Route profiles: which tools each entry point advertises
+├── prompts.py          # Framework system prompts and memory-pipeline prompts
+├── statuspage.py       # Atlassian Statuspage fetch, parse, and line rendering
+├── meme.py             # @meme request parsing and the bundled template catalogue
+├── meme_render.py      # Draws captions onto a template with Pillow
+├── meme_topics.py      # Topic tags for meme templates
+├── ircquery.py         # LIST / NAMES / WHOIS reply correlation
+├── github.py           # Reads GitHub links through GitHub's public API
+├── spaceweather.py     # Aurora and space-weather model
+├── typing_holds.py     # One shared +typing indicator per target
+├── usertz.py           # Per-user time zones
+├── tracing.py          # Request-id ContextVar and the log filter that prefixes it
 └── verse/              # Verse subsystem
     ├── store.py        # SQLite world store (entities, events, relations, aliases)
     ├── avatar.py       # Verse prompt assembly, tool specs, verse_edit dispatch
@@ -27,7 +41,7 @@ src/llm/
     ├── taste_mine.py   # Offline CLI: mine style exemplar candidates from logs
     ├── taste_report.py # Offline CLI: verse landing-rate report
     ├── validation.py   # Payload validation for verse mutations
-    └── purge.py        # Two-step verse wipe
+    └── schema.sql      # Verse store schema
 ```
 
 Boundaries to respect:
@@ -42,11 +56,14 @@ Boundaries to respect:
 |---------|------------|-------|
 | `@ask` | `llm.ask` | Context, vision, tool loop |
 | `@draw` | `llm.draw` | Requires an authenticated account |
-| `@story` | `llm.draw` | Illustrated story or explainer page; counts against the draw limits |
-| `@forget`, `@memories`, `@instruct`, `@remind`, `@usage`, `@avatar` | none | Owner-only subcommands enforced in-body |
-| `@verseopt`, `@verse`, `@look`, `@who` | `llm.verse` | Verse participation |
+| `@story` | `llm.draw` | Illustrated story or explainer page; has its own `story` rate limits and a per-account cooldown (`verseStorybookCooldownSeconds`) |
+| `@meme` | `llm.draw` | Requires an authenticated account; `meme` rate limits |
+| `@forget`, `@remind` | `llm.ask` | Owner-only subcommands enforced in-body |
+| `@memories`, `@instruct`, `@usage`, `@avatar` | none | Owner-only subcommands enforced in-body |
+| `@tz`, `@model`, `@channels`, `@names` | none | |
+| `@verseopt`, `@rp`, `@verse`, `@look`, `@who` | `llm.verse` | Verse participation |
 | `@canon`, `@versedit` | `llm.verse.edit` | Canon editing |
-| `@versedump`, `@versepurge`, `@versecompact` | `llm.verse.gm` | GM operations; `versedump`/`versepurge` check the capability in-body |
+| `@versedump`, `@versepurge`, `@versecompact` | `llm.verse.gm` | GM operations; the two-step `@versepurge` wipe lives in `plugin.py` |
 
 Rate limiting covers four command families (`ask`, `draw`, `meme`, `story`), each with registered and trusted tiers; `ask` also has an unregistered tier, while `draw`, `meme` and `story` require an authenticated account. The [operator guide](https://rdrake.github.io/vibebot-v8/operator/rate-limiting-security/) documents the matrix and defaults.
 
