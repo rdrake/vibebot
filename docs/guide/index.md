@@ -1,6 +1,6 @@
 # VibeBot v8
 
-AI on IRC. Ask questions, generate code, create images, and hold conversations with large language models without leaving your IRC client.
+AI on IRC. Ask questions, create images, and hold conversations with large language models without leaving your IRC client.
 
 ```
 <alice> @ask What causes the northern lights?
@@ -18,7 +18,7 @@ AI on IRC. Ask questions, generate code, create images, and hold conversations w
 
 ## Features
 
-- **Natural-language interaction.** Mention the bot by name or send it a PM. Ask questions, search the web, pull a page, generate code or an image, or tell it something to remember — no command needed. Managing memories, instructions, usage, and conversation context stays command-only.
+- **Natural-language interaction.** Mention the bot by name or send it a PM. Ask questions, search the web, pull a page, draw an image, or tell it something to remember — no command needed. Managing memories, instructions, usage, and conversation context stays command-only.
 - **Conversation memory.** Follow up on earlier questions. The bot tracks context per user and channel.
 - **Vision.** Drop an image URL into `@ask` and the bot describes or reasons about it.
 - **Image generation.** `@draw` creates images from text descriptions.
@@ -27,9 +27,9 @@ AI on IRC. Ask questions, generate code, create images, and hold conversations w
 - **[Reminders](user/reminders.md) and [scheduled tasks](user/scheduled-tasks.md).** Natural-language reminders, plus recurring LLM runs with the full native tool set.
 - **Stored facts.** The bot picks up durable facts from your conversations, with [two-stage promotion](operator/memory-promotion.md) so casual remarks don't stick. Say "remember that I use Arch" and it saves immediately; review or prune the list with `@memories`.
 - **[The verse](operator/verse.md).** A per-channel world model with avatars, user-driven roleplay, and a persistent entity graph.
-- **[Limnoria bridge](reference/bridge-tools.md).** The LLM can call stock Limnoria plugin commands (Time, Math, Seen, Web, Karma, RSS, and so on) as tools: read-only by default, mutations gated.
+- **[Limnoria bridge](reference/bridge-tools.md).** The LLM can call stock Limnoria plugin commands (Time, Math, Seen, Web, Karma, RSS, and so on) as tools, read-only: write commands are never exposed.
 - **Custom instructions.** Shape how the bot responds to you with `@instruct`.
-- **Multi-provider AI.** Supports OpenAI, Anthropic, Google Gemini, and xAI through [LiteLLM](https://github.com/BerriAI/litellm).
+- **Two providers.** Chat runs on Anthropic or xAI models, chosen per channel; images and web search run on xAI.
 
 ## Documentation
 
@@ -43,4 +43,3 @@ AI on IRC. Ask questions, generate code, create images, and hold conversations w
 
 - [GitHub](https://github.com/rdrake/vibebot-v8)
 - [Limnoria](https://github.com/ProgVal/Limnoria)
-- [LiteLLM](https://github.com/BerriAI/litellm)

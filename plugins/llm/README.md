@@ -1,6 +1,6 @@
 # LLM plugin for Limnoria
 
-The main AI plugin for VibeBot v8: multi-provider chat, code and image generation, memory, reminders, scheduled tasks, and the verse fiction layer, all through LiteLLM.
+The main AI plugin for VibeBot v8: chat and image generation on Anthropic and xAI models, memory, reminders, scheduled tasks, and the verse fiction layer.
 
 This README covers plugin internals for developers. User and operator documentation lives in the [published guide](https://rdrake.github.io/vibebot-v8/).
 
@@ -9,7 +9,8 @@ This README covers plugin internals for developers. User and operator documentat
 ```
 src/llm/
 ├── plugin.py           # IRC protocol layer: command wrappers, routing, doPrivmsg/doTagmsg
-├── service.py          # LiteLLM calls, sanitization, output shaping, storybook generation
+├── service.py          # Completions, tool loop, sanitization, output shaping, storybook generation
+├── provider.py         # Stdlib HTTP to Anthropic and xAI: wire formats, prices, errors
 ├── assistant.py        # Tool-using chat profile and tool specs
 ├── executor.py         # LLMExecutor: bounded concurrency for all blocking LLM calls
 ├── persistence.py      # SQLite store: memories, reminders, scheduled tasks, usage
@@ -31,8 +32,8 @@ src/llm/
 
 Boundaries to respect:
 
-- IRC parsing and reply flow stay in `plugin.py`; provider calls and output shaping stay in `service.py`.
-- Every blocking LLM call goes through `LLMExecutor` (`permit()` or `submit()`); never call `litellm.*` from the IRC main thread.
+- IRC parsing and reply flow stay in `plugin.py`; provider wire calls stay in `provider.py`; output shaping stays in `service.py`.
+- Every blocking LLM call goes through `LLMExecutor` (`permit()` or `submit()`); never call `provider.*` from the IRC main thread.
 - Shared state must stay thread-safe: `Plugin.threaded = True`.
 
 ## Commands, capabilities, and gates
@@ -51,11 +52,10 @@ Rate limiting covers four command families (`ask`, `draw`, `meme`, `story`), eac
 
 ## Security patterns
 
-1. **Thread-safe API keys**: keys pass directly to `litellm.completion()`; the plugin never mutates environment variables, which prevents races between threads.
+1. **Thread-safe API keys**: `apikeys.api_key_for()` reads the key from the environment on each call and `provider.py` puts it in that request's headers; the plugin never mutates environment variables.
 2. **API key sanitization**: `_sanitize()` strips keys from every error message before logging.
 3. **URL validation**: `validate_image_url()` blocks non-HTTP schemes (`javascript:`, `data:`, `file:`, `ftp:`), path traversal, and non-image extensions.
-4. **Private configuration**: every API key registry value is `private=True`.
-5. **Output defences**: generated output is sanitized against IRC command injection, and rendered HTML passes through nh3.
+4. **Output defences**: generated output is sanitized against IRC command injection, and rendered HTML passes through nh3.
 
 ## Testing
 

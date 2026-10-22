@@ -1,14 +1,14 @@
 # VibeBot v8
 
-An AI-powered IRC bot for AfterNet, built on [Limnoria](https://github.com/ProgVal/Limnoria) with multi-provider model support through [LiteLLM](https://github.com/BerriAI/litellm).
+An AI-powered IRC bot for AfterNet, built on [Limnoria](https://github.com/ProgVal/Limnoria), running on Anthropic and xAI models.
 
 The full guide lives at **[rdrake.github.io/vibebot-v8](https://rdrake.github.io/vibebot-v8/)**: a user guide, an operator guide, and a command reference.
 
 ## Features
 
-- **Multi-provider AI**: OpenAI, Anthropic, Google Gemini, and xAI Grok behind one LiteLLM interface, with per-channel model overrides
+- **Two providers**: Anthropic and xAI, called over plain HTTP, with per-channel chat model overrides
 - **Assistant with tools**: `@ask` answers with conversation context, vision for image URLs, web search, and a bounded tool loop
-- **Image generation**: `@draw` renders images with xAI grok-imagine (`xai/grok-imagine-image` by default, on `XAI_API_KEY`) or Google Imagen; Vertex AI Imagen works too, but needs `VERTEXAI_PROJECT` and `VERTEXAI_LOCATION`
+- **Image generation**: `@draw` renders images with xAI's `xai/grok-imagine-image`
 - **Illustrated pages**: `@story` builds an illustrated story or explainer and posts the link
 - **Two memory layers**: volatile conversation context that expires on its own, plus durable per-user facts — picked up automatically once they recur, or saved at once when you say "remember this"
 - **Reminders and scheduled tasks**: `@remind` parses natural language and handles recurrence; letting the model create them from `@ask` is opt-in per channel via `pendingTasksEnabled`
@@ -30,10 +30,8 @@ make run            # start Limnoria with bot.conf
 Set API keys as environment variables, one per provider (see `.env.example`):
 
 ```bash
-export XAI_API_KEY=...
-export GEMINI_API_KEY=...
-export OPENAI_API_KEY=...
 export ANTHROPIC_API_KEY=...
+export XAI_API_KEY=...
 ```
 
 ## Commands
@@ -60,7 +58,7 @@ supybot.plugins.LLM.assistantModel: anthropic/claude-haiku-5-5
 supybot.plugins.LLM.verseModel: xai/grok-4-1-fast-non-reasoning
 ```
 
-See the [LiteLLM provider list](https://docs.litellm.ai/docs/providers) for supported models and the [operator configuration guide](https://rdrake.github.io/vibebot-v8/operator/configuration/) for every key, including rate limits, memory, context, and verse settings.
+Model names must start with `anthropic/` or `xai/`. The [operator configuration guide](https://rdrake.github.io/vibebot-v8/operator/configuration/) for every key, including rate limits, memory, context, and verse settings.
 
 ## Production deployment
 
@@ -87,13 +85,13 @@ make uninstall-timer                               # disable auto-updates
 
 ## Static assets (reverse proxy)
 
-Generated code and images serve over HTTP. Set the public URL the bot should advertise:
+Generated images, stories and long replies serve over HTTP. Set the public URL the bot should advertise:
 
 ```
 @config supybot.servers.http.publicUrl https://example.com
 ```
 
-The bot then generates URLs such as `https://example.com/llm/filename.py`.
+The bot then generates URLs such as `https://example.com/llm/filename.png`.
 
 With Limnoria's built-in HTTP server, proxy `/llm` through Nginx:
 
@@ -173,5 +171,4 @@ See the LICENSE file for details.
 ## Credits
 
 - Built with [Limnoria](https://github.com/ProgVal/Limnoria)
-- Powered by [LiteLLM](https://github.com/BerriAI/litellm)
 - Developed for AfterNet IRC (irc.afternet.org)

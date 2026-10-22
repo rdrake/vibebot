@@ -1,7 +1,7 @@
 # LLM plugin
 
 The LLM plugin is VibeBot's main AI surface. It provides
-natural-language chat, code and image generation, illustrated stories,
+natural-language chat, image generation, illustrated stories,
 persistent memory, and reminders. It also runs scheduled agentic
 tasks, hosts a persistent roleplay world (the verse), and carries a
 curated bridge that lets the model call other Limnoria plugins as
@@ -29,9 +29,9 @@ the bot by name or send it a PM. `@story` does not — an illustrated page
 comes from the command, or from an explicit illustrate cue in a verse
 channel with `verseStorybookEnabled` on. Memory, Reminders and Accounting are
 command-only, with two exceptions — the model can save a memory, and
-where `pendingTasksEnabled` is on it can set a reminder or schedule a
-task. Listing and cancelling go through `@remind list`, `del` and
-`clear`, which cover your reminders and your scheduled tasks alike.
+where `pendingTasksEnabled` is on it can set, list and cancel reminders
+and scheduled tasks. `@remind list`, `del` and `clear` cover both kinds
+anywhere.
 [Bridge tools](../reference/bridge-tools.md) lists the tool surface each
 route sees.
 
@@ -54,7 +54,8 @@ inline instead: `owner` for `@memories <nick>` and `@remind admin`,
 ```
 plugins/llm/src/llm/
 ├── plugin.py          # IRC command surface + Limnoria glue
-├── service.py         # LiteLLM calls, sanitisation, output shaping
+├── service.py         # Completions, tool loop, sanitisation, output shaping
+├── provider.py        # Stdlib HTTP to Anthropic and xAI
 ├── assistant.py       # Tool schemas and per-route visibility (function calling)
 ├── profile.py         # Route profiles: model, prompt, overlay, and caps per mode
 ├── prompts.py         # Shared system-prompt fragments
@@ -77,7 +78,7 @@ which combines a `BoundedSemaphore` and a `ThreadPoolExecutor`. This
 design:
 
 - caps total in-flight LLM I/O at 16 calls,
-- keeps the IRC main thread responsive, because no `litellm.*` call can
+- keeps the IRC main thread responsive, because no provider call can
   block it directly, and
 - shares one shutdown gate, so plugin reloads drain in-flight work
   cleanly.

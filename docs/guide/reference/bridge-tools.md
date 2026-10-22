@@ -180,13 +180,13 @@ it is offered depends on the route that handled the message:
 
 | Route | Entry points | Tools offered |
 |-------|--------------|---------------|
-| chat | `@ask`, nick-addressed mentions, PMs | `check_service_status`, `fetch_url`, `generate_image`, `save_memory`, `search_web`; plus `set_reminder` and `schedule_llm_task` where `pendingTasksEnabled` is on. Five with the shipped defaults; seven when `pendingTasksEnabled` is on; one fewer in each case when `statusPageUrls` is empty. |
+| chat | `@ask`, nick-addressed mentions, PMs | `check_service_status`, `fetch_url`, `generate_image`, `save_memory`, `search_web`; plus the five pending-task tools (`set_reminder`, `schedule_llm_task`, `list_pending_tasks`, `cancel_pending_task`, `cancel_all_pending_tasks`) where `pendingTasksEnabled` is on. Every request also carries `irc_lookup`, `react`, `delete_last_reply`, `notify_when_online`, `make_meme` and `aurora`, plus the bridge pair where the bridge is on. |
 | verse | `@rp`, a live sticky `@rp` session, the one-shot ambient-prose promotion | `fetch_url`, `generate_image`, `save_memory`, `search_web` (4) |
 | draw | `@draw` | `generate_image` (1) |
 | remind_action | reminder and scheduled-task fires | all 20 |
 
-`assistant.py` defines 21 tool schemas, but defining one is not
-advertising it. Thirteen are hidden from chat and verse because each
+`assistant.py` defines 20 tool schemas, but defining one is not
+advertising it. Ten are hidden from chat and verse because each
 duplicates a command the user can already type:
 
 - `list_memories`, `update_memory`, `delete_memory`, `clear_memories`,
@@ -217,18 +217,17 @@ because it is the one write extraction cannot replace — an explicit
 "remember this" should stick at once rather than wait for the
 candidate-reinforcement threshold.
 
-Reminder fires keep all 21. A scheduled task runs as its creator with no
+Reminder fires keep all 20. A scheduled task runs as its creator with no
 user present to type a command, so it may legitimately need to tidy up
 after itself.
 
-`set_reminder` and `schedule_llm_task` appear on the chat surface only
-when `pendingTasksEnabled` is on for the channel, and it defaults to
-off. Their schemas and prompt rules cost roughly 1,100 prompt tokens on
-every completion, so channels that never schedule anything should not
-pay for them. The `@remind` command and already-scheduled fires ignore
-the gate. The matching list and cancel tools are off the chat surface
-either way: users list and cancel both kinds with `@remind list`,
-`@remind del` and `@remind clear`.
+The five pending-task tools appear on the chat surface only when
+`pendingTasksEnabled` is on for the channel, and it defaults to off.
+Their schemas and prompt rules cost roughly 1,100 prompt tokens on every
+completion, so channels that never schedule anything should not pay for
+them. The `@remind` command and already-scheduled fires ignore the gate:
+users list and cancel both kinds with `@remind list`, `@remind del` and
+`@remind clear` in any channel.
 
 `check_service_status` answers from the poller's cached snapshot of the
 `statusPageUrls` pages: one entry per page when the model omits `service`,
@@ -267,7 +266,7 @@ list and cancel any user's tasks with `@remind admin`.
 |---------|---------|-------------|
 | `bridgeEnabled` | `False` | Primary switch, per channel. `False` removes every bridge tool. |
 | `bridgeAllowedPlugins` | empty (curated default applies) | Space-separated plugin names. A non-empty value replaces the curated set entirely. Names use camel case to match `cb.name()`. |
-| `pendingTasksEnabled` | `False` | Per channel. Advertises `set_reminder` and `schedule_llm_task` on the chat surface, so the model can create reminders and schedules from plain language. Listing and cancelling stay command-only. |
+| `pendingTasksEnabled` | `False` | Per channel. Advertises the five pending-task tools on the chat surface, so the model can create, list and cancel reminders and schedules from plain language. `@remind` works either way. |
 | `bridgeDebugInChannel` | `False` | Per channel. Appends a one-line footer listing every bridge call made during the turn, as `Plugin.command (N chars) [ok]`, or `[err:<reason>]` when the call was refused. Argument text is never echoed, only its length: bridge arguments are model-generated and can carry secrets. Full arguments are logged only at `DEBUG`, below the plugin's fixed `WARNING` level. |
 
 To add a plugin outside the curated default, list every plugin you want

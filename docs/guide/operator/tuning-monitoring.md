@@ -14,7 +14,7 @@ Guidance from operating this surface:
 
 - `assistantModel` needs vision support if users paste image URLs into chat.
 - Reasoning models make terse, flat narrators. If the assistant model is a reasoning model, point `verseModel` at a non-reasoning model for verse prose.
-- Memory extraction runs after every reply and its output is never shown. Put `memoryModel` on a flash-lite class model. On Gemini's free tier each model has its own daily quota, so a different model also keeps extraction from using up the chat model's.
+- Memory extraction runs after every reply and its output is never shown. Put `memoryModel` on a cheap model.
 
 Keys are not part of this per-command surface: one environment variable per *provider* covers every model on that provider, regardless of which setting names the model. Point a channel at a different model and, if that model's provider is already configured, no key change is needed. See [Configuration → API keys](configuration.md#api-keys) for the variable names.
 
@@ -75,7 +75,7 @@ Commands that change persistent state (offline notes, RSS registrations, karma c
 
 ### Scheduled LLM tasks
 
-The `schedule_llm_task` tool schedules a future assistant turn. At fire time the bot replays the creator's IRC identity and runs the prompt on the reminder-action profile, which carries every native tool: search, fetch, draw, code, memory, usage, and pending-task management. It does not carry the bridge — bridged Limnoria commands ride `@ask`, mentions and PMs only. It differs from `set_reminder`:
+The `schedule_llm_task` tool schedules a future assistant turn. At fire time the bot replays the creator's IRC identity and runs the prompt on the reminder-action profile, which carries every native tool: search, fetch, draw, memory, usage, and pending-task management. It does not carry the bridge — bridged Limnoria commands ride `@ask`, mentions and PMs only. It differs from `set_reminder`:
 
 - `set_reminder` delivers fixed text at fire time. "Remind me to switch the laundry at 6."
 - `schedule_llm_task` runs an LLM turn at fire time. "Every Monday at 9, check my open PRs and tell me which are stale." Use it when the task needs tools when it fires.
@@ -86,7 +86,7 @@ Operational properties:
 - Schedules bind to the creator's account at create time; the tool refuses unauthenticated callers.
 - A schedule auto-cancels the first time it fires after its creator loses `llm.ask`: the row is deleted, the reply target gets a one-line notice, and that notice is the only trace: the matching log line is `INFO`, below the plugin's fixed `WARNING` level.
 - A fired task cannot schedule another task (depth cap of 1), which blocks recursion.
-- Users cannot list or cancel schedules by talking to the bot — the unified pending-task tools are off the chat surface — but `@remind list`, `del` and `clear` reach their own tasks as well as their reminders. Owners use `@remind admin list <nick>` and `@remind admin del <nick> <id>` to reach anyone's. Limnoria's own `@scheduler list` does not show these tasks; they live in the plugin's database.
+- Users list and cancel their own tasks and reminders with `@remind list`, `del` and `clear`, or by asking the bot where `pendingTasksEnabled` is on. Owners use `@remind admin list <nick>` and `@remind admin del <nick> <id>` to reach anyone's. Limnoria's own `@scheduler list` does not show these tasks; they live in the plugin's database.
 
 ### Known limitation
 
@@ -156,7 +156,7 @@ tail -f ~/.config/vibebot/logs/messages.log     # bot message log
 At startup, an `INFO`-level line reports secret redaction coverage, naming which environment variable *names* it covers (never their values):
 
 ```
-secret redaction: 4 handler(s) filtered, 2 variable(s) covered: GEMINI_API_KEY, XAI_API_KEY
+secret redaction: 4 handler(s) filtered, 2 variable(s) covered: ANTHROPIC_API_KEY, XAI_API_KEY
 ```
 
 That line is the only positive confirmation that redaction is actually installed and live — worth checking after any change that touches logging handlers, given that credentials also sit directly in the container's environment (see [Operations → Credentials in the environment](operations.md#credentials-in-the-environment)).
@@ -196,7 +196,7 @@ One draw can write more than one `draw:image` row. Each row is one call to the i
 
 Every chat turn writes a row, even when its reply never reached the channel. A turn that spent tokens and then delivered nothing, such as an echo of the prompt or an empty reply, carries `status='error'`. A turn that timed out carries `status='timeout'`, including one the bot queued for a retry; the retry writes its own row when it delivers. `@usage` totals count every status.
 
-The dollar figures come from LiteLLM's built-in price table, not from any provider billing API. A model LiteLLM has no price for records `$0.0000` and logs `completion_cost failed for model=…`; image models are priced from the two-entry `IMAGE_COST_PER_IMAGE` table in `plugins/llm/src/llm/service.py`. Read `@usage` as a relative signal and reconcile against the provider invoice.
+xAI calls book the cost xAI reports in the response. Anthropic calls, and xAI calls without a reported cost, are priced from the `PRICES` and `IMAGE_PRICES` tables in `plugins/llm/src/llm/provider.py`. A model with no entry there books `$0.00` and logs `has no price in provider.py` once. Read `@usage` as a relative signal and reconcile against the provider invoice.
 
 ### Storage
 
@@ -214,7 +214,7 @@ Reminders, usage statistics, and memories live in one SQLite database, `data/LLM
   ```
 
   A length of `0` means the variable is unset or empty. Compare the hash against a known-good value computed the same way, rather than eyeballing the key itself.
-- Check the key matches the model's provider; a Gemini key does not work with an `anthropic/` model.
+- Check the key matches the model's provider; an xAI key does not work with an `anthropic/` model.
 
 **A reply arrived with a 🔁 in front of it.**
 

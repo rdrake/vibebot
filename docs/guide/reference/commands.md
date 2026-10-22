@@ -15,8 +15,8 @@ VibeBot, what do you remember about me?
 VibeBot, remind me in 2 hours to deploy
 ```
 
-The bot reaches for tools as it answers: web search, page fetches, code
-generation, image generation, saving a memory, and — where the operator
+The bot reaches for tools as it answers: web search, page fetches,
+image generation, saving a memory, and — where the operator
 has configured a status page — a service-status check. Where the
 [bridge](bridge-tools.md) is enabled, it can also look up and run a
 Limnoria command. It can recite what it remembers about you, because

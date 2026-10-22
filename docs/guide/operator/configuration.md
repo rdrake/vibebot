@@ -32,52 +32,21 @@ API keys are **not** part of the Limnoria registry. They come from environment v
 
 | Variable | Provider |
 |----------|----------|
-| `XAI_API_KEY` | xAI (Grok) |
-| `GEMINI_API_KEY` | Google Gemini |
-| `OPENAI_API_KEY` | OpenAI |
-| `ANTHROPIC_API_KEY` | Anthropic (Claude) |
+| `ANTHROPIC_API_KEY` | Anthropic (`anthropic/` models) |
+| `XAI_API_KEY` | xAI (`xai/` models) |
 
-Any other provider LiteLLM recognises — `vertex_ai`, `openrouter`, `azure`, `bedrock`, and so on — resolves to no key from this plugin, so LiteLLM falls back to that provider's own native credentials: Application Default Credentials, IAM, or its own environment variables. With the defaults, a fresh install needs `ANTHROPIC_API_KEY` for chat and `@meme`, and `XAI_API_KEY` for search, `@draw`, meme picture edits and the refusal fallback, which run on fixed xAI models (see [Model selection](#model-selection)).
-
-### Running on local models
-
-A local server (Ollama, vLLM, LM Studio) takes no key from this plugin. Set its address in the env file and pick models with the matching LiteLLM prefix:
-
-| Server | Env variable | Model prefix |
-|--------|--------------|--------------|
-| Ollama | `OLLAMA_API_BASE=http://host:11434` | `ollama_chat/<model>` |
-| vLLM | `HOSTED_VLLM_API_BASE=http://host:8000/v1` | `hosted_vllm/<model>` |
-| LM Studio | `LM_STUDIO_API_BASE=http://host:1234/v1` | `lm_studio/<model>` |
-
-```
-@config channel #chan supybot.plugins.LLM.assistantModel ollama_chat/qwen3:14b
-```
-
-Don't use `openai/<model>` with `OPENAI_API_BASE` for a local server. That redirects every OpenAI call in the bot and sends `OPENAI_API_KEY` to your box.
-
-The chat path calls tools, so the local model must support function calling. Only `assistantModel`, `memoryModel` and `verseModel` are settings; search, images, memes, the refusal fallback and verse compaction run on fixed hosted models (see [Model selection](#model-selection)). Any role on a hosted provider still sends its requests there. That matters when you turn off `privacyOptInOnly`: keep every model a channel uses local, or overheard lines can still reach a hosted provider.
-
-### Opting in to Vertex AI
-
-Vertex AI is not the default, but it remains a supported model choice for anyone who wants it. Credentials (ADC, IAM) are enough for authentication, but LiteLLM's Vertex path also needs the project and region, and it fails closed with `vertex_project and vertex_location are required for Vertex AI` if they are missing:
-
-| Variable | Required | Notes |
-|----------|----------|-------|
-| `VERTEXAI_PROJECT` | Yes | Your GCP project ID |
-| `VERTEXAI_LOCATION` | Yes | Region, e.g. `us-central1`. `VERTEX_LOCATION` also works as a fallback name |
-
-Vertex AI takes no bearer key from this plugin — no `VERTEX_AI_API_KEY` exists; it authenticates through ADC and IAM only.
+These are the only two providers the bot can call. With the defaults, chat and `@meme` need `ANTHROPIC_API_KEY`, and search, `@draw`, meme picture edits and the refusal fallback need `XAI_API_KEY`, because they run on fixed xAI models (see [Model selection](#model-selection)).
 
 Copy `.env.example` to `~/.config/vibebot/env` and set the variables there; the systemd unit passes that file to the container with `--env-file` (see [Installation](installation.md)). A model whose provider has no key configured fails with an error naming the missing variable, for example `no API key configured for provider 'xai' (set XAI_API_KEY)`.
 
 ## Model selection
 
-Models follow [LiteLLM's provider/model format](https://docs.litellm.ai/docs/providers). Model names are validated against LiteLLM's known providers; the bot rejects unrecognised names and suggests alternatives.
+Models are `provider/name` strings, and the provider must be `anthropic/` or `xai/`; `@config` rejects any other prefix. A model with no price in `provider.py` is accepted with a one-time warning, because its spend books as $0.
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
 | `assistantModel` | channel | `anthropic/claude-haiku-5-5` | All assistant text and tool work: chat, planner, memory, reminders, scheduled tasks. Needs vision support if users paste image URLs |
-| `memoryModel` | channel | empty | Model for the memory extraction that runs after every reply. Falls back to `assistantModel`. A flash-lite class model is enough |
+| `memoryModel` | channel | empty | Model for the memory extraction that runs after every reply. Falls back to `assistantModel`. A cheap model is enough |
 | `verseModel` | channel | empty | Model for verse-mode replies. Falls back to `assistantModel`. Set this when the assistant model is a terse reasoning model that writes poor prose |
 
 The other roles run on fixed models:
@@ -94,7 +63,7 @@ The other roles run on fixed models:
 Channel overrides let different channels run different models:
 
 ```
-@config channel #dev plugins.LLM.assistantModel anthropic/claude-sonnet-4-20250514
+@config channel #dev plugins.LLM.assistantModel xai/grok-4.3
 @config channel #casual plugins.LLM.assistantModel anthropic/claude-haiku-5-5
 ```
 
@@ -133,7 +102,7 @@ deployments means the researcher is a different provider from the planner.
 
 ## System prompts
 
-System prompts define the bot's personality and constraints. Both are channel-overridable.
+The system prompt defines the bot's personality and constraints. It is channel-overridable.
 
 | Setting | Description |
 |---------|-------------|
@@ -186,7 +155,7 @@ See [Memory promotion](memory-promotion.md) for how the two-stage pipeline works
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
 | `contextTimeoutMinutes` | channel | `5` | Clear context after this much inactivity |
-| `privacyOptInOnly` | channel | `True` | Send only lines addressed to the bot to the provider. Set `False` to track every channel message as context and let `irc_lookup` read the channel's server history (`kind=history`, up to 100 lines) for "what did I miss". Those lines go to whichever provider serves the channel's models. See [Running on local models](#running-on-local-models) |
+| `privacyOptInOnly` | channel | `True` | Send only lines addressed to the bot to the provider. Set `False` to track every channel message as context and let `irc_lookup` read the channel's server history (`kind=history`, up to 100 lines) for "what did I miss". Those lines go to Anthropic or xAI, whichever serves the channel's models |
 
 Per-user history keeps the last 20 messages; the shared channel context keeps 10.
 
@@ -227,7 +196,7 @@ Set `imageUploadUrl` to an uploader that takes a multipart `POST` on the `images
 {"results": [{"success": true, "filePath": "/img/img_abc123.png"}]}
 ```
 
-Generated images then live on that host instead of under `httpRoot`, and storybook pages embed the absolute URL. Pages themselves (answers, code, stories) still come from your own HTTP server, so this offloads bandwidth rather than replacing it.
+Generated images then live on that host instead of under `httpRoot`, and storybook pages embed the absolute URL. Pages themselves (long answers, stories) still come from your own HTTP server, so this offloads bandwidth rather than replacing it.
 
 Every failure falls back to local storage: endpoint unreachable, upload rejected, image over 10 MB, or a reply naming a URL that is not an image on the configured host. An outage costs a slower draw, nothing more.
 
@@ -277,9 +246,9 @@ The first check after a restart, and the first check after a channel turns annou
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
-| `pendingTasksEnabled` | channel | `False` | Advertise `set_reminder` and `schedule_llm_task` to the model, so natural-language scheduling works. Off by default: the schemas and their rules cost roughly 1,100 prompt tokens on every completion in the channel |
+| `pendingTasksEnabled` | channel | `False` | Advertise the five pending-task tools (create, list and cancel reminders and scheduled tasks) to the model, so natural-language scheduling works. Off by default: the schemas and their rules cost roughly 1,100 prompt tokens on every completion in the channel |
 
-The `@remind` command and the firing of reminders and tasks already created work regardless. This key only controls whether the model can *create* reminders and scheduled tasks from plain language. Listing and cancelling are not on the chat tool surface at any setting: users reach both their reminders and their scheduled tasks with `@remind list`, `del` and `clear`.
+The `@remind` command and the firing of reminders and tasks already created work regardless. This key only controls whether the model can handle reminders and scheduled tasks from plain language. Users reach both with `@remind list`, `del` and `clear` at any setting.
 
 ## Timeouts and retries
 
@@ -303,4 +272,4 @@ When an `@ask` or `@draw` call times out, the bot keeps retrying in the backgrou
 |---------|-------|---------|-------------|
 | `commandPrefixes` | global | `. @` | Space-separated prefixes sanitised in output to prevent IRC command injection. The default covers both the conventional `.` and VibeBot's own `@` |
 
-Fixed limits: a user prompt is at most 10,000 characters, an assistant turn makes at most 12 tool-call round trips, and at most 16 outbound LLM calls run at once across all surfaces. The SQLite database is `data/LLM.db` in Limnoria's data directory, and the plugin logs at `WARNING`. Limnoria's automatic `WHO` on join is skipped when the `account-tag` and `extended-join` capabilities are active.
+Fixed limits: an image prompt is at most 10,000 characters (chat text is not measured), an assistant turn makes at most 12 tool-call round trips, and at most 16 outbound LLM calls run at once across all surfaces. The SQLite database is `data/LLM.db` in Limnoria's data directory, and the plugin logs at `WARNING`. Limnoria's automatic `WHO` on join is skipped when the `account-tag` and `extended-join` capabilities are active.

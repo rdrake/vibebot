@@ -1,6 +1,6 @@
 # Scheduled tasks
 
-The bot can run a future AI task on your behalf. At run time it runs a fresh query as you, with the bot's own tools: search, fetch, draw, code, memory and reminders. Use a scheduled task for jobs that need *tools* at run time, not a string echoed back.
+The bot can run a future AI task on your behalf. At run time it runs a fresh query as you, with the bot's own tools: search, fetch, draw, memory and reminders. Use a scheduled task for jobs that need *tools* at run time, not a string echoed back.
 
 There's no `@schedule` command. You create scheduled tasks conversationally: ask the bot, and its scheduler tool does the rest.
 
@@ -53,7 +53,7 @@ Use `@remind`. It covers your scheduled tasks as well as your reminders:
 @remind clear                   # every reminder and task you own
 ```
 
-The bot has no cancelling tool on the chat surface, so asking it in plain language to cancel the changelog one gets you a sentence, not a cancellation. Type the command.
+Where conversational scheduling is on, you can also ask the bot to list or cancel them in plain language.
 
 A bot owner can reach anyone's:
 
@@ -77,9 +77,9 @@ VibeBot, every Monday at 9am check my PRs and message me directly
 
 ## What a task can do at run time
 
-A fire runs on the reminder-action profile — the one a `@remind` action fire uses, not the chat profile you get from `@ask`. It is the only route that sees all 20 of the bot's model-facing tools; chat sees at most twelve. A fire happens with nobody present to type a command, so it keeps the bookkeeping tools too. Capabilities are fixed at `llm.ask` and `llm.draw`, so owner and admin powers are never inherited.
+A fire runs on the reminder-action profile — the one a `@remind` action fire uses, not the chat profile you get from `@ask`. It is the only route that sees all 20 of the bot's model-facing tools; chat sees at most ten of them. A fire happens with nobody present to type a command, so it keeps the bookkeeping tools too. Capabilities are fixed at `llm.ask` and `llm.draw`, so owner and admin powers are never inherited.
 
-- **Search** the web, when the search model's provider supports grounding (xAI, Gemini, Vertex AI).
+- **Search** the web.
 - **Fetch** URLs.
 - **Draw** with the image tool.
 - **Bookkeeping:** read and edit your memories, read your usage, and list or cancel your other pending tasks.

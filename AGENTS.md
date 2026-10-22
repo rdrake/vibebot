@@ -4,7 +4,7 @@ This file is the canonical repository guidance for coding agents. `CLAUDE.md` po
 
 ## Project summary
 
-**VibeBot v8** is a Limnoria-based IRC bot workspace with AI features powered by LiteLLM.
+**VibeBot v8** is a Limnoria-based IRC bot workspace with AI features on Anthropic and xAI models.
 
 Workspace members:
 
@@ -46,7 +46,8 @@ make docs
 For `plugins/llm/src/llm/`:
 
 - `plugin.py`: IRC protocol layer, command routing, and command wrappers
-- `service.py`: LiteLLM integration and business logic
+- `service.py`: business logic: completions, tool loop, sanitisation, output shaping
+- `provider.py`: the only code that talks to model providers: stdlib HTTP to Anthropic (`anthropic/`) and xAI (`xai/`), wire formats, prices, error mapping
 - `assistant.py`: tool-using chat profile, tool schemas, and tool wrappers
 - `profile.py`: route profiles (`chat`, `verse`, `draw`, `remind_action`) that decide which tools an entry point advertises
 - `prompts.py`: the four framework system prompts, the memory-pipeline prompts, and the shared `IRC_OUTPUT_FORMAT` block
@@ -65,15 +66,15 @@ For `plugins/llm/src/llm/`:
 Keep those boundaries intact:
 
 - IRC command parsing and reply flow belong in `plugin.py`.
-- Provider calls, sanitization, and output shaping belong in `service.py`.
+- Provider wire calls belong in `provider.py`; sanitization and output shaping belong in `service.py`.
 - Registry options belong in `config.py`.
 - Shared mutable state must remain thread-safe because `Plugin.threaded = True`.
-- All blocking LLM calls must go through `LLMExecutor` (no direct `litellm.*` from the IRC main thread).
+- All blocking LLM calls must go through `LLMExecutor` (no direct `provider.*` call from the IRC main thread).
 
 ## Security invariants
 
 - Never log, echo, or persist API keys in plain text.
-- API keys come from the environment, one variable per provider (`XAI_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`), resolved in `apikeys.py`. Do not move key handling into the Limnoria registry — the `LLM.*ApiKey` settings were deliberately removed.
+- API keys come from the environment, one variable per provider (`ANTHROPIC_API_KEY`, `XAI_API_KEY`), resolved in `apikeys.py`. Do not move key handling into the Limnoria registry — the `LLM.*ApiKey` settings were deliberately removed.
 - Scrub secrets from user-visible error messages.
 - Treat channel topics, stored memory, reminders, and other recovered content as untrusted input.
 - Check image and external URLs; block unsafe schemes such as `javascript:`, `data:`, and `file:`.
@@ -104,7 +105,7 @@ Keep those boundaries intact:
 
 - Framework prompts live in `prompts.py` (see Architecture); verse prompt assembly is `build_verse_system_prompt` in `verse/avatar.py`. Only `assistantSystemPrompt` is a channel-overridable registry setting.
 - Model selection is per-purpose. The registry holds `assistantModel`, `memoryModel`, and `verseModel`; image, search, meme, refusal-fallback and verse-compaction models are fixed constants (`IMAGE_MODEL`, `SEARCH_MODEL`, `MEME_MODEL`, `MEME_EDIT_MODEL`, `REFUSAL_FALLBACK_MODEL` in `service.py`; `_VERSE_COMPACTION_MODEL` in `plugin.py`). Bumping the chat model does not move verse; update both when that is the intent.
-- API keys are resolved from the environment at call time, keyed on the provider of the model being called (`apikeys.api_key_for`). Providers outside the four this deployment pays for directly — vertex_ai, openrouter, azure, bedrock — use their own native credentials (ADC, IAM, their own variables).
+- API keys are resolved from the environment at call time, keyed on the provider of the model being called (`apikeys.api_key_for`). A model with any prefix but `anthropic/` or `xai/` is rejected at `@config` time.
 
 ## Important files
 

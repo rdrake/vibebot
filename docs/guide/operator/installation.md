@@ -33,7 +33,7 @@ docker run --rm --name vibebot \
 
 The `/config` volume holds your `bot.conf` and its `conf/`, `data/`, and `logs/` directories. The `/var/www/llm` mount is optional: add it only when you point `httpRoot` there for an external web server to serve. `httpRoot` is empty by default, which keeps the `@draw` and `@story` output inside `/config` under `data/web/llm/` — see [Configuration → Web and HTTP output](configuration.md#web-and-http-output).
 
-`--env-file` is not optional. Provider API keys are read from the environment at call time and have no `bot.conf` equivalent, so without it the bot connects to IRC and every LLM command answers `no API key configured for provider`. Start from `.env.example` in the repository — it lists the four provider keys, the optional ones, and the format rules Docker's `--env-file` parser enforces. See [Configuration → API keys](configuration.md#api-keys).
+`--env-file` is not optional. Provider API keys are read from the environment at call time and have no `bot.conf` equivalent, so without it the bot connects to IRC and every LLM command answers `no API key configured for provider`. Start from `.env.example` in the repository — it lists the two provider keys (`ANTHROPIC_API_KEY` and `XAI_API_KEY`) and the format rules Docker's `--env-file` parser enforces. See [Configuration → API keys](configuration.md#api-keys).
 
 ## systemd service
 

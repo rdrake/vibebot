@@ -1,6 +1,6 @@
 # Getting started
 
-Chat with AI models, generate code, create images, and set reminders, all from IRC.
+Chat with AI models, create images, and set reminders, all from IRC.
 
 ## Talking to the bot
 

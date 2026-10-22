@@ -3,7 +3,7 @@
 Set reminders in natural language. When the time comes, the bot either echoes your text back or, if you asked it to *do* something, runs the task at fire time.
 
 !!! tip "Natural language"
-    Where an operator has enabled it, you can *create* reminders and scheduled tasks by talking to the bot: "VibeBot, remind me in 2 hours to check the build". Listing and cancelling stay on the `@remind` command either way. The channel key is `supybot.plugins.LLM.pendingTasksEnabled`, and it's off by default. `@remind` always works.
+    Where an operator has enabled it, you can set, list and cancel reminders and scheduled tasks by talking to the bot: "VibeBot, remind me in 2 hours to check the build". The channel key is `supybot.plugins.LLM.pendingTasksEnabled`, and it's off by default. `@remind` always works.
 
 ## `remind`
 
