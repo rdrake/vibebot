@@ -291,6 +291,23 @@ class TestAnthropicReply:
             == finish
         )
 
+    def test_unpriced_model_books_zero_and_warns_once(
+        self, post: FakePost, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # A missing price must never break chat: the reply still arrives.
+        post.reply = {
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 2},
+        }
+        provider._unpriced.discard("anthropic/claude-unknown")
+        for _ in range(2):
+            reply = provider.chat(
+                "anthropic/claude-unknown", [{"role": "user", "content": "x"}], timeout=30
+            )
+            assert (reply.text, reply.cost) == ("hi", 0.0)
+        assert sum("claude-unknown" in r.message for r in caplog.records) == 1
+
 
 # ---------------------------------------------------------------------------
 # xAI chat
@@ -355,6 +372,41 @@ class TestXaiChat:
         assert reply.usage == provider.Usage(1000, 10, 800)
         assert reply.cost == pytest.approx(0.0005)
 
+    @pytest.mark.parametrize(("finish", "expected"), [("length", "length"), (None, "stop")])
+    def test_finish_reason(self, post: FakePost, finish: str | None, expected: str) -> None:
+        # A cut-off reply must stay "length": callers drop truncated text.
+        choice: dict[str, Any] = {"message": {"content": "partial"}}
+        if finish is not None:
+            choice["finish_reason"] = finish
+        post.reply = {"choices": [choice]}
+        reply = provider.chat(GROK, [{"role": "user", "content": "x"}], timeout=30)
+        assert reply.finish_reason == expected
+
+    def test_tool_call_arguments_pass_through(self, post: FakePost) -> None:
+        # Running a tool with empty args is dangerous: some destructive tools
+        # take no required args.
+        post.reply = {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "function": {"name": "search_web", "arguments": '{"query":"x"}'},
+                            },
+                            {"id": "c2", "function": {"name": "list_reminders"}},
+                        ]
+                    },
+                }
+            ]
+        }
+        reply = provider.chat(GROK, [{"role": "user", "content": "x"}], timeout=30)
+        assert reply.tool_calls == (
+            provider.ToolCall("c1", "search_web", '{"query":"x"}'),
+            provider.ToolCall("c2", "list_reminders", "{}"),
+        )
+
     def test_table_cost_without_ticks(self, post: FakePost) -> None:
         post.reply = {
             "choices": [{"message": {"content": "hi"}}],
@@ -418,6 +470,20 @@ class TestSearch:
         assert reply.usage == provider.Usage(50, 5, 0)
         assert reply.cost == pytest.approx(0.0001)
 
+    def test_table_cost_without_ticks(self, post: FakePost) -> None:
+        post.reply = {
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}],
+            "usage": {
+                "input_tokens": 1000,
+                "input_tokens_details": {"cached_tokens": 800},
+                "output_tokens": 10,
+            },
+        }
+        reply = provider.search("xai/grok-4.3", "q", timeout=60)
+        assert reply.usage == provider.Usage(1000, 10, 800)
+        # 200 fresh × 1.25 + 800 cached × 0.20 + 10 output × 2.50, per million
+        assert reply.cost == pytest.approx((250 + 160 + 25) / 1e6)
+
     def test_ungrounded(self, post: FakePost) -> None:
         post.reply = {
             "output": [{"type": "message", "content": [{"type": "output_text", "text": "x"}]}]
@@ -449,6 +515,14 @@ class TestDraw:
         assert post.calls[-1]["url"] == "https://api.x.ai/v1/images/edits"
         assert post.body["image"] == {"url": "https://h/x.png"}
         assert "n" not in post.body  # the old edit call never sent it
+
+    def test_default_is_not_hires(self, post: FakePost) -> None:
+        # Only @draw asks for hires; meme edits and other callers don't pay for it.
+        provider.draw("xai/grok-imagine-image", "add a hat", timeout=60, edit_url="https://h/x.png")
+        provider.draw("xai/grok-imagine-image", "a cat", timeout=60)
+        for call in post.calls:
+            assert "quality" not in call["body"]
+            assert "resolution" not in call["body"]
 
     def test_b64_picture_and_ticks(self, post: FakePost) -> None:
         post.reply = {
@@ -533,6 +607,10 @@ class TestErrors:
         )
         free = provider._http_error(400, '{"code":"imagine:content-moderated"}', "xai")
         assert (billed.billed, free.billed) == (True, False)
+
+    @pytest.mark.parametrize("body", ["<html>Bad Gateway</html>", "", "[1, 2]"])
+    def test_unparseable_or_non_object_body_is_not_billed(self, body: str) -> None:
+        assert provider._http_error(502, body, "xai").billed is False
 
 
 class TestTransport:
