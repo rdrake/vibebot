@@ -120,8 +120,8 @@ can correct itself or tell the user why. A call that runs returns
   `MUTATING_COMMANDS`.
 - `{"error": "not permitted: Plugin.command"}` — the caller lacks the
   Limnoria capability for that command.
-- `{"error": "denied: Plugin.command"}` — a `DENY_COMMANDS` entry, or a
-  plugin in `DENY_PLUGINS`.
+- `{"error": "denied: Plugin.command"}` — a `DENY_COMMANDS` entry, a
+  plugin in `DENY_PLUGINS`, or a plugin outside the allowlist.
 - `{"error": "unknown plugin: X"}` or
   `{"error": "unknown command: Plugin.command"}` — the model invented a
   name.
@@ -168,9 +168,7 @@ user typing `/list` or `/names`. The bot adds no privilege.
 60 seconds per network and concurrent askers share one in-flight
 request. A server that never closes the reply (or answers `RPL_TRYAGAIN`)
 surfaces as an error to the model after 15 seconds rather than a hung
-turn. The same code backs the `@channels` and `@names` commands. Every
-dispatch logs one `irc_lookup: kind=… target=…` line, so "did the model
-call it?" is a grep.
+turn. The same code backs the `@channels` and `@names` commands.
 
 ## Native tools
 
@@ -181,9 +179,9 @@ it is offered depends on the route that handled the message:
 | Route | Entry points | Tools offered |
 |-------|--------------|---------------|
 | chat | `@ask`, nick-addressed mentions, PMs | `check_service_status`, `fetch_url`, `generate_image`, `save_memory`, `search_web`; plus the five pending-task tools (`set_reminder`, `schedule_llm_task`, `list_pending_tasks`, `cancel_pending_task`, `cancel_all_pending_tasks`) where `pendingTasksEnabled` is on. Every request also carries `irc_lookup`, `react`, `delete_last_reply`, `notify_when_online`, `make_meme` and `aurora`, plus the bridge pair where the bridge is on. |
-| verse | `@rp`, a live sticky `@rp` session, the one-shot ambient-prose promotion | `fetch_url`, `generate_image`, `save_memory`, `search_web` (4) |
+| verse | `@rp`, a live sticky `@rp` session, the one-shot ambient-prose promotion | `fetch_url`, `generate_image`, `save_memory`, `search_web` (4), plus the same per-request extras as chat and the verse tool set |
 | draw | `@draw` | `generate_image` (1) |
-| remind_action | reminder and scheduled-task fires | all 20 |
+| remind_action | reminder and scheduled-task fires | all 20, except that reminder fires drop `set_reminder` (19) |
 
 `assistant.py` defines 20 tool schemas, but defining one is not
 advertising it. Ten are hidden from chat and verse because each
@@ -217,9 +215,11 @@ because it is the one write extraction cannot replace — an explicit
 "remember this" should stick at once rather than wait for the
 candidate-reinforcement threshold.
 
-Reminder fires keep all 20. A scheduled task runs as its creator with no
-user present to type a command, so it may legitimately need to tidy up
-after itself.
+Scheduled-task fires keep all 20. Reminder fires keep every tool except
+`set_reminder`. A scheduled task runs as its creator with no user present
+to type a command, so it may legitimately need to tidy up after itself.
+On every route, `check_service_status` leaves the request when no status
+page is configured, and `generate_image` when drawing is unavailable.
 
 The five pending-task tools appear on the chat surface only when
 `pendingTasksEnabled` is on for the channel, and it defaults to off.
@@ -231,14 +231,15 @@ users list and cancel both kinds with `@remind list`, `@remind del` and
 
 `check_service_status` answers from the poller's cached snapshot of the
 `statusPageUrls` pages: one entry per page when the model omits `service`,
-or a single named lookup. The pages are named in the tool's description
-text, in a "Monitored services" sentence, and the `service` argument's enum
-lists the same names. The tool leaves the request when `statusPageUrls` is
+or a single named lookup. The tool's description lists the pages'
+hostnames in a "Monitored services" sentence, and the `service` argument's
+enum lists their configured names. The tool leaves the request when `statusPageUrls` is
 empty, rather than shipping a tool that could only answer "not configured".
 
-Verse is a strict subset of chat: everything chat hides, plus
-`set_reminder`, `schedule_llm_task` and `check_service_status`, none of
-which has an in-character use. The subset relation is asserted by
+Verse is a strict subset of chat: everything chat hides, plus the five
+pending-task tools (`set_reminder`, `schedule_llm_task`,
+`list_pending_tasks`, `cancel_pending_task`, `cancel_all_pending_tasks`)
+and `check_service_status`, none of which has an in-character use. The subset relation is asserted by
 `test_verse_profile_is_strict_subset_of_chat`.
 
 On any turn in a verse-enabled channel the model also receives the verse
@@ -257,7 +258,9 @@ set is `verse_act`, `verse_move`, `verse_look`, `verse_recall`,
 ("every weekday at 09:00, summarise the news"). A creator can hold at
 most 5 active schedules in a channel. Each fire still counts
 against the user's normal `@ask` rate-limit bucket; the cap limits the
-number of pending schedules, not their cumulative cost. Owners can
+number of pending schedules, not their cumulative cost. A recurring task
+stops after 5 fires and must be set again, so the "every weekday" example
+runs for one week. Recurring reminders cap at 50 fires. Owners can
 list and cancel any user's tasks with `@remind admin`.
 
 ## Operator config
@@ -274,7 +277,7 @@ exposed, because the registry value replaces the default rather than
 extending it. For example, to add `Factoids` and `Dict`:
 
 ```
-@config plugins.LLM.bridgeAllowedPlugins Misc Time Math Utilities Seen Web Later Note Karma QuoteGrabs RSS DDG Factoids Dict
+@config plugins.LLM.bridgeAllowedPlugins Misc Time Math Utilities Seen Web Later Note Karma QuoteGrabs RSS DDG Network Factoids Dict
 ```
 
 Once a plugin is in `bridgeAllowedPlugins` and loaded into Limnoria,

@@ -35,6 +35,7 @@ Use the commands below when you want direct, predictable behaviour.
 |---------|-----------|-------------|
 | `@ask` | `<question>` | Ask the AI a question. Supports follow-ups and image URLs. Requires `llm.ask`. |
 | `@draw` | `<prompt>` | Generate an image from text. Requires `llm.draw` and an authenticated account. |
+| `@meme` | `[--font <name>] [--top] <template or image URL> \| <caption> [\| <caption>...]` or `list [<word>]` | Caption a meme template, or name no template and the bot picks one and writes the captions. Requires `llm.draw` and an authenticated account (`list` needs only `llm.draw`). |
 | `@story` | `<brief>` | Generate an illustrated page (tale or explainer) and post a link when ready. Same gate as `@draw`. |
 
 ### ask
@@ -118,7 +119,8 @@ and `@remind list`, `del` and `clear` cover your tasks — marked
 
 See [reminders](../user/reminders.md) for caveats:
 reminders count against the `@ask` rate limit, run with no elevated
-capabilities at fire time, and recurring chains cap at 50 fires.
+capabilities at fire time, and recurring reminder chains cap at 50
+fires (recurring scheduled tasks at 5).
 
 ## Accounting
 
