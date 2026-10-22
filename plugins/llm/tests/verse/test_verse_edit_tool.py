@@ -47,6 +47,58 @@ def test_verse_edit_apply_error_is_reported(tmp_path):
     assert "does not exist" in result["detail"]
 
 
+def test_verse_edit_set_attribute_on_missing_entity_is_reported(tmp_path):
+    """A hallucinated entity_id in set_attribute is a status=error result,
+    not an exception that ends the verse turn."""
+    store = VerseStore(tmp_path, "#chan")
+    result = dispatch_verse_edit(
+        store,
+        op="set_attribute",
+        payload={"entity_id": 999, "key": "mood", "value": "grumpy"},
+        authorized=True,
+        account="gm!acct",
+    )
+    assert result["status"] == "error"
+    assert "does not exist" in result["detail"]
+
+
+def test_verse_edit_set_attribute_on_retired_entity_rejected(tmp_path):
+    """Retire is a soft delete: the model must not rewrite retired canon."""
+    store = VerseStore(tmp_path, "#chan")
+    eid = store.add_entity("npc", "Archie")
+    store.set_attribute(eid, "mood", "calm")
+    store.set_status(eid, "retired")
+    result = dispatch_verse_edit(
+        store,
+        op="set_attribute",
+        payload={"entity_id": eid, "key": "mood", "value": "grumpy"},
+        authorized=True,
+        account="gm!acct",
+    )
+    assert result["status"] == "error"
+    assert "is retired" in result["detail"]
+    assert store.get_attribute(eid, "mood") == "calm"
+
+
+@pytest.mark.parametrize("retired_end", ["from", "to"])
+def test_verse_edit_add_relation_with_retired_endpoint_rejected(tmp_path, retired_end):
+    """The model must not link canon to (or from) a retired entity."""
+    store = VerseStore(tmp_path, "#chan")
+    a = store.add_entity("npc", "Archie")
+    b = store.add_entity("npc", "Bramble")
+    store.set_status(a if retired_end == "from" else b, "retired")
+    result = dispatch_verse_edit(
+        store,
+        op="add_relation",
+        payload={"from_id": a, "to_id": b, "kind": "knows"},
+        authorized=True,
+        account="gm!acct",
+    )
+    assert result["status"] == "error"
+    assert "is retired" in result["detail"]
+    assert store.list_relations() == []
+
+
 def test_verse_edit_invalid_payload_rejected(tmp_path):
     """validate_payload rejects a malformed payload before apply_direct."""
     store = VerseStore(tmp_path, "#chan")

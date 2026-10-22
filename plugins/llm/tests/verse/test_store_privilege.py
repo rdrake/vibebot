@@ -107,6 +107,22 @@ def test_update_entity_place_rename_skips_ambiguous_homonym(tmp_path):
     assert store.get_attribute(at_homonym, "location") == "Cave"
 
 
+def test_update_entity_place_summary_only_edit(tmp_path):
+    """A summary-only edit of a place is not a rename: it must succeed and
+    leave avatars standing there where they are."""
+    store = _store(tmp_path)
+    place_id = store.add_entity("place", "The Clearing", "a glade")
+    here = store.add_entity("avatar", "alice")
+    store.set_attribute(here, "location", "The Clearing")
+
+    _apply(store, op="update_entity", payload={"entity_id": place_id, "summary": "a sunny glade"})
+
+    ent = store.get_entity(place_id)
+    assert ent.name == "The Clearing"
+    assert ent.summary == "a sunny glade"
+    assert store.get_attribute(here, "location") == "The Clearing"
+
+
 def test_update_entity_npc_rename_leaves_locations_alone(tmp_path):
     """The location rewrite is scoped to kind='place' renames — renaming an
     NPC that happens to share a place's name must not move anyone."""

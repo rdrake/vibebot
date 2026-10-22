@@ -788,6 +788,45 @@ class TestOptInAvatar:
         result = store.opt_in_avatar("alice", None, "curious traveller")
         assert result.place_name == "Place B"
         assert store.get_attribute(result.entity_id, "location") == "Place B"
+        # The user-visible scene text describes the chosen place.
+        assert "You step into Place B. Summary of B." in result.scene_text
+
+    def test_account_avatar_beats_unowned_nick_avatar(self, verse_db_dir: Path) -> None:
+        """An authenticated user who renames onto an anonymous user's nick
+        resumes their OWN avatar (found by account); the anonymous avatar on
+        that nick is not taken over."""
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        anon = store.opt_in_avatar("bob", None, "anonymous bob")
+        mine = store.opt_in_avatar("alice", "alice@net", "the traveller")
+
+        result = store.opt_in_avatar("bob", "alice@net", "still the traveller")
+
+        assert result.entity_id == mine.entity_id
+        assert result.was_already_opted_in is True
+        assert store.find_avatar_by_account("alice@net") == mine.entity_id
+        with store.read_connection() as conn:
+            row = conn.execute(
+                "SELECT account FROM avatar_link WHERE entity_id = ?", (anon.entity_id,)
+            ).fetchone()
+        assert row == (None,)
+
+    def test_authenticating_claims_own_anonymous_avatar(self, verse_db_dir: Path) -> None:
+        """Someone who opted in before authenticating keeps their avatar when they
+        opt in again authenticated: the unowned nick-matched avatar is claimed
+        and linked to their account, not parked in favour of a fresh one."""
+        from llm.verse.store import VerseStore
+
+        store = VerseStore(verse_db_dir, "#afnet")
+        anon = store.opt_in_avatar("alice", None, "curious traveller")
+
+        result = store.opt_in_avatar("alice", "alice@net", "now authenticated")
+
+        assert result.entity_id == anon.entity_id
+        assert result.was_already_opted_in is True
+        assert store.find_avatar_by_account("alice@net") == anon.entity_id
+        assert len(store.list_entities_by_kind("avatar")) == 1
 
 
 class TestProposalsCRUD:
@@ -1190,6 +1229,11 @@ class TestSceneRetrieval:
         store.add_entity("npc", "Di")  # 2 chars -> skipped (too short)
         got = {e.id for e in store.match_entities_in_text("did Harry and Tobes fight? ask Di.")}
         assert got == {h, t}
+
+    def test_match_three_char_name(self, store):
+        """Only names of 2 chars or fewer are skipped; a 3-char NPC is in the scene."""
+        b = store.add_entity("npc", "Bob")
+        assert {e.id for e in store.match_entities_in_text("ask Bob about it")} == {b}
 
     def test_match_handles_punctuation_and_avoids_common_words(self, store):
         w = store.add_entity("npc", "Will")
