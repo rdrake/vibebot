@@ -22,9 +22,7 @@ def env(plugin_env, test_db, mocker):
     irc.state.capabilities_ack = {"draft/message-redaction"}
     msg.server_tags = {"msgid": "req-1"}
     plugin.db = test_db
-    plugin.registryValue.side_effect = make_registry_side_effect(
-        {"redactEnabled": True, "notifyOnlineEnabled": True}
-    )
+    plugin.registryValue.side_effect = make_registry_side_effect({})
     yield plugin, irc, msg
     # test_db closes before plugin_env's teardown runs die().
     plugin.db = mocker.MagicMock()

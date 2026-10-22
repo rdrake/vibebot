@@ -1,7 +1,7 @@
 """Global concurrency cap for all LLM I/O in the plugin.
 
 Both command-path and background callers funnel through here so a
-single ``maxConcurrentLLMCalls`` knob bounds outbound provider load
+single concurrency cap bounds outbound provider load
 regardless of which thread originated the call.
 
 Two surfaces:

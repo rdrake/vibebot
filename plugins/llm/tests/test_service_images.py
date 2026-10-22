@@ -41,7 +41,6 @@ class TestImageSaving:
             httpRoot="/tmp/test_llm_images",
             httpUrlBase="https://example.com/llm",
             fileCleanupAge=24,
-            fileCleanupMax=1000,
         )
 
     def test_save_image_bytes_success(self, tmp_path: object) -> None:
@@ -163,13 +162,10 @@ class TestImageGenerationWithBase64:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            imageModel="xai/grok-imagine-image",
             timeout=30,
-            maxPromptLength=10000,
             httpRoot="/tmp/test",
             httpUrlBase="https://example.com/llm",
             fileCleanupAge=24,
-            fileCleanupMax=1000,
             drawAutoRewriteMax=0,
         )
 
@@ -192,13 +188,10 @@ class TestImageGenerationWithBase64:
         """GIVEN provider returns picture bytes WHEN generating THEN saves and returns URL."""
         self.mock_plugin.registryValue = self.mocker.Mock(
             side_effect=lambda key, channel=None: {
-                "imageModel": "xai/grok-imagine-image",
                 "timeout": 30,
-                "maxPromptLength": 10000,
                 "httpRoot": str(tmp_path),
                 "httpUrlBase": "https://example.com/llm",
                 "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
             }.get(key)
         )
 
@@ -260,7 +253,6 @@ class TestCleanupWithImages:
         """Set up test fixtures."""
         self.service, self.mock_plugin = make_service(
             fileCleanupAge=24,
-            fileCleanupMax=1000,
         )
 
     def test_cleanup_collects_image_files(self, tmp_path: object) -> None:
@@ -297,7 +289,6 @@ class TestCleanupLock:
         """Set up test fixtures."""
         self.service, self.mock_plugin = make_service(
             fileCleanupAge=24,
-            fileCleanupMax=1000,
         )
 
     def test_cleanup_serializes_concurrent_calls(self, tmp_path: object) -> None:
@@ -457,19 +448,15 @@ class TestDrawAutoRewrite:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            imageModel="xai/grok-imagine-image",
             assistantModel="anthropic/claude-haiku-5-5",
             timeout=30,
-            maxPromptLength=10000,
             httpRoot="/tmp/test",
             httpUrlBase="https://example.com/llm",
             drawAutoRewriteMax=3,
         )
         self.config_values = {
-            "imageModel": "xai/grok-imagine-image",
             "assistantModel": "anthropic/claude-haiku-5-5",
             "timeout": 30,
-            "maxPromptLength": 10000,
             "httpRoot": "/tmp/test",
             "httpUrlBase": "https://example.com/llm",
             "drawAutoRewriteMax": 3,
@@ -614,7 +601,7 @@ class TestDrawAutoRewrite:
         """GIVEN no key for the rewrite model's provider WHEN blocked THEN skips rewrite.
 
         The rewriter runs on ``assistantModel`` (anthropic/claude-haiku-5-5), so
-        ANTHROPIC_API_KEY is the variable that gates it. ``imageModel`` is an
+        ANTHROPIC_API_KEY is the variable that gates it. ``IMAGE_MODEL`` is an
         xai/ model, whose key stays set.
         """
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -731,10 +718,10 @@ class TestImageGenerationValidation:
     def test_image_generation_missing_draw_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """GIVEN no key for the image model's provider THEN returns an error.
 
-        An xai/ ``imageModel`` makes XAI_API_KEY the variable this guard reads.
+        An xai/ ``IMAGE_MODEL`` makes XAI_API_KEY the variable this guard reads.
         """
         monkeypatch.delenv("XAI_API_KEY", raising=False)
-        service, _ = self.make_service(imageModel="xai/grok-imagine-image")
+        service, _ = self.make_service()
 
         result = service.image_generation("A beautiful sunset")
 
@@ -750,11 +737,8 @@ class TestImageGenerationPaths:
         """Set up test fixtures."""
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            imageModel="xai/grok-imagine-image",
             assistantModel="xai/grok-4.3",
             timeout=30,
-            drawTimeout=30,
-            maxPromptLength=10000,
             httpRoot="/tmp/test",
             httpUrlBase="https://example.com/llm",
             drawAutoRewriteMax=3,
@@ -963,7 +947,6 @@ class TestExternalImageUpload:
             httpRoot=str(tmp_path),
             httpUrlBase="https://example.com/llm",
             imageUploadUrl=self.UPLOAD_URL,
-            drawTimeout=60,
             timeout=30,
         )
 
@@ -1170,7 +1153,6 @@ class TestXaiModerationArmsTheRewrite:
     ) -> None:
         """End to end: refused draw -> rewritten prompt -> image delivered."""
         service, _ = make_service(
-            imageModel="xai/grok-imagine-image",
             assistantModel="xai/grok-4.3",
             drawAutoRewriteMax=1,
             httpUrlBase="https://example.com/llm",
@@ -1201,7 +1183,6 @@ class TestXaiModerationArmsTheRewrite:
         refused, which is why the default came down from 3 to 1.
         """
         service, _ = make_service(
-            imageModel="xai/grok-imagine-image",
             assistantModel="xai/grok-4.3",
             drawAutoRewriteMax=1,
             httpUrlBase="https://example.com/llm",
@@ -1240,7 +1221,6 @@ class TestRewriteFidelity:
     def setup(self, make_service, mocker: MockerFixture) -> None:
         self.mocker = mocker
         self.service, self.mock_plugin = make_service(
-            imageModel="xai/grok-imagine-image",
             assistantModel="xai/grok-4.3",
             httpUrlBase="https://example.com/llm",
             drawAutoRewriteMax=1,
@@ -1403,7 +1383,6 @@ class TestExhaustedRewriteMessage:
 
     def test_it_says_the_reword_was_tried_too(self, make_service, mocker: MockerFixture) -> None:
         service, _plugin = make_service(
-            imageModel="xai/grok-imagine-image",
             assistantModel="xai/grok-4.3",
             drawAutoRewriteMax=1,
             httpUrlBase="https://example.com/llm",
@@ -1425,7 +1404,6 @@ class TestExhaustedRewriteMessage:
 
     def test_more_than_one_reword_is_counted(self, make_service, mocker: MockerFixture) -> None:
         service, _plugin = make_service(
-            imageModel="xai/grok-imagine-image",
             assistantModel="xai/grok-4.3",
             drawAutoRewriteMax=2,
             httpUrlBase="https://example.com/llm",

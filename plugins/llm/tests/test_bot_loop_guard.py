@@ -187,7 +187,7 @@ class TestBotHostDetection:
 class TestBotFlagProbe:
     """Prod skips the WHO on join, so the flag has to be asked for.
 
-    ``skipAutoWhoOnJoin`` is True in production, which suppresses the only
+    Production suppresses the auto-WHO on join: the only
     WHO Limnoria sends (irclib.py:2459, on our own JOIN). Waiting for a
     channel sync that may never come would leave the flag half of the
     detector permanently unanswered.
@@ -331,7 +331,7 @@ class TestBotLoopCap:
             plugin._route_addressed_to_assistant(mock_irc, mock_msg, "hello")
         assert dispatch.call_count == 3
 
-        # Age every count past botLoopWindow (300s in the test registry).
+        # Age every count past _BOT_LOOP_WINDOW (300s).
         with plugin._bot_loop_lock:
             plugin._bot_reply_counts = {
                 key: (count, seen - 301) for key, (count, seen) in plugin._bot_reply_counts.items()
@@ -366,25 +366,6 @@ class TestBotLoopCap:
             plugin._route_addressed_to_assistant(mock_irc, mock_msg, "hello")
 
         assert dispatch.call_count == 3
-
-    def test_a_zero_limit_disables_the_guard(self, wired, mocker: MockerFixture) -> None:
-        """botLoopReplyLimit=0 is the operator's off switch."""
-        plugin, mock_irc, mock_msg, dispatch = wired
-        base = plugin.registryValue.side_effect
-
-        def registry(name, *args, **kwargs):
-            if name == "botLoopReplyLimit":
-                return 0
-            return base(name, *args, **kwargs)
-
-        plugin.registryValue.side_effect = registry
-        plugin.do354(mock_irc, mocker.MagicMock(args=_whox("testbot", "LarryBot", "HxzB")))
-        self._as(mock_msg, "LarryBot")
-
-        for _ in range(8):
-            plugin._route_addressed_to_assistant(mock_irc, mock_msg, "hello")
-
-        assert dispatch.call_count == 8
 
 
 class TestBotLoopGuardIsSafe:

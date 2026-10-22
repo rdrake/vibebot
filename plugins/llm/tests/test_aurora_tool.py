@@ -79,7 +79,7 @@ class Feeds:
 @pytest.fixture
 def env(plugin_env, mocker):
     plugin, _irc, _msg = plugin_env
-    plugin.registryValue.side_effect = make_registry_side_effect({"auroraEnabled": True})
+    plugin.registryValue.side_effect = make_registry_side_effect()
     feeds = Feeds()
     mocker.patch("llm.spaceweather.fetch_json", side_effect=feeds)
     geo = mocker.patch("llm.spaceweather.geocode", return_value=TORONTO)
@@ -352,14 +352,11 @@ def test_handler_returns_tool_result(env, mocker) -> None:
     assert json.loads(handlers["aurora"]({"place": ""}).content)["error"]
 
 
-def _ask_tools(plugin_env, enabled: bool):
+def _ask_tools(plugin_env):
     from llm.service import AssistantResult, Spend
 
     plugin, irc, msg = plugin_env
     irc.state.nickToAccount.return_value = "test_account"
-    plugin.registryValue.side_effect = make_registry_side_effect(
-        {"auroraEnabled": enabled, "ircLookupEnabled": False}
-    )
     plugin.llm_service.detect_images.return_value = []
     plugin.llm_service.assistant_completion.side_effect = None
     plugin.llm_service.assistant_completion.return_value = AssistantResult(
@@ -372,15 +369,11 @@ def _ask_tools(plugin_env, enabled: bool):
     return plugin.llm_service.assistant_completion.call_args.kwargs
 
 
-def test_tool_advertised_when_enabled(plugin_env) -> None:
-    kwargs = _ask_tools(plugin_env, True)
+def test_tool_advertised(plugin_env) -> None:
+    kwargs = _ask_tools(plugin_env)
 
-    assert [t["function"]["name"] for t in kwargs["extra_tools"]] == ["aurora"]
+    assert "aurora" in [t["function"]["name"] for t in kwargs["extra_tools"]]
     assert "aurora" in kwargs["extra_handlers"]
-
-
-def test_tool_hidden_when_disabled(plugin_env) -> None:
-    assert _ask_tools(plugin_env, False)["extra_tools"] is None
 
 
 class TestTonightWindow:

@@ -19,7 +19,7 @@ from llm import provider
 from llm.identity import Caller, Identity
 from llm.persistence import LLMDatabase, ReminderRow
 from llm.plugin import LLM
-from llm.service import AssistantResult, LLMService, Spend
+from llm.service import AssistantResult, LLMService, Spend, SubjectDossier
 from llm.typing_holds import TypingHolds
 from supybot import ircutils
 
@@ -600,6 +600,10 @@ def plugin_env(mocker: MockerFixture, tmp_path: Path):
     plugin.llm_service.sanitize_output.side_effect = lambda x: x
     # Draw is available unless a test says otherwise.
     plugin.llm_service.draw_unavailable_reason.return_value = None
+    # Subject research finds nobody real unless a test says otherwise: no
+    # dossier block reaches the planner and no usage row is booked, so draw
+    # and meme tests see the one planner call they assert on.
+    plugin.llm_service.subject_dossier.return_value = SubjectDossier(text="")
 
     # No @tz set, and no CTCP TIME probe: a real one would wait on a client
     # that is not there. Probe tests call LLM._probe_ctcp_tz directly.
@@ -669,48 +673,23 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         # Capability-based settings (Phase 2 Task 5a/5b — sole surface).
         "assistantModel": TEST_MODEL,
         "assistantSystemPrompt": "You are helpful.",
-        "imageModel": "xai/grok-imagine-image",
         # Plugin-level init config
         "httpRoot": "",
-        "databasePath": "",
-        "contextMaxMessages": 20,
         "contextTimeoutMinutes": 30,
-        "contextEnabled": True,
-        "channelContextMaxMessages": 10,
         "privacyOptInOnly": True,
         # Bot-to-bot loop guard
-        "botLoopReplyLimit": 3,
-        "botLoopWindow": 300,
         "botLoopHostSuffixes": ["Bot.AfterNET.Org"],
         # Aurora (mirrors config.py: tool on, announcements opt-in)
-        "auroraEnabled": True,
         "auroraAnnounce": False,
         "auroraAnnouncePlaces": [],
         # Draw command
-        "drawTimeout": 60,
         "drawAutoRewriteMax": 2,
-        "drawContextMaxAgeSeconds": 60,
-        # Expiry (pending task retry)
-        "askExpiry": 60,
-        "drawExpiry": 60,
-        # Memory extraction
-        "memoryEnabled": True,
-        "memoryMaxPerUser": 50,
-        "memoryCleanupInterval": 3,
-        "memoryPromotionThreshold": 2,
-        "memoryCandidateTTLDays": 14,
         # Shared
         "timeout": 30,
-        "maxPromptLength": 10000,
         "commandPrefixes": ["."],
         "httpUrlBase": TEST_URL_BASE,
-        "longReplyTeaserMaxChars": 220,
-        "multilineMaxLines": 3,
         "fileCleanupAge": 24,
-        "fileCleanupMax": 100,
-        "logLevel": "WARNING",
         # Rate limiting
-        "enforceRateLimits": True,
         # ask
         "askRateLimitCount": 15,
         "askRateLimitWindow": 60,
@@ -723,67 +702,30 @@ def make_registry_side_effect(overrides: dict[str, Any] | None = None):
         "drawRateLimitWindow": 300,
         "drawTrustedRateLimitCount": 5,
         "drawTrustedRateLimitWindow": 60,
-        "drawUnregRateLimitCount": 0,
-        "drawUnregRateLimitWindow": 60,
         # meme (mirrors config.py)
         "memeRateLimitCount": 6,
         "memeRateLimitWindow": 60,
         "memeTrustedRateLimitCount": 12,
         "memeTrustedRateLimitWindow": 60,
-        "memeUnregRateLimitCount": 2,
-        "memeUnregRateLimitWindow": 600,
         "memeAliases": [],
-        # Opt-in per test: True here would add make_meme to every extra_tools
-        # assertion in the irc_lookup wiring tests.
-        "memeEnabled": False,
-        # Same reason: opt in per test (config.py defaults it True).
-        "reactEnabled": False,
-        "redactEnabled": False,
-        "notifyOnlineEnabled": False,
         # story (mirrors draw — expensive image command)
         "storyRateLimitCount": 2,
         "storyRateLimitWindow": 300,
         "storyTrustedRateLimitCount": 5,
         "storyTrustedRateLimitWindow": 60,
-        "storyUnregRateLimitCount": 0,
-        "storyUnregRateLimitWindow": 60,
-        # Search/fetch tools
-        "searchModel": "",
-        # Subject research (the @draw dossier pre-stage). OFF here, unlike
-        # config.py's default of True: it puts a second LLM call in front of
-        # the planner, and every existing draw test asserts on the one call
-        # the command used to make. Tests that want it
-        # opt in with make_registry_side_effect({"subjectResearchEnabled": True}).
-        "subjectResearchEnabled": False,
-        "subjectResearchModel": "",
-        # Assistant tool-calling backend
-        "metaMaxSteps": 7,
-        # IRCv3 join optimization
-        "skipAutoWhoOnJoin": True,
         # Pending-task tool gate (default off, mirrors config.py)
         "pendingTasksEnabled": False,
         # Limnoria bridge
         "bridgeEnabled": False,
         "bridgeAllowedPlugins": [],
-        "bridgeAllowMutating": False,
         "bridgeDebugInChannel": False,
-        # Async LLM concurrency cap
-        "maxConcurrentLLMCalls": 16,
         # Verse subsystem
         "verseEnabled": False,
-        "verseCompactionModel": "gemini/gemini-flash-lite-latest",
         "verseStyleExemplars": [],
         # Service status tool — a single configured source by default so
         # _status_sources() (bound below onto the plugin Mock) returns a real
         # list instead of an unconfigured Mock's auto-attribute.
         "statusPageUrls": ["https://status.claude.com"],
-        # Queryable-only allowlist (Task 4). Empty by default, matching
-        # config.py's default and keeping the "polled OR queryable" gate
-        # exercised by TestQueryableOnlyGate opt-in per test rather than
-        # incidental via this fixture's own unconfigured-key fallback.
-        "statusQueryablePages": [],
-        # Feature switches default on, matching config.py.
-        "drawEnabled": True,
     }
     if overrides:
         defaults.update(overrides)
@@ -825,21 +767,18 @@ def make_service(mocker: MockerFixture) -> Callable[..., tuple[LLMService, Mock]
         # and a stubbed _status_sources would have hidden that structurally.
         # Routing through the real methods means a mistyped or removed
         # registry key collapses to [] / {} here too, the same as it would
-        # in production. _status_named_pages is now the gate service.py
-        # actually reads (polled OR queryable), so every caller of
-        # assistant_completion needs it wired, not just the status-specific
-        # test classes that bind it themselves.
+        # in production. _status_named_pages is the gate service.py reads,
+        # so every caller of assistant_completion needs it wired, not just
+        # the status-specific test classes that bind it themselves.
         from llm.plugin import LLM
 
         plugin._STATUS_MAX_SOURCES = LLM._STATUS_MAX_SOURCES
-        plugin._STATUS_MAX_QUERYABLE = LLM._STATUS_MAX_QUERYABLE
         plugin._status_host = LLM._status_host.__get__(plugin)
         # Same trap noted above for the other _status_* readers: an unbound
         # attribute on a bare Mock silently returns a fresh Mock instead of
         # running the real bare-URL name sanitiser.
         plugin._status_bare_name = LLM._status_bare_name.__get__(plugin)
         plugin._status_parse_pages = LLM._status_parse_pages.__get__(plugin)
-        plugin._status_polled_pages = LLM._status_polled_pages.__get__(plugin)
         plugin._status_sources = LLM._status_sources.__get__(plugin)
         plugin._status_named_pages = LLM._status_named_pages.__get__(plugin)
 
@@ -882,6 +821,25 @@ def make_service(mocker: MockerFixture) -> Callable[..., tuple[LLMService, Mock]
 # =============================================================================
 # Plugin initialization patches
 # =============================================================================
+
+
+@pytest.fixture
+def llm_data_dir(tmp_path: Path) -> Generator[Path]:
+    """Point Limnoria's data directory at ``tmp_path`` for the test.
+
+    The plugin keeps its database at ``<data>/LLM.db``, so a test that builds
+    the plugin on a real database seeds or reads ``llm_data_dir / "LLM.db"``.
+    The data directory is a slotted registry node that mocker.patch cannot
+    replace, so the value is set through the registry and restored after.
+    """
+    import supybot.conf as conf
+
+    original = conf.supybot.directories.data()
+    conf.supybot.directories.data.setValue(str(tmp_path))
+    try:
+        yield tmp_path
+    finally:
+        conf.supybot.directories.data.setValue(original)
 
 
 def plugin_init_patches(
@@ -1004,15 +962,12 @@ def status_plugin():
 
     obj = MagicMock()
     obj._registry = {"statusPageUrls": ["Claude=https://status.claude.com"]}
-    obj._registry["statusQueryablePages"] = []
     obj.registryValue = lambda key, *a, **k: obj._registry.get(key)
     obj._STATUS_POLL_INTERVAL = LLM._STATUS_POLL_INTERVAL
     obj._STATUS_MAX_ANNOUNCE_PER_POLL = LLM._STATUS_MAX_ANNOUNCE_PER_POLL
     obj._STATUS_FETCH_FLOOR = LLM._STATUS_FETCH_FLOOR
     obj._STATUS_MAX_SOURCES = LLM._STATUS_MAX_SOURCES
-    obj._STATUS_MAX_QUERYABLE = LLM._STATUS_MAX_QUERYABLE
     obj._status_parse_pages = LLM._status_parse_pages.__get__(obj)
-    obj._status_polled_pages = LLM._status_polled_pages.__get__(obj)
     obj._status_named_pages = LLM._status_named_pages.__get__(obj)
     obj._status_sources = LLM._status_sources.__get__(obj)
     # Same trap as every other _status_* helper on this bare MagicMock: an
@@ -1026,16 +981,6 @@ def status_plugin():
     obj._status_history_cache = {}
     obj._status_history_at = {}
     obj._status_history_failed_at = {}
-    obj._status_query_cache = {}
-    obj._status_query_failed_at = {}
-    obj._STATUS_QUERY_TTL = LLM._STATUS_QUERY_TTL
-    obj._STATUS_QUERY_CACHE_MAX = LLM._STATUS_QUERY_CACHE_MAX
-    # _status_query_snapshot calls self._status_evict_query_cache() — on a bare
-    # MagicMock an unbound attribute access silently returns a fresh Mock
-    # instead of running the real method, so eviction would be a no-op unless
-    # this is bound explicitly too (same trap as the other _status_* helpers
-    # bound below).
-    obj._status_evict_query_cache = LLM._status_evict_query_cache.__get__(obj)
     obj._fetch_calls = 0
     obj._fake_snapshot = None
     obj._fake_error = None

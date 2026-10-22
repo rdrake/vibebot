@@ -141,9 +141,8 @@ _ACTION_RE = re.compile(r"^\x01ACTION\s+(.*)\x01$", re.DOTALL)
 _ADDRESS_SEPARATORS = " \t,:;"
 _NICK_TOKEN_RE = re.compile(r"[^\s,;:]+")
 
-# Selector name for a status page, shared by statusPageUrls and
-# statusQueryablePages. ASCII-only, so plain .lower() is sufficient for
-# case-insensitive uniqueness.
+# Selector name for a status page in statusPageUrls. ASCII-only, so plain
+# .lower() is sufficient for case-insensitive uniqueness.
 _STATUS_PAGE_NAME_RE = re.compile(r"\A[A-Za-z0-9._-]{1,32}\Z")
 
 _REQUEST_CONTEXT_CAPABILITIES = frozenset(
@@ -240,6 +239,53 @@ _FAKE_REACT_NOTE_RE = re.compile(r"\s*\[(?:reacted|no recent message|deleted my)
 # stranger is cheap, one per stranger per hour is nothing, and the answer is
 # stable — nobody stops being a bot mid-afternoon.
 _BOT_PROBE_INTERVAL = 3600.0
+
+# How many consecutive replies the bot gives one other bot before going quiet,
+# and the seconds of quiet after which that count resets. Two bots that answer
+# each other never tire; a bot that addresses the channel twice an hour is not
+# a loop. Any human speaking in the channel clears the count.
+_BOT_LOOP_REPLY_LIMIT = 3
+_BOT_LOOP_WINDOW = 300
+
+_LOG_LEVEL = logging.WARNING
+# Simultaneous outbound LLM calls, across the command path and background work.
+_MAX_CONCURRENT_LLM_CALLS = 16
+_HELP_URL = "https://rdrake.github.io/vibebot-v8/"
+
+# Replies that wrap to at most this many IRC lines go inline as one IRCv3
+# draft/multiline batch; longer ones get a teaser of at most
+# _LONG_REPLY_TEASER_MAX_CHARS plus a link to the full answer.
+_MULTILINE_MAX_LINES = 3
+_LONG_REPLY_TEASER_MAX_CHARS = 220
+
+# @draw only passes conversation context when the conversation's last activity
+# is this recent, so a draw is grounded in the discussion it follows and not in
+# stale history.
+_DRAW_CONTEXT_MAX_AGE_SECONDS = 60
+
+# Memory extraction. A candidate fact becomes a durable memory once it has been
+# seen _MEMORY_PROMOTION_THRESHOLD times; one left unreinforced for
+# _MEMORY_CANDIDATE_TTL_DAYS is pruned. Every _MEMORY_CLEANUP_INTERVAL passes
+# that promote something, the user's memories are cleaned up.
+_MEMORY_MAX_PER_USER = 50
+_MEMORY_PROMOTION_THRESHOLD = 2
+_MEMORY_CANDIDATE_TTL_DAYS = 14
+_MEMORY_CLEANUP_INTERVAL = 3
+
+# Verse. The cap on verse_record's `actors` array sets the advertised tool
+# spec's maxItems, and dispatch enforces it.
+_VERSE_AUTO_ENTITY_MAX_NAMES_PER_CALL = 8
+# Sliding inactivity timeout for sticky `@rp on` roleplay.
+_VERSE_ROLEPLAY_STICKY_TTL_SECONDS = 900
+_VERSE_STORYBOOK_MAX_PER_TURN = 1  # verse_storybook calls honoured per completion
+# Daily compaction: local time it fires, the event age it prunes past, the
+# event count below which a verse is left alone, the model that writes the lore
+# digest, and the days of no reference before an auto-created NPC retires.
+_VERSE_COMPACTION_DAILY_AT = "03:00"
+_VERSE_EVENT_RETENTION_DAYS = 30
+_VERSE_COMPACTION_MIN_KEEP_EVENTS = 20
+_VERSE_COMPACTION_MODEL = "anthropic/claude-haiku-5-5"
+_VERSE_AUTO_ENTITY_RETIRE_DAYS = 14
 
 # Explicit image-intent cues: an ambient verse-mention asking for a single
 # PICTURE, so it draws an image instead of a story. ("illustrate" is deliberately
@@ -718,22 +764,6 @@ class LLMHTTPCallback(httpserver.SupyHTTPServerCallback):
                 pass
 
 
-def _safe_database_path(configured: str, default: str) -> str:
-    """Return the operator-configured DB path, or ``default`` when it is empty
-    or contains a ``..`` traversal component.
-
-    ``databasePath`` is operator-set (capability-gated), so this is
-    defense-in-depth: it refuses an obvious traversal like
-    ``../../../etc/passwd`` rather than handing it straight to SQLite. Plain
-    absolute paths are the normal case and are kept as-is.
-    """
-    if not configured:
-        return default
-    if ".." in Path(configured).parts:
-        return default
-    return configured
-
-
 def _patch_irc_dojoin(plugin: LLM) -> None:
     """Replace supybot.irclib.Irc.doJoin to skip slow auto-queries on JOIN.
 
@@ -889,13 +919,13 @@ class LLM(callbacks.Plugin):
             ", ".join(apikeys.secret_var_names()) or "none",
         )
 
-        # Apply configured log level to plugin and service loggers
-        self._apply_log_level()
+        self.log.setLevel(_LOG_LEVEL)
+        self.llm_service.log.setLevel(_LOG_LEVEL)
 
         # Global concurrency cap for all LLM I/O. See
         # docs/plans/2026-05-06-async-llm-concurrency.md
         self._llm_executor = LLMExecutor(
-            max_concurrency=self.registryValue("maxConcurrentLLMCalls"),
+            max_concurrency=_MAX_CONCURRENT_LLM_CALLS,
             log=self.log,
         )
 
@@ -903,16 +933,7 @@ class LLM(callbacks.Plugin):
         self.build_info = self._get_build_info()
 
         # Initialize database for persistence (before context, which loads from DB)
-        configured_db_path = self.registryValue("databasePath")
-        default_db_path = str(Path(conf.supybot.directories.data()) / "LLM.db")
-        db_path = _safe_database_path(configured_db_path, default_db_path)
-        if configured_db_path and db_path != configured_db_path:
-            self.log.warning(
-                "databasePath %r rejected (path traversal); using default %r",
-                configured_db_path,
-                db_path,
-            )
-        self.db = LLMDatabase(db_path)
+        self.db = LLMDatabase(str(Path(conf.supybot.directories.data()) / "LLM.db"))
 
         _patch_irc_dojoin(self)
         _patch_irc_docapnew()
@@ -1065,10 +1086,6 @@ class LLM(callbacks.Plugin):
         self._status_history_cache: dict[str, tuple[statuspage.HistoryEntry, ...]] = {}
         self._status_history_at: dict[str, float] = {}
         self._status_history_failed_at: dict[str, float] = {}
-        # Queryable-only pages: lazily filled, never polled, never announced,
-        # and never granted lifecycle state.
-        self._status_query_cache: dict[str, statuspage.Snapshot] = {}
-        self._status_query_failed_at: dict[str, float] = {}
         self._status_cursor: str | None = None
         # Aurora feed caches, shared by the tool and the storm announcer.
         # _sw_lock guards both dicts and is never held across a network fetch.
@@ -1093,27 +1110,9 @@ class LLM(callbacks.Plugin):
         self._queue_wakeup_lock = threading.Lock()
         self._schedule_queue_wakeup()  # rebuild from DB on startup
 
-        # Register callback for live log level changes
-        conf.supybot.plugins.LLM.logLevel.addCallback(self._on_log_level_change)
-
-        # Daily verse compaction timer (PR 3 / E3). Registry keys
-        # ``verseCompactionDailyAt`` and ``verseCompactionMinKeepEvents``
-        # are added by F1; until then ``_register_compaction_timer``'s
-        # try/except falls back to documented defaults so the timer
-        # still arms on un-configured installs.
+        # Daily verse compaction timer, fired at _VERSE_COMPACTION_DAILY_AT.
         self._compaction_timer_name = "llm_verse_compact"
         self._register_compaction_timer()
-
-    def _apply_log_level(self) -> None:
-        """Set plugin logger levels from the logLevel config value."""
-        level_name = self.registryValue("logLevel")
-        level = getattr(logging, level_name, logging.WARNING)
-        self.log.setLevel(level)
-        self.llm_service.log.setLevel(level)
-
-    def _on_log_level_change(self, *args: object) -> None:
-        """Called when logLevel config changes at runtime."""
-        self._apply_log_level()
 
     def die(self) -> None:
         """Clean up when plugin is unloaded."""
@@ -1291,8 +1290,8 @@ class LLM(callbacks.Plugin):
     def _status_parse_pages(self, raw_entries, *, key: str, cap: int, warn: bool) -> dict[str, str]:
         """Parse ``Name=url`` (or bare ``url``) entries into name -> source.
 
-        One grammar, one parser, both config keys. Bad entries are dropped
-        rather than raising: one typo must not disable the feature.
+        Bad entries are dropped rather than raising: one typo must not
+        disable the feature.
 
         Split on the FIRST '=' — names forbid '=' and, being in a
         space-separated list, spaces, so this is unambiguous.
@@ -1350,7 +1349,14 @@ class LLM(callbacks.Plugin):
             pages = dict(list(pages.items())[:cap])
         return pages
 
-    def _status_polled_pages(self, *, warn: bool = True) -> dict[str, str]:
+    def _status_named_pages(self, *, warn: bool = True) -> dict[str, str]:
+        """Name -> canonical source for every configured page.
+
+        The single source of truth for the tool's ``service`` enum, for
+        resolving that argument, and for the prune set. Purely a function of
+        config: nothing here may come from a fetched payload, or a page could
+        rename itself into another page's selector.
+        """
         return self._status_parse_pages(
             self.registryValue("statusPageUrls"),
             key="statusPageUrls",
@@ -1358,38 +1364,14 @@ class LLM(callbacks.Plugin):
             warn=warn,
         )
 
-    def _status_named_pages(self, *, warn: bool = True) -> dict[str, str]:
-        """Name -> canonical source for every configured page, polled first.
-
-        The single source of truth for the tool's ``service`` enum, for
-        resolving that argument, and for the prune sets. Purely a function of
-        config: nothing here may come from a fetched payload, or a page could
-        rename itself into another page's selector.
-        """
-        pages = self._status_polled_pages(warn=warn)
-        polled_sources = set(pages.values())
-        lowered = {n.lower() for n in pages}
-        for name, source in self._status_parse_pages(
-            self.registryValue("statusQueryablePages"),
-            key="statusQueryablePages",
-            cap=self._STATUS_MAX_QUERYABLE,
-            warn=warn,
-        ).items():
-            if source in polled_sources or name.lower() in lowered:
-                if warn:
-                    self.log.warning("Ignoring queryable page %s: already configured", name)
-                continue
-            pages[name] = source
-        return pages
-
     def _status_sources(self, *, warn: bool = True) -> list[str]:
-        """Canonical, deduplicated, capped list of POLLED status pages.
+        """Canonical, deduplicated, capped list of polled status pages.
 
         Order is the operator's. ``warn`` gates diagnostics and defaults to on
         for the poller's ~2-minute cadence; request-path callers pass False, or
         one typo'd entry logs once per chat message.
         """
-        return list(self._status_polled_pages(warn=warn).values())
+        return list(self._status_named_pages(warn=warn).values())
 
     def _status_host(self, source: str) -> str:
         """Display host for a canonical source id. Operator-derived, always safe."""
@@ -1421,40 +1403,25 @@ class LLM(callbacks.Plugin):
         budget = max(1, 32 - len(port))
         return safe[:budget] + port
 
-    def _status_prune_sources(self, sources: list[str], queryable: list[str] | None = None) -> None:
-        """Drop state for sources no longer configured.
-
-        Two different keep-sets, deliberately, across eight structures.
-        Lifecycle state is pruned against the POLLED set: a queryable page
-        must never hold any. The history and query caches are pruned against
-        polled UNION queryable — pruning history against the polled set alone
-        deletes an allowlisted page's history (up to 4 MB, cached for an hour)
-        on the very next poll, 120 seconds after it was fetched, backoff and
-        all. The query cache and its failure backoff get the same treatment:
-        without it, a page's query reading is evicted on the next poll rather
-        than aged out by its own TTL and cap.
-        """
-        polled = set(sources)
-        both = polled | set(queryable or ())
-        for holder, keep in (
-            (self._status_state, polled),
-            (self._status_read_cache, polled),
-            (self._status_last_fetch, polled),
-            (self._status_history_cache, both),
-            (self._status_history_at, both),
-            (self._status_history_failed_at, both),
-            (self._status_query_cache, both),
-            (self._status_query_failed_at, both),
+    def _status_prune_sources(self, sources: list[str]) -> None:
+        """Drop state for sources no longer configured."""
+        keep = set(sources)
+        for holder in (
+            self._status_state,
+            self._status_read_cache,
+            self._status_last_fetch,
+            self._status_history_cache,
+            self._status_history_at,
+            self._status_history_failed_at,
         ):
             # list(holder) snapshots the keys before iterating: a request
-            # thread's _status_query_snapshot can insert into
-            # _status_query_cache concurrently, and iterating the live dict
-            # would raise "dictionary changed size during iteration" — which
-            # _run_status_poll's outer handler swallows, losing the whole
-            # poll pass including its announcements. pop(..., None) rather
-            # than del: another thread's own prune-adjacent write (the query
-            # evictor, or a second poll racing this one) may have already
-            # removed the key.
+            # thread's inline fetch can insert into _status_read_cache
+            # concurrently, and iterating the live dict would raise
+            # "dictionary changed size during iteration" — which
+            # _run_status_poll's outer handler swallows, losing the whole poll
+            # pass including its announcements. pop(..., None) rather than
+            # del: a second poll racing this one may have already removed the
+            # key.
             for stale in [k for k in list(holder) if k not in keep]:
                 holder.pop(stale, None)
 
@@ -1877,53 +1844,6 @@ class LLM(callbacks.Plugin):
         self._status_read_cache[source] = snapshot
         return snapshot
 
-    def _status_query_snapshot(
-        self, source: str, *, deadline: float | None = None
-    ) -> statuspage.Snapshot | None:
-        """Cached reading for a page we never poll.
-
-        Writes only the two query dicts — never _status_state, never
-        _status_read_cache. A queryable page has no lifecycle, so there is
-        nothing to announce and nothing a question could consume.
-        """
-        now = self._status_now()
-        cached = self._status_query_cache.get(source)
-        if cached is not None and (now - cached.fetched_at) < self._STATUS_QUERY_TTL:
-            return cached
-        if now - self._status_query_failed_at.get(source, 0.0) < self._STATUS_HISTORY_RETRY:
-            return cached
-        timeout_cap = None
-        if deadline is not None:
-            timeout_cap = deadline - self._status_monotonic()
-            if timeout_cap <= self._STATUS_MIN_FETCH_WINDOW:
-                return cached
-        try:
-            snapshot = self._status_fetch_snapshot(source, timeout_cap=timeout_cap, cached=cached)
-        except Exception as e:
-            self.log.info("Status query fetch failed for %s: %s", source, e)
-            self._status_query_failed_at[source] = now
-            return cached
-        self._status_query_cache[source] = snapshot
-        self._status_query_failed_at.pop(source, None)
-        self._status_evict_query_cache()
-        return snapshot
-
-    def _status_evict_query_cache(self) -> None:
-        """Keep the newest _STATUS_QUERY_CACHE_MAX readings.
-
-        Concurrent request threads can each land here after both computing
-        the cache at (cap + 1) entries and independently pick the same
-        oldest key; a plain ``del`` would raise KeyError for the loser and
-        surface as "Could not read the service status page" to the model.
-        ``pop(..., None)`` makes the second eviction of the same key a no-op.
-        """
-        excess = len(self._status_query_cache) - self._STATUS_QUERY_CACHE_MAX
-        if excess <= 0:
-            return
-        oldest = sorted(self._status_query_cache.items(), key=lambda kv: kv[1].fetched_at)
-        for source, _snap in oldest[:excess]:
-            self._status_query_cache.pop(source, None)
-
     def _status_history_payload(self, source: str, *, deadline: float | None = None) -> list[dict]:
         """Lazily fetch and cache one source's resolved-incident history.
 
@@ -1984,16 +1904,12 @@ class LLM(callbacks.Plugin):
         return statuspage.to_history_payload(entries, now=now, limit=self._STATUS_HISTORY_LIMIT)
 
     def _status_source_entry(
-        self, source: str, *, deadline: float, include_history: bool, polled: bool
+        self, source: str, *, deadline: float, include_history: bool
     ) -> dict[str, Any]:
         """Build one source's tool-payload entry.
 
-        ``polled`` selects the read path: a polled source refreshes through
-        ``_status_read_cache`` under the staleness rule below, the same rule
-        both before and after this was factored out of the aggregate loop. A
-        queryable source is read through ``_status_query_snapshot``, which
-        owns its own TTL and failure backoff and never touches lifecycle
-        state.
+        The source refreshes through ``_status_read_cache`` under the
+        staleness rule below.
 
         Every entry carries ``source``, the operator-configured host. That is
         the only identity available before a source's first successful fetch,
@@ -2002,28 +1918,16 @@ class LLM(callbacks.Plugin):
         be indistinguishable to the model.
         """
         entry: dict[str, Any] = {"source": self._status_host(source)}
-        if polled:
-            snapshot = self._status_read_cache.get(source)
-            # `now` is captured per source, not once before the fan-out: a
-            # source refreshed during another source's fetch would otherwise
-            # have fetched_at > now, and snapshot_age_sec below would go
-            # negative.
-            now = self._status_now()
-            if snapshot is None or (now - snapshot.fetched_at) > self._STATUS_STALE_AFTER:
-                snapshot = self._status_fetch_now(source, deadline=deadline) or snapshot
-                now = self._status_now()
-        else:
-            snapshot = self._status_query_snapshot(source, deadline=deadline)
+        snapshot = self._status_read_cache.get(source)
+        # `now` is captured per source, not once before the fan-out: a source
+        # refreshed during another source's fetch would otherwise have
+        # fetched_at > now, and snapshot_age_sec below would go negative.
+        now = self._status_now()
+        if snapshot is None or (now - snapshot.fetched_at) > self._STATUS_STALE_AFTER:
+            snapshot = self._status_fetch_now(source, deadline=deadline) or snapshot
             now = self._status_now()
         if snapshot is None:
-            # The poller-facing wording ("has not been read yet") implies a
-            # scheduled read is pending; a queryable page is never polled, so
-            # there is nothing to wait for — only a failed on-demand fetch.
-            entry["error"] = (
-                "This status page has not been read yet."
-                if polled
-                else "This status page could not be reached."
-            )
+            entry["error"] = "This status page has not been read yet."
             return entry
         entry["service"] = (
             statuspage.sanitise_text(statuspage.strip_urls(snapshot.page_name), limit=60)
@@ -2041,13 +1945,11 @@ class LLM(callbacks.Plugin):
             entry["recent_incidents"] = self._status_history_payload(source, deadline=deadline)
         return entry
 
-    def _status_single_payload(
-        self, source: str, *, include_history: bool, polled: bool
-    ) -> dict[str, Any]:
-        """Build the payload for exactly one named source (polled or queryable)."""
+    def _status_single_payload(self, source: str, *, include_history: bool) -> dict[str, Any]:
+        """Build the payload for exactly one named source."""
         deadline = self._status_monotonic() + self._STATUS_TOOL_BUDGET
         entry = self._status_source_entry(
-            source, deadline=deadline, include_history=include_history, polled=polled
+            source, deadline=deadline, include_history=include_history
         )
         payload: dict[str, Any] = {"services": [entry], "note": statuspage.UNTRUSTED_NOTE}
         if "error" in entry:
@@ -2063,14 +1965,14 @@ class LLM(callbacks.Plugin):
     ) -> dict[str, Any]:
         """Build the model-facing payload.
 
-        ``service`` omitted: one entry per configured POLLED source (today's
+        ``service`` omitted: one entry per configured source (today's
         behaviour, pinned by production — "are Claude and Codex up?" answers
         in one call). ``pages`` is not consulted on this path — the polled
         list always comes from ``_status_sources()`` — so it constrains
         nothing here; pass it only alongside ``service``.
 
-        ``service`` named: one entry for that page alone, polled or
-        queryable, resolved from ``pages`` when the caller supplies the
+        ``service`` named: one entry for that page alone, resolved from
+        ``pages`` when the caller supplies the
         frozen name->source mapping the tool schema was built from —
         resolving live here instead would let config churn between the
         model's call and its dispatch route the call somewhere the enum
@@ -2079,7 +1981,7 @@ class LLM(callbacks.Plugin):
         without an "error" key as a successful tool call, so a bare note
         would let the model answer about the wrong service.
 
-        Reads (and may refresh) the read/query caches only. Lifecycle state
+        Reads (and may refresh) the read cache only. Lifecycle state
         is the poller's alone. Current status is always returned regardless
         of ``include_history`` — history is additive.
         """
@@ -2115,11 +2017,7 @@ class LLM(callbacks.Plugin):
                     # so there is nothing to append to.
                     payload["error"] = unresolved
                 return payload
-            return self._status_single_payload(
-                source,
-                include_history=include_history,
-                polled=source in set(self._status_sources(warn=False)),
-            )
+            return self._status_single_payload(source, include_history=include_history)
 
         # warn=False: this runs per tool call, not per poll; the poller
         # already logs a bad entry on its own ~2-minute cadence.
@@ -2132,7 +2030,7 @@ class LLM(callbacks.Plugin):
         readable = 0
         for source in sources:
             entry = self._status_source_entry(
-                source, deadline=deadline, include_history=include_history, polled=True
+                source, deadline=deadline, include_history=include_history
             )
             if "error" not in entry:
                 readable += 1
@@ -2203,8 +2101,7 @@ class LLM(callbacks.Plugin):
         """
         try:
             sources = self._status_sources()
-            queryable = [s for s in self._status_named_pages().values() if s not in set(sources)]
-            self._status_prune_sources(sources, queryable)
+            self._status_prune_sources(sources)
             if not sources:
                 return
             deadline = self._status_monotonic() + self._STATUS_PASS_BUDGET
@@ -2311,7 +2208,7 @@ class LLM(callbacks.Plugin):
         Runs INLINE in the poll worker's existing permit — no submit (raises
         RecursiveSubmitError from worker context, executor.py:102-106) and no
         nested permit (double acquire; self-deadlock at
-        maxConcurrentLLMCalls=1).
+        a concurrency cap of 1).
 
         ``url`` is built from the operator-configured value (``statusPageUrl``
         plus the incident's own path segment via ``statuspage.incident_url``),
@@ -2562,15 +2459,6 @@ class LLM(callbacks.Plugin):
     _STATUS_HISTORY_LIMIT = 5
     _STATUS_HISTORY_RETRY = 120  # backoff before retrying a failed history fetch
     _STATUS_MAX_SOURCES = 5
-    _STATUS_MAX_QUERYABLE = 20
-    # Queryable pages are refreshed only when asked for, so their TTL is
-    # shorter than the 600s staleness line — nothing else refreshes them.
-    _STATUS_QUERY_TTL = 300
-    # Equal to _STATUS_MAX_QUERYABLE on purpose, expressed as a reference so
-    # the coupling can't drift: a cache smaller than the allowlist thrashes —
-    # cycling every page inside the TTL evicts each entry before it is
-    # reused, so every request fetches despite the cache.
-    _STATUS_QUERY_CACHE_MAX = _STATUS_MAX_QUERYABLE
 
     # Whole-call budget for the tool path, covering current-status refreshes and
     # the history fan-out together. The tool runs inside the asking request's
@@ -2971,8 +2859,6 @@ class LLM(callbacks.Plugin):
         if not channel:
             return
 
-        if not self.registryValue("contextEnabled", channel):
-            return
         if self.registryValue("privacyOptInOnly", channel):
             return
 
@@ -2996,12 +2882,9 @@ class LLM(callbacks.Plugin):
 
         Gate: both 'account-tag' AND 'extended-join' IRCv3 caps must be ACK'd
         (account-tag rides on PRIVMSG-class messages; extended-join rides on
-        JOIN itself — together they obviate the auto-WHO scan), AND the
-        operator-controlled ``skipAutoWhoOnJoin`` config must be True.
+        JOIN itself — together they obviate the auto-WHO scan).
         """
-        if not irc_has_caps(irc, "account-tag", "extended-join"):
-            return False
-        return bool(self.registryValue("skipAutoWhoOnJoin"))
+        return irc_has_caps(irc, "account-tag", "extended-join")
 
     @staticmethod
     def _bot_flag_key(irc: callbacks.Irc, nick: str) -> str:
@@ -3325,7 +3208,7 @@ class LLM(callbacks.Plugin):
     def _probe_bot_flag(self, irc: callbacks.Irc, nick: str) -> None:
         """Ask the network whether ``nick`` is a bot, at most once per window.
 
-        ``skipAutoWhoOnJoin`` is on in production and the last WHO reply the
+        The auto-WHO on join is suppressed in production and the last WHO reply the
         bot saw was six months ago, so waiting for a channel sync would mean
         never learning anything. One WHO per stranger is cheap; the answer
         lands before their second line in any real loop.
@@ -3382,11 +3265,7 @@ class LLM(callbacks.Plugin):
         if not flag:
             return False
 
-        channel = msg.channel or None
-        limit = self.registryValue("botLoopReplyLimit", channel)
-        if not limit:
-            return False
-        window = self.registryValue("botLoopWindow", channel)
+        limit, window = _BOT_LOOP_REPLY_LIMIT, _BOT_LOOP_WINDOW
 
         now = time.time()
         key = (target, nick.lower())
@@ -3425,8 +3304,6 @@ class LLM(callbacks.Plugin):
             channel = msg.channel or (msg.args[0] if msg.args else "")
             if not channel or not channel.startswith(("#", "&")):
                 return
-            if not self.registryValue("verseReactionCaptureEnabled", channel):
-                return
             with self._irc_send_lock:
                 last = self._last_bot_line.get((irc.network, ircutils.toLower(channel)))
             event = reactions.process_reaction(
@@ -3459,8 +3336,8 @@ class LLM(callbacks.Plugin):
         When the bot joins a channel, we add it to _pending_channels.
         The channel is removed when we receive do315 (end of WHO).
 
-        If the auto-WHO on join is being suppressed (account-tag + extended-join
-        + skipAutoWhoOnJoin), do315 will never fire — so we must NOT add to
+        If the auto-WHO on join is being suppressed (account-tag + extended-join),
+        do315 will never fire — so we must NOT add to
         _pending_channels here. The do376 2-second fallback (line 828) is then
         responsible for firing the startup notification.
         """
@@ -3559,12 +3436,7 @@ class LLM(callbacks.Plugin):
 
         Per-channel overrides are read at query time via ``_get_context_config``.
         """
-        config = ContextConfig(
-            max_messages=self.registryValue("contextMaxMessages"),
-            timeout_minutes=self.registryValue("contextTimeoutMinutes"),
-            enabled=self.registryValue("contextEnabled"),
-            channel_max_messages=self.registryValue("channelContextMaxMessages"),
-        )
+        config = ContextConfig(timeout_minutes=self.registryValue("contextTimeoutMinutes"))
         self.context = ConversationContext(config, db=self.db)
 
     def _get_context_config(self, channel: str) -> ContextConfig:
@@ -3577,12 +3449,7 @@ class LLM(callbacks.Plugin):
         Returns:
             ContextConfig with channel-specific values
         """
-        return ContextConfig(
-            max_messages=self.registryValue("contextMaxMessages", channel),
-            timeout_minutes=self.registryValue("contextTimeoutMinutes", channel),
-            enabled=self.registryValue("contextEnabled", channel),
-            channel_max_messages=self.registryValue("channelContextMaxMessages", channel),
-        )
+        return ContextConfig(timeout_minutes=self.registryValue("contextTimeoutMinutes", channel))
 
     def _send_reminder_text(
         self,
@@ -4083,11 +3950,10 @@ class LLM(callbacks.Plugin):
 
     def getPluginHelp(self) -> str:  # noqa: N802
         """Return plugin help with documentation URL."""
-        url = self.registryValue("helpUrl")
         names = ", ".join(cmd.name for cmd in COMMAND_REGISTRY)
         return _("AI-powered commands. Commands: %s. Full documentation: %s") % (
             names,
-            url,
+            _HELP_URL,
         )
 
     def invalidCommand(  # noqa: N802
@@ -5143,11 +5009,8 @@ class LLM(callbacks.Plugin):
             # default change wouldn't reach existing operators on upgrade
             # (see DEFAULT_ALLOWED_PLUGINS docstring in limnoria_bridge.py).
             allowed = limnoria_bridge.DEFAULT_ALLOWED_PLUGINS
-        allow_mutating = bool(self.registryValue("bridgeAllowMutating", channel))
 
-        commands = list(
-            limnoria_bridge.enumerate_commands(irc, msg, allowed, allow_mutating=allow_mutating)
-        )
+        commands = list(limnoria_bridge.enumerate_commands(irc, msg, allowed))
         if not commands:
             return None, None
 
@@ -5157,25 +5020,13 @@ class LLM(callbacks.Plugin):
             + (f" — {c.description}" if c.description else "")
             for c in commands
         )
-        # Footer: if the gate is closed AND any allowlisted plugin has at least
-        # one mutating leaf, hint that more commands exist behind the gate.
-        # Skips the hint for pure-read allowlists (Time, Math, etc.) where no
-        # writes would be hidden.
-        mutating_plugins = {p for (p, _leaf) in limnoria_bridge.MUTATING_COMMANDS}
-        allowed_canonical = {p.lower() for p in allowed}
-        hidden_writes_present = not allow_mutating and bool(allowed_canonical & mutating_plugins)
-        footer = (
-            "\n\n(write commands hidden — set bridgeAllowMutating True to expose)"
-            if hidden_writes_present
-            else ""
-        )
         schema = {
             "type": "function",
             "function": {
                 "name": "run_limnoria_command",
                 "description": (
                     "Run a Limnoria plugin command on the user's behalf. "
-                    "Available commands:\n" + table + footer
+                    "Available commands:\n" + table
                 ),
                 "parameters": {
                     "type": "object",
@@ -5247,7 +5098,6 @@ class LLM(callbacks.Plugin):
                 command=command_name,
                 arg_string=arg_string,
                 allowed=allowed,
-                allow_mutating=allow_mutating,
             )
             if trace is not None:
                 status = (
@@ -5365,7 +5215,7 @@ class LLM(callbacks.Plugin):
             nick_prefix: Optional ``"nick: "`` prefix, reserved out of the
                 teaser budget and prepended to the link line.
             teaser_cap: Optional hard cap on teaser length
-                (``longReplyTeaserMaxChars``).
+                (``_LONG_REPLY_TEASER_MAX_CHARS``).
             save_failed_fallback: Line to return when the save fails; None
                 sends the teaser alone rather than risking an oversized body.
         """
@@ -5541,7 +5391,7 @@ class LLM(callbacks.Plugin):
         Returns False when the line or batch could not be queued.
 
         One wire-line goes out as-is. A reply that wraps to at most
-        ``multilineMaxLines`` wire-lines goes out as a single draft/multiline
+        ``_MULTILINE_MAX_LINES`` wire-lines goes out as a single draft/multiline
         batch when the cap is negotiated — a click-through for two lines of
         answer was the complaint. Anything longer is saved to the bot's HTTP
         server and the channel receives a one-line teaser plus the URL. When
@@ -5558,8 +5408,7 @@ class LLM(callbacks.Plugin):
             for line in logical_lines
             for i, piece in enumerate(ircutils.wrap(line, allowed) or [line])
         ]
-        max_lines = int(self.registryValue("multilineMaxLines", target) or 0)
-        if 1 < len(chunks) <= max_lines and self._multiline_negotiated(irc):
+        if 1 < len(chunks) <= _MULTILINE_MAX_LINES and self._multiline_negotiated(irc):
             return self._send_multiline_batch(irc, msg, chunks, prefixNick=prefixNick)
 
         # Without a batch, multi-line answers pastebin (never collapsed into
@@ -5571,13 +5420,12 @@ class LLM(callbacks.Plugin):
         # bots in-channel) and the inline IRC teaser. Computed lazily so the
         # inline path never pays for the LLM call, and memoized so the title
         # costs nothing extra over the teaser we already make.
-        configured_max_chars = int(self.registryValue("longReplyTeaserMaxChars", target) or 220)
         summary_cache: list[str | None] = [None]
 
         def _summary() -> str:
             if summary_cache[0] is None:
                 summary_cache[0] = self.llm_service.summarize_for_irc(
-                    text, channel=target, max_chars=configured_max_chars
+                    text, channel=target, max_chars=_LONG_REPLY_TEASER_MAX_CHARS
                 )
             return summary_cache[0] or ""
 
@@ -5591,7 +5439,7 @@ class LLM(callbacks.Plugin):
             save_fn=lambda t: self.llm_service.save_markdown_to_http(
                 t, title=_summary(), style=style
             ),
-            teaser_cap=configured_max_chars,
+            teaser_cap=_LONG_REPLY_TEASER_MAX_CHARS,
         )
         return self._safe_reply(irc, line, prefixNick=prefixNick)
 
@@ -5948,9 +5796,8 @@ class LLM(callbacks.Plugin):
             message_text=message_text,
             style_exemplars=self.registryValue("verseStyleExemplars", channel),
         )
-        max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
         tools = make_verse_tool_specs(
-            max_actors=max_actors,
+            max_actors=_VERSE_AUTO_ENTITY_MAX_NAMES_PER_CALL,
             storybook=bool(self.registryValue("verseStorybookEnabled", channel)),
         )
         return VerseRoute(avatar_id, system_prompt, tools, store)
@@ -6049,8 +5896,6 @@ class LLM(callbacks.Plugin):
         """
         from .prompts import SUBJECT_DOSSIER_BLOCK_FOOTER, SUBJECT_DOSSIER_BLOCK_HEADER
 
-        if not self.registryValue("subjectResearchEnabled", channel):
-            return None
         try:
             dossier = self.llm_service.subject_dossier(text, channel=channel)
         except Exception:
@@ -6211,8 +6056,9 @@ class LLM(callbacks.Plugin):
             )
             if avatar_id is None:
                 return None
-            max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
-            handlers = make_verse_extra_handlers(store, avatar_id, max_actors=max_actors)
+            handlers = make_verse_extra_handlers(
+                store, avatar_id, max_actors=_VERSE_AUTO_ENTITY_MAX_NAMES_PER_CALL
+            )
             return handlers.get("verse_record")
         except Exception:
             self.log.exception(
@@ -6225,8 +6071,8 @@ class LLM(callbacks.Plugin):
     def _roleplay_sticky_set(self, preflight: PreflightResult, on: bool) -> None:
         """Turn sticky @rp roleplay on/off for this caller+channel.
 
-        On: store an expiry ``verseRoleplayStickyTtlSeconds`` in the future (inf
-        when the TTL is 0 → never auto-expire). Off: drop the entry.
+        On: store an expiry ``_VERSE_ROLEPLAY_STICKY_TTL_SECONDS`` in the
+        future. Off: drop the entry.
         """
         # Storage key: stable across nick changes once authenticated.
         channel = preflight.caller.reply_target
@@ -6235,15 +6081,14 @@ class LLM(callbacks.Plugin):
             if not on:
                 self._roleplay_sticky.pop(key, None)
                 return
-            ttl = int(self.registryValue("verseRoleplayStickyTtlSeconds", channel) or 0)
-            self._roleplay_sticky[key] = (time.time() + ttl) if ttl > 0 else float("inf")
+            self._roleplay_sticky[key] = time.time() + _VERSE_ROLEPLAY_STICKY_TTL_SECONDS
 
     def _roleplay_sticky_active(self, preflight: PreflightResult) -> bool:
         """True when sticky roleplay is live for this caller+channel.
 
         Sliding window: an active check refreshes the expiry, so ambient
         roleplay persists while you're talking and lapses only after
-        ``verseRoleplayStickyTtlSeconds`` of silence. Expired entries are
+        ``_VERSE_ROLEPLAY_STICKY_TTL_SECONDS`` of silence. Expired entries are
         evicted lazily here.
         """
         # Storage key: stable across nick changes once authenticated.
@@ -6257,19 +6102,14 @@ class LLM(callbacks.Plugin):
             if exp <= now:  # lapsed
                 self._roleplay_sticky.pop(key, None)
                 return False
-            ttl = int(self.registryValue("verseRoleplayStickyTtlSeconds", channel) or 0)
-            self._roleplay_sticky[key] = (now + ttl) if ttl > 0 else float("inf")
+            self._roleplay_sticky[key] = now + _VERSE_ROLEPLAY_STICKY_TTL_SECONDS
             return True
 
-    def _build_verse_handlers_for_route(self, channel: str, route: VerseRoute) -> dict:
-        """Build verse handlers for an existing ``VerseRoute``.
-
-        Reads ``verseAutoEntityMaxNamesPerCall`` (channel-scoped) and
-        threads it into ``make_verse_extra_handlers`` so the dispatch
-        closure carries the per-channel cap.
-        """
-        max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
-        return make_verse_extra_handlers(route.store, route.avatar_id, max_actors=max_actors)
+    def _build_verse_handlers_for_route(self, route: VerseRoute) -> dict:
+        """Build verse handlers for an existing ``VerseRoute``."""
+        return make_verse_extra_handlers(
+            route.store, route.avatar_id, max_actors=_VERSE_AUTO_ENTITY_MAX_NAMES_PER_CALL
+        )
 
     def _storybook_cooldown_active(self, account: str | None, cooldown: int) -> bool:
         """Single-slot per-account storybook cooldown (reserve-at-start).
@@ -6435,7 +6275,6 @@ class LLM(callbacks.Plugin):
         channel = caller.reply_target
         account = caller.identity.account
         turn_count = [0]
-        max_per_turn = int(self.registryValue("verseStorybookMaxPerTurn", channel) or 1)
         cooldown = int(self.registryValue("verseStorybookCooldownSeconds", channel) or 0)
 
         def _err(message: str) -> _VerseToolResult:
@@ -6443,7 +6282,7 @@ class LLM(callbacks.Plugin):
 
         def _call(args: dict) -> _VerseToolResult:
             # 1. Per-turn cap.
-            if turn_count[0] >= max_per_turn:
+            if turn_count[0] >= _VERSE_STORYBOOK_MAX_PER_TURN:
                 return _err("already told a tale this turn")
             # 2. Account gate.
             if not account:
@@ -6454,10 +6293,6 @@ class LLM(callbacks.Plugin):
             # 4. Per-account cooldown (reserve-at-start).
             if self._storybook_cooldown_active(account, cooldown):
                 return _err("the muse needs a moment")
-
-            # TODO(storybook): daily image cap (verseStorybookDailyImageCap) —
-            # no straightforward per-account daily image-count query exists on
-            # the usage table; cooldown + per-turn cap already bound spend.
 
             # Reserve the per-turn slot only once we're actually firing.
             turn_count[0] += 1
@@ -6850,41 +6685,13 @@ class LLM(callbacks.Plugin):
         if not over_limit:
             return False
 
-        enforce = self.registryValue("enforceRateLimits")
         max_count, window = self._get_tier_limits(command, tier)
         key = f"{command}:{account}"
         with self._rate_buckets_lock:
             count = len(self._rate_buckets.get(key, ()))
 
-        if enforce:
-            self.log.info(
-                "rate_limited command=%s account=%s tier=%s count=%i limit=%i window=%ss",
-                command,
-                account,
-                tier,
-                count,
-                max_count,
-                window,
-            )
-            if not silent and irc is not None:
-                self._safe_error(
-                    irc, _("Rate limit exceeded for %s. Try again in %ds.") % (command, window)
-                )
-                self.db.log_usage(
-                    nick,
-                    channel,
-                    command,
-                    "",
-                    0,
-                    0,
-                    0.0,
-                    prompt=text,
-                    status="rate_limited",
-                )
-            return True
-
         self.log.info(
-            "rate_limit_shadow command=%s account=%s tier=%s count=%i limit=%i window=%ss",
+            "rate_limited command=%s account=%s tier=%s count=%i limit=%i window=%ss",
             command,
             account,
             tier,
@@ -6892,7 +6699,22 @@ class LLM(callbacks.Plugin):
             max_count,
             window,
         )
-        return False
+        if not silent and irc is not None:
+            self._safe_error(
+                irc, _("Rate limit exceeded for %s. Try again in %ds.") % (command, window)
+            )
+            self.db.log_usage(
+                nick,
+                channel,
+                command,
+                "",
+                0,
+                0,
+                0.0,
+                prompt=text,
+                status="rate_limited",
+            )
+        return True
 
     @staticmethod
     def _is_content_blocked_error(error: str | None) -> bool:
@@ -6989,17 +6811,6 @@ class LLM(callbacks.Plugin):
             return False  # No timestamp = live message (not ZNC playback)
         return msg.time < self.startup_time
 
-    def _get_context_enabled(self, channel: str) -> bool:
-        """Check if context is enabled for a channel.
-
-        Args:
-            channel: Channel name
-
-        Returns:
-            True if context is enabled for this channel
-        """
-        return self.registryValue("contextEnabled", channel)
-
     def _gather_history(
         self,
         caller: Caller,
@@ -7014,14 +6825,10 @@ class LLM(callbacks.Plugin):
         gets ``[]``, so no one's PM can surface in another request, even
         under a nick the earlier sender has since given up.
 
-        Returns ([], []) when context is disabled for the channel or when
-        ``max_age_seconds`` is 0 (callers use 0 to opt out of context while
-        keeping a positive freshness window configurable). A positive value
-        filters stale conversations at the context layer.
+        A ``max_age_seconds`` filters stale conversations at the context
+        layer.
         """
         nick, channel = caller.identity.key, caller.reply_target
-        if not self._get_context_enabled(channel) or max_age_seconds == 0:
-            return [], []
         ctx_cfg = self._get_context_config(channel)
         history = self.context.get_messages(
             nick, channel, config=ctx_cfg, max_age_seconds=max_age_seconds
@@ -7055,9 +6862,9 @@ class LLM(callbacks.Plugin):
            existing ones. New entries land in ``memory_candidates`` with
            ``mentions=1``; reinforcements bump that counter.
         2. Once a candidate's ``mentions`` reaches
-           ``memoryPromotionThreshold`` it is promoted to ``memories`` and
+           ``_MEMORY_PROMOTION_THRESHOLD`` it is promoted to ``memories`` and
            removed from the candidate table. Untouched candidates older
-           than ``memoryCandidateTTLDays`` are pruned on each pass.
+           than ``_MEMORY_CANDIDATE_TTL_DAYS`` are pruned on each pass.
 
         Args:
             nick: User's resolved identity
@@ -7066,14 +6873,10 @@ class LLM(callbacks.Plugin):
             assistant_response: What the bot replied
         """
         try:
-            if not self.registryValue("memoryEnabled", channel):
-                return
-
             existing_rows = self.db.get_memories(nick)
             existing_facts = [r.fact for r in existing_rows]
-            max_memories = self.registryValue("memoryMaxPerUser")
 
-            if len(existing_rows) >= max_memories:
+            if len(existing_rows) >= _MEMORY_MAX_PER_USER:
                 return
 
             existing_candidates = self.db.get_memory_candidates(nick)
@@ -7115,7 +6918,6 @@ class LLM(callbacks.Plugin):
                         )
                         return
 
-                    threshold = self.registryValue("memoryPromotionThreshold")
                     promoted: list[str] = []
                     current_count = len(current)
 
@@ -7128,21 +6930,18 @@ class LLM(callbacks.Plugin):
                         new_mentions = self.db.reinforce_memory_candidate(cand.id, nick)
                         if new_mentions == 0:
                             continue
-                        if new_mentions >= threshold and current_count < max_memories:
+                        if (
+                            new_mentions >= _MEMORY_PROMOTION_THRESHOLD
+                            and current_count < _MEMORY_MAX_PER_USER
+                        ):
                             self.db.save_memory(nick, cand.fact, cand.source_channel)
                             self.db.delete_memory_candidate(cand.id, nick)
                             promoted.append(cand.fact)
                             current_count += 1
 
-                    # Add — new candidates start at mentions=1 (or promote
-                    # immediately if threshold == 1).
+                    # Add — new candidates start at mentions=1.
                     for fact in extraction.add:
-                        if threshold <= 1 and current_count < max_memories:
-                            self.db.save_memory(nick, fact, channel)
-                            promoted.append(fact)
-                            current_count += 1
-                        else:
-                            self.db.add_memory_candidate(nick, fact, channel)
+                        self.db.add_memory_candidate(nick, fact, channel)
 
                     self._prune_stale_memory_candidates(nick)
 
@@ -7152,16 +6951,14 @@ class LLM(callbacks.Plugin):
                     # Trigger cleanup if counter reaches interval — only
                     # promotions count toward the cleanup cadence, since
                     # they're what changes the durable memory set.
-                    cleanup_interval = self.registryValue("memoryCleanupInterval")
-                    if cleanup_interval > 0:
-                        count = self.db.increment_memory_saves(nick)
-                        if count >= cleanup_interval:
-                            # Re-check closing before the cleanup pass:
-                            # extraction itself can take seconds.
-                            if self._llm_executor.closing:
-                                return
-                            self.db.reset_memory_saves(nick)
-                            self._run_memory_cleanup(nick, channel)
+                    count = self.db.increment_memory_saves(nick)
+                    if count >= _MEMORY_CLEANUP_INTERVAL:
+                        # Re-check closing before the cleanup pass:
+                        # extraction itself can take seconds.
+                        if self._llm_executor.closing:
+                            return
+                        self.db.reset_memory_saves(nick)
+                        self._run_memory_cleanup(nick, channel)
 
                 except Exception:
                     log.exception("Memory extraction failed for %s", nick)
@@ -7179,15 +6976,8 @@ class LLM(callbacks.Plugin):
             log.exception("Memory extraction scheduling failed for %s", nick)
 
     def _prune_stale_memory_candidates(self, nick: str) -> None:
-        """Drop candidates whose last_seen is older than the configured TTL.
-
-        TTL of 0 disables decay (candidates linger until promoted or the
-        admin clears them).
-        """
-        ttl_days = self.registryValue("memoryCandidateTTLDays")
-        if ttl_days <= 0:
-            return
-        cutoff = time.time() - (ttl_days * 86400)
+        """Drop candidates whose last_seen is older than _MEMORY_CANDIDATE_TTL_DAYS."""
+        cutoff = time.time() - (_MEMORY_CANDIDATE_TTL_DAYS * 86400)
         try:
             self.db.prune_memory_candidates(nick, cutoff)
         except Exception:
@@ -7306,7 +7096,7 @@ class LLM(callbacks.Plugin):
         """
         nick, channel = caller.identity.key, caller.reply_target
         stored = delivered and result.error is None
-        if stored and self._get_context_enabled(channel):
+        if stored:
             ctx_cfg = self._get_context_config(channel)
             self.context.add_message(nick, channel, Role.USER, text, config=ctx_cfg)
             self.context.add_message(nick, channel, Role.ASSISTANT, response, config=ctx_cfg)
@@ -7538,9 +7328,8 @@ class LLM(callbacks.Plugin):
                 # on opt-in state, which fragments xAI's automatic prompt
                 # cache per-user instead of per-channel.
                 if verse_enabled:
-                    max_actors = self.registryValue("verseAutoEntityMaxNamesPerCall", channel)
                     verse_specs = make_verse_tool_specs(
-                        max_actors=max_actors,
+                        max_actors=_VERSE_AUTO_ENTITY_MAX_NAMES_PER_CALL,
                         storybook=bool(self.registryValue("verseStorybookEnabled", channel)),
                     )
                     verse_context = self._verse_context_for(preflight, text, for_chat=True)
@@ -7717,36 +7506,21 @@ class LLM(callbacks.Plugin):
                 bridge_debug = bool(
                     bridge_schemas and self.registryValue("bridgeDebugInChannel", channel)
                 )
-                # irc_lookup rides with the bridge extras: it needs the live
-                # ``irc`` the same way run_limnoria_command does, and like
-                # them it is advertised to every speaker so the channel's
-                # cacheable prompt prefix stays byte-stable.
-                if self.registryValue("ircLookupEnabled", channel):
-                    lookup_schemas, lookup_handlers = self._build_irc_lookup_tool(
-                        irc, caller.channel or ""
-                    )
-                    bridge_schemas = [*(bridge_schemas or []), *lookup_schemas]
-                    bridge_handlers = {**(bridge_handlers or {}), **lookup_handlers}
-                if self.registryValue("reactEnabled", channel):
-                    react_schemas, react_handlers = self._build_react_tool(irc, msg, caller)
-                    bridge_schemas = [*(bridge_schemas or []), *react_schemas]
-                    bridge_handlers = {**(bridge_handlers or {}), **react_handlers}
-                if self.registryValue("redactEnabled", channel):
-                    redact_schemas, redact_handlers = self._build_redact_tool(irc, msg, caller)
-                    bridge_schemas = [*(bridge_schemas or []), *redact_schemas]
-                    bridge_handlers = {**(bridge_handlers or {}), **redact_handlers}
-                if self.registryValue("notifyOnlineEnabled", channel):
-                    notify_schemas, notify_handlers = self._build_notify_tool(irc, msg, caller)
-                    bridge_schemas = [*(bridge_schemas or []), *notify_schemas]
-                    bridge_handlers = {**(bridge_handlers or {}), **notify_handlers}
-                if self.registryValue("memeEnabled", channel):
-                    meme_schemas, meme_handlers = self._build_meme_tool(msg)
-                    bridge_schemas = [*(bridge_schemas or []), *meme_schemas]
-                    bridge_handlers = {**(bridge_handlers or {}), **meme_handlers}
-                if self.registryValue("auroraEnabled", channel):
-                    aurora_schemas, aurora_handlers = self._build_aurora_tool()
-                    bridge_schemas = [*(bridge_schemas or []), *aurora_schemas]
-                    bridge_handlers = {**(bridge_handlers or {}), **aurora_handlers}
+                # irc_lookup, react, delete_last_reply, notify_when_online,
+                # make_meme and aurora ride with the bridge extras: they need
+                # the live ``irc`` the same way run_limnoria_command does, and
+                # like it they are advertised to every speaker so the
+                # channel's cacheable prompt prefix stays byte-stable.
+                for extra_schemas, extra_handlers in (
+                    self._build_irc_lookup_tool(irc, caller.channel or ""),
+                    self._build_react_tool(irc, msg, caller),
+                    self._build_redact_tool(irc, msg, caller),
+                    self._build_notify_tool(irc, msg, caller),
+                    self._build_meme_tool(msg),
+                    self._build_aurora_tool(),
+                ):
+                    bridge_schemas = [*(bridge_schemas or []), *extra_schemas]
+                    bridge_handlers = {**(bridge_handlers or {}), **extra_handlers}
                 # Combine bridge tools with any verse tools from the route.
                 bridge_list = list(bridge_schemas) if bridge_schemas else []
                 verse_list = list(extra_tools_override) if extra_tools_override else []
@@ -7764,7 +7538,7 @@ class LLM(callbacks.Plugin):
                 # cacheable prefix byte-stable across opted-in/non-opted-in
                 # users — the cohort split that was costing prompt-cache hits.
                 if verse_route is not None:
-                    verse_handlers = self._build_verse_handlers_for_route(channel, verse_route)
+                    verse_handlers = self._build_verse_handlers_for_route(verse_route)
                     combined_handlers: dict | None = {
                         **(bridge_handlers or {}),
                         **verse_handlers,
@@ -7880,7 +7654,7 @@ class LLM(callbacks.Plugin):
         # Skip ZNC playback messages
         if self._is_old_message(msg):
             return
-        off = self.llm_service.draw_unavailable_reason(msg.channel)
+        off = self.llm_service.draw_unavailable_reason()
         if off:
             irc.reply(off)
             return
@@ -7935,7 +7709,7 @@ class LLM(callbacks.Plugin):
             with self._trace_request("draw", nick, channel):
                 history, channel_history = self._gather_history(
                     caller,
-                    max_age_seconds=self.registryValue("drawContextMaxAgeSeconds", channel),
+                    max_age_seconds=_DRAW_CONTEXT_MAX_AGE_SECONDS,
                 )
 
                 with self._allow_concurrent(), self._llm_executor.permit():
@@ -8710,10 +8484,6 @@ class LLM(callbacks.Plugin):
         """
         if self._is_old_message(msg):
             return
-        if not self.registryValue("memeEnabled", msg.channel):
-            irc.reply(_("Memes are turned off in this channel."))
-            return
-
         options = meme.MemeOptions(
             font=next((v for opt, v in optlist if opt == "font"), None),
             layout_top=any(opt == "top" for opt, _v in optlist),
@@ -9385,9 +9155,7 @@ class LLM(callbacks.Plugin):
         # Format context part
         ctx_cfg = self._get_context_config(channel)
         ctx_stats = self.context.get_user_stats(identity.key, channel, config=ctx_cfg)
-        if not ctx_stats["enabled"]:
-            ctx_part = "Context: disabled"
-        elif ctx_stats["message_count"] == 0:
+        if ctx_stats["message_count"] == 0:
             ctx_part = "Context: empty"
         else:
             remaining = ctx_stats["seconds_until_expiry"]
@@ -10357,15 +10125,9 @@ class LLM(callbacks.Plugin):
         from llm.verse.compaction import register_daily_timer
 
         try:
-            fire_at = self.registryValue("verseCompactionDailyAt") or "03:00"
-        except Exception:
-            # Registry key not yet defined (F1 adds it). Fall back so
-            # the timer still arms on un-configured installs.
-            fire_at = "03:00"
-        try:
             register_daily_timer(
                 schedule_module=schedule,
-                fire_at_local=fire_at,
+                fire_at_local=_VERSE_COMPACTION_DAILY_AT,
                 callback=self._compaction_tick,
                 name=self._compaction_timer_name,
             )
@@ -10401,36 +10163,17 @@ class LLM(callbacks.Plugin):
             self._register_compaction_timer()
 
     def _compaction_settings(self):
-        """Shared config reads for the daily pass and @versecompact.
+        """Shared settings for the daily pass and @versecompact.
 
-        Returns (min_keep, model, client). NB: explicit ``int(value)`` rather
-        than ``int(value or 20)`` — 0 is a legitimate registry value
-        (NonNegativeInteger accepts it) and ``or`` would coerce it to 20.
+        Returns (min_keep, model, client).
         """
         from llm.verse import compaction as _compaction
 
-        try:
-            _raw_min_keep = self.registryValue("verseCompactionMinKeepEvents")
-        except Exception:
-            _raw_min_keep = 20
-        try:
-            min_keep = int(_raw_min_keep) if _raw_min_keep is not None else 20
-        except TypeError, ValueError:
-            min_keep = 20
-        model = self.registryValue("verseCompactionModel") or "anthropic/claude-haiku-5-5"
-        client = _compaction.ProviderVerseClient()
-        return min_keep, model, client
-
-    def _channel_retention_days(self, channel: str, default: int = 30) -> int:
-        """Per-channel verseEventRetentionDays, honouring zero (=disabled)."""
-        try:
-            raw = self.registryValue("verseEventRetentionDays", channel)
-        except Exception:
-            raw = default
-        try:
-            return int(raw) if raw is not None else default
-        except TypeError, ValueError:
-            return default
+        return (
+            _VERSE_COMPACTION_MIN_KEEP_EVENTS,
+            _VERSE_COMPACTION_MODEL,
+            _compaction.ProviderVerseClient(),
+        )
 
     def _log_compaction_usage(self, *, op: str, model: str, usage, channel: str) -> None:
         # Renamed from the deleted loom subsystem's "loom"/"loom:" identity;
@@ -10458,25 +10201,23 @@ class LLM(callbacks.Plugin):
         from llm.verse.aging import age_auto_created_entities
 
         store = self._get_or_create_verse_store(channel)
-        retention_days = self._channel_retention_days(channel)
         aging_outcome: AgingOutcome | None = None
         if run_aging:
             # Aging runs BEFORE compaction. compact_verse's digest heartbeat
             # bumps last_seen_ts=now() on every entity in the new digest, so
             # running it first would refresh long-silent NPCs and defeat
-            # verseAutoEntityRetireDays.
+            # _VERSE_AUTO_ENTITY_RETIRE_DAYS.
             try:
-                retire_days = self.registryValue("verseAutoEntityRetireDays", channel)
                 aging_outcome = age_auto_created_entities(
                     store,
-                    retire_after_days=retire_days,
+                    retire_after_days=_VERSE_AUTO_ENTITY_RETIRE_DAYS,
                     now=time.time,
                 )
             except Exception:
                 self.log.exception("verse aging failed for %s; continuing", channel)
         outcome = _compaction.compact_verse(
             store,
-            retention_days=retention_days,
+            retention_days=_VERSE_EVENT_RETENTION_DAYS,
             min_keep_events=min_keep,
             model=model,
             client=client,

@@ -17,7 +17,7 @@ _ANSWER = '{"template": "drake", "lines": ["a", "b"]}'
 
 @pytest.fixture
 def service(make_service, mocker):
-    service, _plugin = make_service(memeModel="anthropic/claude-haiku-5-5")
+    service, _plugin = make_service()
     mocker.patch.object(service, "_missing_key_error", return_value=None)
     return service
 

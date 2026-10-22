@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 from llm import assistant, statuspage
 from llm.plugin import LLM
 from llm.profile import PROFILE_CHAT, PROFILE_REMIND_ACTION
@@ -159,26 +158,15 @@ def incident(incident_id="inc1") -> statuspage.IncidentView:
 
 
 class TestToolWiringGate:
-    """service.py ~5259: status_fn must be wired when EITHER statusPageUrls
-    or statusQueryablePages is configured (the gate is polled OR queryable,
-    per TestQueryableOnlyGate) — with both empty, status awareness is fully
-    disabled, so the tool must not occupy a chat-surface slot at all."""
+    """status_fn must be wired when statusPageUrls is configured — with it
+    empty, status awareness is fully disabled, so the tool must not occupy a
+    chat-surface slot at all."""
 
-    def _run(
-        self,
-        mocker,
-        make_service,
-        *,
-        status_page_urls: list[str],
-        status_queryable_pages: list[str] | None = None,
-    ):
+    def _run(self, mocker, make_service, *, status_page_urls: list[str]):
         from llm.assistant import AssistantToolExecutor
         from llm.profile import PROFILE_CHAT
 
-        overrides: dict[str, list[str]] = {"statusPageUrls": status_page_urls}
-        if status_queryable_pages is not None:
-            overrides["statusQueryablePages"] = status_queryable_pages
-        service, plugin = make_service(**overrides)
+        service, plugin = make_service(statusPageUrls=status_page_urls)
         # Bind the real readers rather than stubbing them out: service.py's
         # gate must be exercised against the same registryValue fake the rest
         # of the request runs on, or a renamed/deleted registry key collapses
@@ -187,7 +175,6 @@ class TestToolWiringGate:
         plugin._status_sources = LLM._status_sources.__get__(plugin)
         plugin._status_named_pages = LLM._status_named_pages.__get__(plugin)
         plugin._STATUS_MAX_SOURCES = LLM._STATUS_MAX_SOURCES
-        plugin._STATUS_MAX_QUERYABLE = LLM._STATUS_MAX_QUERYABLE
         plugin._status_tool_payload = mocker.Mock(name="_status_tool_payload")
         mocker.patch(
             "llm.service.provider.chat",
@@ -226,12 +213,7 @@ class TestToolWiringGate:
         assert status_fn.keywords == {"pages": {"status.claude.com": "https://status.claude.com"}}
 
     def test_absent_when_status_page_url_is_empty(self, mocker, make_service):
-        """Neither key configured. statusQueryablePages is passed explicitly
-        (rather than relying on make_registry_side_effect's unconfigured-key
-        "" fallback) so the "neither" intent is legible here, not incidental."""
-        executor_spy, _plugin = self._run(
-            mocker, make_service, status_page_urls=[], status_queryable_pages=[]
-        )
+        executor_spy, _plugin = self._run(mocker, make_service, status_page_urls=[])
         kwargs = executor_spy.call_args.kwargs
         assert kwargs["status_fn"] is None
 
@@ -241,20 +223,10 @@ class TestToolSchemaGateOnConfig:
     slot when the feature is unconfigured — an offered tool that can only
     answer 'not configured' still costs prompt tokens on every completion."""
 
-    def _tool_names(
-        self,
-        mocker,
-        make_service,
-        *,
-        status_page_urls: list[str],
-        status_queryable_pages: list[str] | None = None,
-    ) -> set[str]:
+    def _tool_names(self, mocker, make_service, *, status_page_urls: list[str]) -> set[str]:
         from llm.profile import PROFILE_CHAT
 
-        overrides: dict[str, list[str]] = {"statusPageUrls": status_page_urls}
-        if status_queryable_pages is not None:
-            overrides["statusQueryablePages"] = status_queryable_pages
-        service, plugin = make_service(**overrides)
+        service, plugin = make_service(statusPageUrls=status_page_urls)
         # Bind the real readers rather than stubbing them out: service.py's
         # gate must be exercised against the same registryValue fake the rest
         # of the request runs on, or a renamed/deleted registry key collapses
@@ -263,7 +235,6 @@ class TestToolSchemaGateOnConfig:
         plugin._status_sources = LLM._status_sources.__get__(plugin)
         plugin._status_named_pages = LLM._status_named_pages.__get__(plugin)
         plugin._STATUS_MAX_SOURCES = LLM._STATUS_MAX_SOURCES
-        plugin._STATUS_MAX_QUERYABLE = LLM._STATUS_MAX_QUERYABLE
         plugin._status_tool_payload = mocker.Mock(name="_status_tool_payload")
         completion = mocker.patch(
             "llm.service.provider.chat",
@@ -284,12 +255,7 @@ class TestToolSchemaGateOnConfig:
         return {(t.get("function", t) or {}).get("name") for t in tools}
 
     def test_absent_from_tool_list_when_status_page_url_is_empty(self, mocker, make_service):
-        """Neither key configured, statusQueryablePages passed explicitly so
-        the "neither" intent is legible rather than incidental (see
-        TestToolWiringGate.test_absent_when_status_page_url_is_empty)."""
-        names = self._tool_names(
-            mocker, make_service, status_page_urls=[], status_queryable_pages=[]
-        )
+        names = self._tool_names(mocker, make_service, status_page_urls=[])
         assert "check_service_status" not in names
 
     def test_present_in_tool_list_when_status_page_url_is_set(self, mocker, make_service):
@@ -306,7 +272,6 @@ class TestServiceEnum:
 
         patched = _with_status_context(
             get_tools_for_profile("chat"),
-            ["https://status.claude.com"],
             {"Claude": "https://status.claude.com", "CF": "https://www.cloudflarestatus.com"},
         )
         fn = next(t["function"] for t in patched if t["function"]["name"] == "check_service_status")
@@ -339,7 +304,6 @@ class TestServiceEnum:
         for _ in range(3):
             _with_status_context(
                 get_tools_for_profile("chat"),
-                ["https://status.claude.com"],
                 {"Claude": "https://status.claude.com"},
             )
         assert props() == before
@@ -349,7 +313,7 @@ class TestServiceEnum:
         from llm.assistant import get_tools_for_profile
         from llm.service import _with_status_context
 
-        patched = _with_status_context(get_tools_for_profile("chat"), [], {})
+        patched = _with_status_context(get_tools_for_profile("chat"), {})
         fn = next(t["function"] for t in patched if t["function"]["name"] == "check_service_status")
         assert "service" not in fn["parameters"]["properties"]
 
@@ -364,66 +328,6 @@ class TestServiceEnum:
             if t["function"]["name"] == "check_service_status"
         )
         assert "service" in base_fn["parameters"]["properties"]
-
-
-class TestQueryableOnlyGate:
-    """The premise of the feature: polled and queryable are independent. The
-    shipped gate keys on the polled list alone, so an operator with an empty
-    statusPageUrls and a configured statusQueryablePages would get no tool at
-    all — defeating the exact separation this feature exists to provide."""
-
-    def test_tool_is_wired_with_no_polled_pages(self, mocker, make_service):
-        from llm.assistant import AssistantToolExecutor
-        from llm.profile import PROFILE_CHAT
-
-        service, plugin = make_service(
-            statusPageUrls=[], statusQueryablePages=["CF=https://www.cloudflarestatus.com"]
-        )
-        for attr in ("_STATUS_MAX_SOURCES", "_STATUS_MAX_QUERYABLE"):
-            setattr(plugin, attr, getattr(LLM, attr))
-        # Bind the REAL resolvers, not stubs: a prior review on this feature
-        # found that stubbing this exact seam made the gate structurally
-        # unable to detect a deleted registry key, which is how a broken
-        # commit reached production.
-        for meth in (
-            "_status_parse_pages",
-            "_status_polled_pages",
-            "_status_named_pages",
-            "_status_sources",
-            "_status_host",
-        ):
-            setattr(plugin, meth, getattr(LLM, meth).__get__(plugin))
-        plugin._status_tool_payload = mocker.Mock(name="_status_tool_payload")
-        executor_spy = mocker.patch(
-            "llm.assistant.AssistantToolExecutor", wraps=AssistantToolExecutor
-        )
-        completion = mocker.patch(
-            "llm.service.provider.chat",
-            return_value=make_completion_response("hi"),
-        )
-
-        service.assistant_completion(
-            prompt="hi",
-            nick="tester",
-            channel="#test",
-            db=mocker.MagicMock(),
-            context=mocker.MagicMock(),
-            bot_nick="VibeBot",
-            route_profile=PROFILE_CHAT,
-        )
-
-        assert executor_spy.call_args.kwargs["status_fn"] is not None
-        tools = completion.call_args.kwargs.get("tools") or []
-        names = {(t.get("function", t) or {}).get("name") for t in tools}
-        assert "check_service_status" in names
-        # Name-only is not enough: a regression that dropped the third
-        # argument to _with_status_context (e.g. passing {} instead of the
-        # resolved pages) would still wire status_fn and still ship the tool
-        # by name, but with `service` stripped — the model could never
-        # select the queryable page, and the feature would be dead with a
-        # green suite otherwise. Pin the shipped enum itself.
-        fn = next(t["function"] for t in tools if t["function"]["name"] == "check_service_status")
-        assert fn["parameters"]["properties"]["service"]["enum"] == ["CF"]
 
 
 class TestToolPayloadOwnership:
@@ -822,7 +726,8 @@ class TestDescriptionInjection:
 
         tools = get_tools_for_profile("chat")
         patched = _with_status_context(
-            tools, ["https://status.claude.com", "https://www.githubstatus.com"], {}
+            tools,
+            {"Claude": "https://status.claude.com", "GitHub": "https://www.githubstatus.com"},
         )
         desc = next(
             t["function"]["description"]
@@ -845,7 +750,9 @@ class TestDescriptionInjection:
             if t["function"]["name"] == "check_service_status"
         )
         for _ in range(3):
-            _with_status_context(get_tools_for_profile("chat"), ["https://status.claude.com"], {})
+            _with_status_context(
+                get_tools_for_profile("chat"), {"Claude": "https://status.claude.com"}
+            )
         after = next(
             t["function"]["description"]
             for t in get_tools_for_profile("chat")
@@ -858,168 +765,33 @@ class TestDescriptionInjection:
         from llm.service import _with_status_context
 
         tools = get_tools_for_profile("chat")
-        patched = _with_status_context(tools, ["https://status.claude.com"], {})
+        patched = _with_status_context(tools, {"Claude": "https://status.claude.com"})
         assert len(patched) == len(tools)
         names = {t["function"]["name"] for t in patched}
         assert names == {t["function"]["name"] for t in tools}
 
 
-class TestQueryCache:
-    def test_first_call_fetches_and_caches(self, status_plugin):
-        plugin = status_plugin
-        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
-        assert plugin._status_query_snapshot(CF) is not None
-        assert plugin._fetch_calls == 1
-        assert CF in plugin._status_query_cache
-
-    def test_second_call_inside_the_ttl_does_not_refetch(self, status_plugin):
-        plugin = status_plugin
-        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
-        plugin._status_query_snapshot(CF)
-        plugin._now += plugin._STATUS_QUERY_TTL - 1
-        plugin._status_query_snapshot(CF)
-        assert plugin._fetch_calls == 1
-
-    def test_past_the_ttl_refetches(self, status_plugin):
-        plugin = status_plugin
-        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
-        plugin._status_query_snapshot(CF)
-        plugin._now += plugin._STATUS_QUERY_TTL + 1
-        plugin._status_query_snapshot(CF)
-        assert plugin._fetch_calls == 2
-
-    def test_failure_is_backed_off(self, status_plugin):
-        plugin = status_plugin
-        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
-        plugin._fake_error = statuspage.FetchError("down")
-        assert plugin._status_query_snapshot(CF) is None
-        plugin._now += 1
-        assert plugin._status_query_snapshot(CF) is None
-        assert plugin._fetch_calls == 1, "backoff did not hold"
-
-    def test_a_full_cycle_of_the_cap_does_not_thrash(self, status_plugin):
-        """A cache smaller than the allowlist evicts every entry before it is
-        reused, so every request fetches despite the TTL.
-
-        Sized from _STATUS_MAX_QUERYABLE, not _STATUS_QUERY_CACHE_MAX: the
-        failure mode this guards is cache bound < allowlist cap, and a loop
-        sized from the cache's own bound can never see that gap even if the
-        two constants drift apart.
-        """
-        plugin = status_plugin
-        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
-        pages = [f"https://status{i}.example.com" for i in range(plugin._STATUS_MAX_QUERYABLE)]
-        for p in pages:
-            plugin._status_query_snapshot(p)
-        first_pass = plugin._fetch_calls
-        assert first_pass == len(pages), "first pass should be one fetch per page"
-        for p in pages:
-            plugin._status_query_snapshot(p)
-        assert plugin._fetch_calls == first_pass, "second pass should be all cache hits"
-
-    def test_cache_evicts_the_oldest_past_capacity(self, status_plugin):
-        plugin = status_plugin
-        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
-        for i in range(plugin._STATUS_QUERY_CACHE_MAX + 1):
-            plugin._now += 1
-            plugin._status_query_snapshot(f"https://status{i}.example.com")
-        assert len(plugin._status_query_cache) == plugin._STATUS_QUERY_CACHE_MAX
-        assert "https://status0.example.com" not in plugin._status_query_cache
-
-    def test_conditional_get_uses_the_query_cache_validators(self, status_plugin, mocker):
-        """_status_fetch_snapshot reads ETag from _status_read_cache, which a
-        queryable page never populates — so without an explicit cached= the
-        refresh is an unconditional full GET."""
-        plugin = status_plugin
-        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
-        plugin._status_fetch_snapshot = LLM._status_fetch_snapshot.__get__(plugin)
-        fetch = mocker.patch(
-            "llm.plugin.statuspage.fetch_summary",
-            return_value=statuspage.FetchResult(
-                payload={
-                    "page": {"name": "CF", "url": CF},
-                    "status": {"indicator": "none", "description": "ok"},
-                    "components": [],
-                    "incidents": [],
-                    "scheduled_maintenances": [],
-                },
-                etag='W/"abc"',
-                modified="Wed, 21 Oct 2015 07:28:00 GMT",
-                not_modified=False,
-            ),
-        )
-        plugin._status_query_snapshot(CF)
-        plugin._now += plugin._STATUS_QUERY_TTL + 1
-        plugin._status_query_snapshot(CF)
-        assert fetch.call_args.kwargs["etag"] == 'W/"abc"'
-        assert fetch.call_args.kwargs["modified"] == "Wed, 21 Oct 2015 07:28:00 GMT"
-
-    def test_does_not_touch_status_state_or_read_cache(self, status_plugin):
-        """The headline invariant: a queryable page must never acquire
-        lifecycle state. Snapshotting with dict(...) rather than comparing to
-        {} mirrors test_status_history_payload's sibling guard at :420 — a
-        per-source rewrite replaces a value at an existing key, which an
-        == {} check on an empty starting dict cannot distinguish from doing
-        nothing."""
-        plugin = status_plugin
-        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
-        plugin._status_state = {CLAUDE: object()}
-        plugin._status_read_cache = {CLAUDE: object()}
-        before_state = dict(plugin._status_state)
-        before_read_cache = dict(plugin._status_read_cache)
-
-        plugin._status_query_snapshot(CF)
-
-        assert plugin._status_state == before_state
-        assert plugin._status_read_cache == before_read_cache
-
-    def test_deadline_already_spent_returns_cached_without_fetching(self, status_plugin):
-        plugin = status_plugin
-        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
-        first = plugin._status_query_snapshot(CF)
-        assert plugin._fetch_calls == 1
-        plugin._now += plugin._STATUS_QUERY_TTL + 1  # past TTL: would refetch but for the deadline
-        spent_deadline = plugin._status_monotonic() + plugin._STATUS_MIN_FETCH_WINDOW - 0.1
-        result = plugin._status_query_snapshot(CF, deadline=spent_deadline)
-        assert result is first
-        assert plugin._fetch_calls == 1, "a spent deadline must not trigger a fetch"
-
-    def test_live_deadline_reaches_the_fetch_as_timeout_cap(self, status_plugin, mocker):
-        plugin = status_plugin
-        plugin._status_query_snapshot = LLM._status_query_snapshot.__get__(plugin)
-        snap = statuspage.Snapshot(
-            page_name="CF",
-            page_url=CF,
-            indicator="none",
-            description="ok",
-            components={},
-            incidents={},
-            fetched_at=plugin._now,
-        )
-        fetch = mocker.Mock(return_value=snap)
-        plugin._status_fetch_snapshot = fetch
-        plugin._mono = 100.0
-        deadline = 130.0
-
-        plugin._status_query_snapshot(CF, deadline=deadline)
-
-        assert fetch.call_args.kwargs["timeout_cap"] == pytest.approx(30.0)
-
-
 class TestServiceSelection:
     def _plugin(self, status_plugin):
         p = status_plugin
-        p._registry["statusPageUrls"] = ["Claude=https://status.claude.com"]
-        p._registry["statusQueryablePages"] = ["CF=https://www.cloudflarestatus.com"]
+        p._registry["statusPageUrls"] = [
+            "Claude=https://status.claude.com",
+            "CF=https://www.cloudflarestatus.com",
+        ]
         p._status_tool_payload = LLM._status_tool_payload.__get__(p)
-        p._status_query_snapshot = LLM._status_query_snapshot.__get__(p)
         return p
 
     def test_omitted_service_returns_every_polled_source(self, status_plugin):
         plugin = self._plugin(status_plugin)
-        plugin._status_read_cache = {"https://status.claude.com": green_snapshot(plugin._now)}
+        plugin._status_read_cache = {
+            "https://status.claude.com": green_snapshot(plugin._now),
+            "https://www.cloudflarestatus.com": green_snapshot(plugin._now),
+        }
         payload = plugin._status_tool_payload()
-        assert [e["source"] for e in payload["services"]] == ["status.claude.com"]
+        assert [e["source"] for e in payload["services"]] == [
+            "status.claude.com",
+            "www.cloudflarestatus.com",
+        ]
 
     def test_named_polled_page_returns_only_that_one(self, status_plugin):
         plugin = self._plugin(status_plugin)
@@ -1028,23 +800,12 @@ class TestServiceSelection:
         assert len(payload["services"]) == 1
         assert payload["services"][0]["source"] == "status.claude.com"
 
-    def test_named_polled_page_is_read_from_the_poller_cache_not_queried(self, status_plugin):
-        """A polled source with a fresh read cache must be answered from that
-        cache — not routed through the query path, which would fetch (the
-        query cache starts empty) and would leave a stray entry in the query
-        dicts a polled page must never touch."""
+    def test_named_polled_page_is_read_from_the_poller_cache(self, status_plugin):
+        """A source with a fresh read cache is answered from that cache."""
         plugin = self._plugin(status_plugin)
         plugin._status_read_cache = {"https://status.claude.com": green_snapshot(plugin._now)}
         plugin._status_tool_payload(service="Claude")
         assert plugin._fetch_calls == 0, "a fresh polled cache must not be fetched"
-        assert plugin._status_query_cache == {}, "a polled source must not populate the query cache"
-
-    def test_named_queryable_page_fetches_lazily(self, status_plugin):
-        plugin = self._plugin(status_plugin)
-        payload = plugin._status_tool_payload(service="CF")
-        assert [e["source"] for e in payload["services"]] == ["www.cloudflarestatus.com"]
-        assert plugin._fetch_calls == 1
-        assert plugin._status_state == {}, "a queryable page must not gain lifecycle state"
 
     def test_unresolvable_service_errors_but_still_returns_polled_data(self, status_plugin):
         """service.py records any dict without "error" as a SUCCESSFUL tool
@@ -1062,15 +823,15 @@ class TestServiceSelection:
         mid-completion must not reroute an already-issued call."""
         plugin = self._plugin(status_plugin)
         frozen = {"CF": "https://www.cloudflarestatus.com"}
-        plugin._registry["statusQueryablePages"] = ["CF=https://other.example.com"]
+        plugin._registry["statusPageUrls"] = ["CF=https://other.example.com"]
         payload = plugin._status_tool_payload(service="CF", pages=frozen)
         assert payload["services"][0]["source"] == "www.cloudflarestatus.com"
 
-    def test_named_queryable_page_fetch_failure_sets_top_level_error(self, status_plugin):
+    def test_named_page_fetch_failure_sets_top_level_error(self, status_plugin):
         """service.py records any dict without "error" as a SUCCESSFUL tool
-        call, so the one branch that stops the model narrating a dead
-        queryable page as answered needs its own guard, not just the
-        unresolvable-name branch's."""
+        call, so the single-page branch that stops the model narrating a dead
+        page as answered needs its own guard, not just the unresolvable-name
+        branch's."""
         plugin = self._plugin(status_plugin)
         plugin._fake_error = statuspage.FetchError("boom")
         payload = plugin._status_tool_payload(service="CF")
@@ -1097,6 +858,8 @@ class TestServiceSelection:
         overwrite — overwriting would claim "the services listed are the
         ones that are", which is false: none of them are. [Finding 3]"""
         plugin = self._plugin(status_plugin)
+        # One page: the fake's error is one-shot, so it can fail only one.
+        plugin._registry["statusPageUrls"] = ["Claude=https://status.claude.com"]
         plugin._fake_error = statuspage.FetchError("boom")
         payload = plugin._status_tool_payload(service="Nope")
         assert "Nope" in payload["error"]
@@ -1106,8 +869,7 @@ class TestServiceSelection:
         assert "services listed are the ones that are" not in payload["error"]
 
     def test_unresolvable_service_with_no_polled_sources_does_not_claim_a_list(self, status_plugin):
-        """statusPageUrls empty + only statusQueryablePages configured is
-        reachable from Task 4 on (it gates the tool on polled OR queryable).
+        """statusPageUrls emptied between the schema build and the dispatch.
         The aggregate recursion then returns no "services" key at all, so the
         "the services listed are the ones that are" phrasing must not be
         glued on beside a list that doesn't exist."""

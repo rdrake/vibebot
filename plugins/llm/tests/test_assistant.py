@@ -2539,7 +2539,7 @@ class TestReminderMetaHelpers:
 
         plugin_init_patches(mocker)
         plugin = LLM(mock_irc)
-        plugin.registryValue = mocker.Mock(side_effect=make_registry_side_effect({}))
+        plugin.registryValue = mocker.Mock(side_effect=make_registry_side_effect())
         plugin.llm_service = mocker.MagicMock()
         plugin.llm_service.sanitize_output.side_effect = lambda s: s
         plugin.db.get_user_timezone.return_value = None
@@ -2926,7 +2926,7 @@ class TestInvalidCommandRouting:
     def plugin(self, mocker: MockerFixture, mock_irc: MagicMock):  # type: ignore[no-untyped-def]
         plugin_init_patches(mocker)
         plugin = LLM(mock_irc)
-        plugin.registryValue = mocker.Mock(side_effect=make_registry_side_effect({}))
+        plugin.registryValue = mocker.Mock(side_effect=make_registry_side_effect())
         plugin.llm_service = mocker.MagicMock()
         plugin.db = mocker.MagicMock()
         return plugin

@@ -1877,7 +1877,6 @@ class TestReminderActionDelivery:
             side_effect=lambda key, *a: {
                 "askRateLimitCount": 1,
                 "askRateLimitWindow": 60,
-                "enforceRateLimits": True,
             }.get(key, "")
         )
         now = 1000.0
@@ -1899,37 +1898,6 @@ class TestReminderActionDelivery:
         assert len(plugin._rate_buckets["ask:alice"]) == 2
         plugin.db.log_usage.assert_not_called()
         assert "rate_limited" in plugin.log.info.call_args.args[0]
-
-    def test_check_rate_limit_silent_shadow_mode(
-        self, plugin: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """GIVEN over-limit and enforce=false WHEN _check_rate_limit silent THEN logs shadow and allows."""
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=lambda key, *a: {
-                "askRateLimitCount": 1,
-                "askRateLimitWindow": 60,
-                "enforceRateLimits": False,
-            }.get(key, "")
-        )
-        now = 1000.0
-        plugin._record_rate_limit_hit("ask", "alice", now - 1)
-
-        blocked = plugin._check_rate_limit(
-            None,
-            "ask",
-            "alice",
-            "",
-            "",
-            "",
-            tier="registered",
-            silent=True,
-            now=now,
-        )
-
-        assert blocked is False
-        assert len(plugin._rate_buckets["ask:alice"]) == 2
-        plugin.db.log_usage.assert_not_called()
-        assert "rate_limit_shadow" in plugin.log.info.call_args.args[0]
 
 
 class TestRoutingGateAndMechanicalReschedule:

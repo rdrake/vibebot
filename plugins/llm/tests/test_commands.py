@@ -497,7 +497,7 @@ class TestSendLongReplyMultiline:
     """Short overflows go out as one draft/multiline batch instead of a paste.
 
     Only when the cap is negotiated and the reply wraps to at most
-    ``multilineMaxLines`` wire-lines; anything longer still pastebins.
+    ``_MULTILINE_MAX_LINES`` wire-lines; anything longer still pastebins.
     """
 
     @pytest.fixture
@@ -574,15 +574,6 @@ class TestSendLongReplyMultiline:
         mock_irc.reply.assert_called_once_with(
             "Teaser. - Full answer: https://e.co/x.html", prefixNick=False
         )
-
-    def test_cap_zero_disables(self, env):
-        plugin, mock_irc, mock_msg = env
-        plugin.registryValue = make_registry_side_effect({"multilineMaxLines": 0})
-
-        plugin._send_long_reply(mock_irc, mock_msg, "one\ntwo")
-
-        mock_irc.queueBatch.assert_not_called()
-        plugin.llm_service.save_markdown_to_http.assert_called_once()
 
     def test_not_negotiated_pastebins(self, env):
         plugin, mock_irc, mock_msg = env
@@ -736,31 +727,6 @@ class TestDrawCommand:
         assert assistant_kwargs["history"] == [{"role": "user", "content": "hi"}]
         assert assistant_kwargs["memories"] == []
 
-    def test_draw_skips_context_when_max_age_zero(self, plugin_env, mocker: MockerFixture):
-        """@draw with drawContextMaxAgeSeconds=0 skips context entirely."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = self._make_draw_result()
-
-        original = plugin.registryValue.side_effect
-
-        def registry(key: str, *args: object) -> object:
-            if key == "drawContextMaxAgeSeconds":
-                return 0
-            return original(key, *args)
-
-        plugin.registryValue = mocker.MagicMock(side_effect=registry)
-        plugin.context = mocker.MagicMock()
-
-        plugin.draw(mock_irc, mock_msg, ["a", "sunset"])
-
-        plugin.context.get_messages.assert_not_called()
-        plugin.context.get_channel_messages.assert_not_called()
-        kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
-        assert kwargs["history"] == []
-        assert kwargs["channel_history"] == []
-
     def test_draw_logs_usage(self, plugin_env, mocker: MockerFixture):
         """GIVEN draw with cost WHEN draw completes THEN usage is logged."""
         plugin, mock_irc, mock_msg = plugin_env
@@ -897,22 +863,6 @@ class TestDrawCommand:
         )
 
         plugin.draw(mock_irc, mock_msg, ["bad", "prompt"])
-
-        messages = plugin.context.get_messages("test_account", "#test")
-        assert len(messages) == 0
-
-    def test_draw_skips_context_when_disabled(self, plugin_env, mocker: MockerFixture):
-        """GIVEN context disabled WHEN draw succeeds THEN no context stored."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = self._make_draw_result()
-
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=make_registry_side_effect({"contextEnabled": False})
-        )
-
-        plugin.draw(mock_irc, mock_msg, ["sunset"])
 
         messages = plugin.context.get_messages("test_account", "#test")
         assert len(messages) == 0
@@ -2490,7 +2440,6 @@ class TestAccountBasedIdentity:
         plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect(
                 {
-                    "enforceRateLimits": True,
                     "askUnregRateLimitCount": 2,
                     "askUnregRateLimitWindow": 60,
                 }
@@ -2631,7 +2580,6 @@ class TestRateLimitIntegration:
         # Override to enforce rate limits with low threshold
         plugin.registryValue = mocker.MagicMock(
             side_effect=lambda key, *a: {
-                "enforceRateLimits": True,
                 "drawRateLimitCount": 2,
                 "drawRateLimitWindow": 60,
             }.get(key, "")
@@ -2648,38 +2596,6 @@ class TestRateLimitIntegration:
         assert "Rate limit" in mock_irc.error.call_args[0][0]
         plugin.llm_service.assistant_completion.assert_not_called()
 
-    def test_draw_over_threshold_logs_shadow_when_not_enforced(
-        self, plugin_env, mocker: MockerFixture
-    ):
-        """GIVEN enforce=False and over limit WHEN draw called THEN request runs and shadow log is emitted."""
-        plugin, mock_irc, mock_msg = plugin_env
-        mock_irc.state.nickToAccount.return_value = "test_account"
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = AssistantResult(
-            content="Here is your image: http://img.example/gen.png",
-            grounding_used=False,
-            spend=Spend(prompt_tokens=5, completion_tokens=0, cost=0.02),
-            model="dall-e-3",
-        )
-
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=lambda key, *a: {
-                "enforceRateLimits": False,
-                "drawRateLimitCount": 1,
-                "drawRateLimitWindow": 60,
-                "drawContextMaxAgeSeconds": 0,
-            }.get(key, "")
-        )
-        plugin._record_rate_limit_hit("draw", "test_account", time.time() - 2)
-
-        plugin.draw(mock_irc, mock_msg, ["test prompt"])
-
-        mock_irc.error.assert_not_called()
-        plugin.llm_service.assistant_completion.assert_called_once()
-        assert any(
-            "rate_limit_shadow" in c.args[0] for c in plugin.log.info.call_args_list if c.args
-        )
-
     def test_owner_exempt_from_rate_limits(self, plugin_env, mocker: MockerFixture):
         """GIVEN owner user over limit WHEN draw called THEN not blocked."""
         plugin, mock_irc, mock_msg = plugin_env
@@ -2695,7 +2611,6 @@ class TestRateLimitIntegration:
         plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect(
                 {
-                    "enforceRateLimits": True,
                     "drawRateLimitCount": 1,
                     "drawRateLimitWindow": 60,
                 }
@@ -2731,7 +2646,6 @@ class TestRateLimitIntegration:
         plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect(
                 {
-                    "enforceRateLimits": True,
                     "drawRateLimitCount": 2,  # registered: 2
                     "drawRateLimitWindow": 60,
                     "drawTrustedRateLimitCount": 10,  # trusted: 10
@@ -2761,7 +2675,6 @@ class TestRateLimitIntegration:
         plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect(
                 {
-                    "enforceRateLimits": True,
                     "askUnregRateLimitCount": 2,
                     "askUnregRateLimitWindow": 60,
                 }
@@ -2798,7 +2711,6 @@ class TestRateLimitIntegration:
         plugin.registryValue = mocker.MagicMock(
             side_effect=make_registry_side_effect(
                 {
-                    "enforceRateLimits": True,
                     "askTrustedRateLimitCount": 0,  # 0 = disabled
                     "askTrustedRateLimitWindow": 60,
                 }
@@ -3089,8 +3001,6 @@ class TestVerseStorybook:
         def side_effect(key, *args):
             if key == "verseStorybookEnabled":
                 return enabled
-            if key == "verseStorybookMaxPerTurn":
-                return 1
             if key == "verseStorybookCooldownSeconds":
                 return 300
             return base(key, *args)
@@ -3288,7 +3198,6 @@ class TestVerseStorybook:
             {
                 "verseEnabled": True,
                 "verseChatRecordEnabled": True,
-                "verseAutoEntityMaxNamesPerCall": 8,
             }
         )
         plugin.registryValue = mocker.MagicMock(side_effect=base)
@@ -3341,7 +3250,7 @@ class TestVerseStorybook:
 
     def test_roleplay_sticky_on_off(self, plugin_env, mocker):
         plugin, _i, _m = plugin_env
-        base = make_registry_side_effect({"verseRoleplayStickyTtlSeconds": 900})
+        base = make_registry_side_effect()
         plugin.registryValue = mocker.MagicMock(side_effect=base)
         pf = PreflightResult(False, Caller(Identity("alice", None), "#test"))
         assert plugin._roleplay_sticky_active(pf) is False
@@ -3354,7 +3263,7 @@ class TestVerseStorybook:
         import time as _t
 
         plugin, _i, _m = plugin_env
-        base = make_registry_side_effect({"verseRoleplayStickyTtlSeconds": 900})
+        base = make_registry_side_effect()
         plugin.registryValue = mocker.MagicMock(side_effect=base)
         pf = PreflightResult(False, Caller(Identity("alice", None), "#test"))
         plugin._roleplay_sticky_set(pf, True)
@@ -3362,21 +3271,10 @@ class TestVerseStorybook:
         assert plugin._roleplay_sticky_active(pf) is False
         assert ("#test", "!alice") not in plugin._roleplay_sticky
 
-    def test_roleplay_sticky_never_expires_when_ttl_zero(self, plugin_env, mocker):
-        import math
-
-        plugin, _i, _m = plugin_env
-        base = make_registry_side_effect({"verseRoleplayStickyTtlSeconds": 0})
-        plugin.registryValue = mocker.MagicMock(side_effect=base)
-        pf = PreflightResult(False, Caller(Identity("alice", None), "#test"))
-        plugin._roleplay_sticky_set(pf, True)
-        assert plugin._roleplay_sticky[("#test", "!alice")] == math.inf
-        assert plugin._roleplay_sticky_active(pf) is True
-
     def test_roleplay_sticky_keyed_by_account_over_nick(self, plugin_env, mocker):
         """Account identity wins so a nick change doesn't drop the session."""
         plugin, _i, _m = plugin_env
-        base = make_registry_side_effect({"verseRoleplayStickyTtlSeconds": 900})
+        base = make_registry_side_effect()
         plugin.registryValue = mocker.MagicMock(side_effect=base)
         pf_on = PreflightResult(False, Caller(Identity("alice", "acct1"), "#test"))
         plugin._roleplay_sticky_set(pf_on, True)
@@ -3387,9 +3285,7 @@ class TestVerseStorybook:
         """Sticky roleplay promotes ambient (nick-addressed) turns to roleplay,
         but leaves explicit @ask untouched."""
         plugin, mock_irc, mock_msg = plugin_env
-        base = make_registry_side_effect(
-            {"verseEnabled": True, "verseRoleplayStickyTtlSeconds": 900}
-        )
+        base = make_registry_side_effect({"verseEnabled": True})
         plugin.registryValue = mocker.MagicMock(side_effect=base)
         rf = mocker.patch.object(plugin, "_verse_route_for", return_value=None)
         mocker.patch.object(plugin, "_verse_context_for", return_value=None)

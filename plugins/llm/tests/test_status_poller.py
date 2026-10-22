@@ -261,7 +261,7 @@ CF = "https://www.cloudflarestatus.com"
 
 class TestPerSourceState:
     def test_pruning_clears_every_keyed_structure(self, status_plugin):
-        """Pruning only _status_state would leave the other seven growing without
+        """Pruning only _status_state would leave the other five growing without
         bound — the 5-source cap bounds the configured set, not the historical
         one."""
         plugin = status_plugin
@@ -271,8 +271,6 @@ class TestPerSourceState:
         plugin._status_history_cache = {GITHUB: ()}
         plugin._status_history_at = {GITHUB: 1000.0}
         plugin._status_history_failed_at = {GITHUB: 1000.0}
-        plugin._status_query_cache = {GITHUB: green_snapshot(1000.0)}
-        plugin._status_query_failed_at = {GITHUB: 1000.0}
 
         plugin._status_prune_sources([CLAUDE])
 
@@ -283,8 +281,6 @@ class TestPerSourceState:
             "_status_history_cache",
             "_status_history_at",
             "_status_history_failed_at",
-            "_status_query_cache",
-            "_status_query_failed_at",
         ):
             assert getattr(plugin, name) == {}, f"{name} still holds the removed source"
 
@@ -554,8 +550,8 @@ class TestGlobalLineBudget:
 
 
 class TestPageGrammar:
-    """One grammar for both keys. A bare URL stays valid and takes its host as
-    its name, which is what statusPageUrls entries did before names existed."""
+    """A bare URL stays valid and takes its host as its name, which is what
+    statusPageUrls entries did before names existed."""
 
     def test_named_and_bare_entries_both_parse(self, status_plugin):
         plugin = status_plugin
@@ -563,7 +559,6 @@ class TestPageGrammar:
             "Claude=https://status.claude.com",
             "https://www.githubstatus.com",
         ]
-        plugin._registry["statusQueryablePages"] = []
         assert plugin._status_named_pages() == {
             "Claude": "https://status.claude.com",
             "www.githubstatus.com": "https://www.githubstatus.com",
@@ -584,7 +579,6 @@ class TestPageGrammar:
     def test_unusable_entries_are_dropped_not_fatal(self, status_plugin, entry):
         plugin = status_plugin
         plugin._registry["statusPageUrls"] = [entry, "Good=https://status.claude.com"]
-        plugin._registry["statusQueryablePages"] = []
         assert plugin._status_named_pages() == {"Good": "https://status.claude.com"}
 
     def test_duplicate_name_keeps_the_first(self, status_plugin):
@@ -593,52 +587,17 @@ class TestPageGrammar:
             "Dup=https://status.claude.com",
             "dup=https://www.githubstatus.com",
         ]
-        plugin._registry["statusQueryablePages"] = []
         assert plugin._status_named_pages() == {"Dup": "https://status.claude.com"}
 
     def test_two_names_one_canonical_source_drops_the_later(self, status_plugin):
         """A silent skip would show the operator a valid-looking entry in
         @config that never appears in the enum."""
         plugin = status_plugin
-        plugin._registry["statusPageUrls"] = ["Foo=https://status.claude.com"]
-        plugin._registry["statusQueryablePages"] = ["Bar=https://status.claude.com/"]
-        assert plugin._status_named_pages() == {"Foo": "https://status.claude.com"}
-
-    def test_queryable_name_case_collision_with_polled_is_dropped_not_duplicated(
-        self, status_plugin
-    ):
-        """A queryable entry may share a polled entry's NAME (case-insensitively)
-        while pointing at a different canonical source — this is not the
-        same-source collision `test_two_names_one_canonical_source_drops_the_later`
-        covers. Without the `name.lower() in lowered` guard, the source-only
-        check passes (the sources differ) and the queryable entry is added
-        under its own-case key, producing two case-variant enum entries
-        ("Claude" and "claude") that name two different services — exactly
-        the shadowing the enum's uniqueness depends on not allowing."""
-        plugin = status_plugin
-        plugin._registry["statusPageUrls"] = ["Claude=https://status.claude.com"]
-        plugin._registry["statusQueryablePages"] = ["claude=https://www.cloudflarestatus.com"]
-        assert plugin._status_named_pages() == {"Claude": "https://status.claude.com"}
-
-    def test_polled_entries_come_first_and_win_a_collision(self, status_plugin):
-        plugin = status_plugin
-        plugin._registry["statusPageUrls"] = ["X=https://status.claude.com"]
-        plugin._registry["statusQueryablePages"] = ["Y=https://www.cloudflarestatus.com"]
-        assert list(plugin._status_named_pages()) == ["X", "Y"]
-
-    def test_queryable_is_capped(self, status_plugin):
-        plugin = status_plugin
-        plugin._registry["statusPageUrls"] = []
-        plugin._registry["statusQueryablePages"] = [
-            f"N{i}=https://status{i}.example.com" for i in range(25)
+        plugin._registry["statusPageUrls"] = [
+            "Foo=https://status.claude.com",
+            "Bar=https://status.claude.com/",
         ]
-        assert len(plugin._status_named_pages()) == plugin._STATUS_MAX_QUERYABLE
-
-    def test_sources_returns_polled_urls_only(self, status_plugin):
-        plugin = status_plugin
-        plugin._registry["statusPageUrls"] = ["Claude=https://status.claude.com"]
-        plugin._registry["statusQueryablePages"] = ["CF=https://www.cloudflarestatus.com"]
-        assert plugin._status_sources() == ["https://status.claude.com"]
+        assert plugin._status_named_pages() == {"Foo": "https://status.claude.com"}
 
     def test_long_bare_host_is_still_polled(self, status_plugin):
         """A bare URL's derived name used to be checked against
@@ -649,7 +608,6 @@ class TestPageGrammar:
         long_host_url = "https://status.us-gov-west-1.amazonaws.com"
         assert len(plugin._status_host(long_host_url)) > 32, "fixture must exercise the >32 case"
         plugin._registry["statusPageUrls"] = [long_host_url]
-        plugin._registry["statusQueryablePages"] = []
         named = plugin._status_named_pages()
         assert list(named.values()) == [long_host_url], (
             "the long-host bare URL must still be polled"
@@ -662,7 +620,6 @@ class TestPageGrammar:
         [Finding 1]"""
         plugin = status_plugin
         plugin._registry["statusPageUrls"] = ["https://x.example", "https://x.example:8443"]
-        plugin._registry["statusQueryablePages"] = []
         named = plugin._status_named_pages()
         assert len(named) == 2, "both ports must survive as distinct pages"
         assert len(set(named)) == 2, "the derived names must be distinct"
@@ -675,12 +632,14 @@ class TestEnumIsConfigOnly:
     rejected specifically for deriving the enum from a snapshot's page_name
     — a compromised or renamed page could otherwise capture another page's
     selector. Nothing pinned this before; a regression seeding names from
-    the read/query caches turned no test red. [Finding 2]"""
+    the read cache turned no test red. [Finding 2]"""
 
     def test_named_pages_ignores_fetched_page_name_even_after_a_poll(self, status_plugin):
         plugin = status_plugin
-        plugin._registry["statusPageUrls"] = ["Claude=https://status.claude.com"]
-        plugin._registry["statusQueryablePages"] = ["CF=https://www.cloudflarestatus.com"]
+        plugin._registry["statusPageUrls"] = [
+            "Claude=https://status.claude.com",
+            "CF=https://www.cloudflarestatus.com",
+        ]
 
         before = plugin._status_named_pages()
         assert before == {"Claude": CLAUDE, "CF": CF}
@@ -702,7 +661,6 @@ class TestEnumIsConfigOnly:
             fetched_at=plugin._now,
         )
         plugin._fake_snapshot = spoofed
-        plugin._status_query_cache = {CF: spoofed}
 
         plugin._run_status_poll()
 
@@ -715,38 +673,3 @@ class TestEnumIsConfigOnly:
             "a fetched page_name must never capture another page's configured selector"
         )
         assert list(after) == list(before), "poll-driven cache fills must not reorder the enum"
-
-
-class TestPruneKeepsQueryableHistory:
-    """The subtlest interaction in this feature. Pruning history against the
-    polled set alone deletes an allowlisted page's history — up to 4 MB, cached
-    for an hour — on the very next poll, 120 seconds after it was fetched,
-    along with its failure backoff. Every history question would refetch 4 MB."""
-
-    def test_queryable_history_survives_a_poll(self, status_plugin):
-        plugin = status_plugin
-        plugin._registry["statusPageUrls"] = ["Claude=https://status.claude.com"]
-        plugin._registry["statusQueryablePages"] = ["CF=https://www.cloudflarestatus.com"]
-        plugin._status_history_cache = {CF: ()}
-        plugin._status_history_at = {CF: plugin._now}
-        plugin._status_history_failed_at = {CF: plugin._now}
-
-        plugin._run_status_poll()
-
-        assert CF in plugin._status_history_cache, "queryable history was pruned by the poll"
-        assert CF in plugin._status_history_at
-        assert CF in plugin._status_history_failed_at
-
-    def test_lifecycle_state_is_still_pruned_against_polled_only(self, status_plugin):
-        """The other half: a queryable page must never keep lifecycle state,
-        or a question could consume an announcement it has no right to."""
-        plugin = status_plugin
-        plugin._registry["statusPageUrls"] = ["Claude=https://status.claude.com"]
-        plugin._registry["statusQueryablePages"] = ["CF=https://www.cloudflarestatus.com"]
-        plugin._status_state = {CF: statuspage.StatusState(seeded=True)}
-        plugin._status_read_cache = {CF: green_snapshot(plugin._now)}
-
-        plugin._run_status_poll()
-
-        assert CF not in plugin._status_state
-        assert CF not in plugin._status_read_cache

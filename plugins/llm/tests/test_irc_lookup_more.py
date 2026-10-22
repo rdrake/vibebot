@@ -24,7 +24,7 @@ def numeric(command: str, *args: str) -> ircmsgs.IrcMsg:
 def env(plugin_env):
     plugin, irc, msg = plugin_env
     irc.network = "afternet"
-    plugin.registryValue.side_effect = make_registry_side_effect({"ircLookupEnabled": True})
+    plugin.registryValue.side_effect = make_registry_side_effect()
     return plugin, irc, msg
 
 
@@ -224,9 +224,7 @@ class TestCtcp:
 @pytest.fixture
 def history_env(env):
     plugin, irc, msg = env
-    plugin.registryValue.side_effect = make_registry_side_effect(
-        {"ircLookupEnabled": True, "privacyOptInOnly": False}
-    )
+    plugin.registryValue.side_effect = make_registry_side_effect({"privacyOptInOnly": False})
     return plugin, irc, msg
 
 

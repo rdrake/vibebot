@@ -23,6 +23,11 @@ class Role:
     SYSTEM = "system"
 
 
+# Messages kept per conversation, and in a channel's shared context.
+CONTEXT_MAX_MESSAGES = 20
+CHANNEL_CONTEXT_MAX_MESSAGES = 10
+
+
 @dataclass
 class ContextConfig:
     """Configuration for conversation context.
@@ -31,10 +36,9 @@ class ContextConfig:
     and as per-channel overrides passed to individual operations.
     """
 
-    max_messages: int  # Maximum messages to keep per conversation
     timeout_minutes: int  # Clear context after this many minutes of inactivity
-    enabled: bool = True  # Whether context is enabled
-    channel_max_messages: int = 10  # Maximum messages in shared channel context
+    max_messages: int = CONTEXT_MAX_MESSAGES  # Maximum messages to keep per conversation
+    channel_max_messages: int = CHANNEL_CONTEXT_MAX_MESSAGES  # Maximum in shared channel context
 
 
 @dataclass
@@ -127,7 +131,7 @@ class ConversationContext:
         """Return string representation for debugging."""
         return (
             f"ConversationContext(conversations={len(self._conversations)}, "
-            f"channels={len(self._channel_contexts)}, enabled={self.config.enabled})"
+            f"channels={len(self._channel_contexts)})"
         )
 
     def _get_key(self, nick: str, channel: str) -> tuple[str, str]:
@@ -151,13 +155,11 @@ class ConversationContext:
 
         Args:
             conversation: Conversation to check
-            cfg: Configuration to use for timeout/enabled checks
+            cfg: Configuration to use for the timeout check
 
         Returns:
             True if expired
         """
-        if not cfg.enabled:
-            return True
         timeout_seconds = cfg.timeout_minutes * 60
         return time.time() - conversation.last_activity > timeout_seconds
 
@@ -222,9 +224,6 @@ class ConversationContext:
         """
         with self._lock:
             cfg = self._effective(config)
-            if not cfg.enabled:
-                return
-
             self._prune_expired(cfg)
 
             key = self._get_key(nick, channel)
@@ -268,9 +267,6 @@ class ConversationContext:
         """
         with self._lock:
             cfg = self._effective(config)
-            if not cfg.enabled:
-                return []
-
             self._prune_expired(cfg)
 
             key = self._get_key(nick, channel)
@@ -308,9 +304,6 @@ class ConversationContext:
         """
         with self._lock:
             cfg = self._effective(config)
-            if not cfg.enabled:
-                return
-
             self._prune_expired(cfg)
 
             ch_key = channel.lower()
@@ -348,9 +341,6 @@ class ConversationContext:
         """
         with self._lock:
             cfg = self._effective(config)
-            if not cfg.enabled:
-                return []
-
             self._prune_expired(cfg)
 
             ch_key = channel.lower()
@@ -424,19 +414,11 @@ class ConversationContext:
             config: Per-channel config override (uses instance default if None)
 
         Returns:
-            Dictionary with message_count, max_messages, seconds_until_expiry,
-            and enabled.  seconds_until_expiry is 0 if no active conversation.
+            Dictionary with message_count, max_messages and
+            seconds_until_expiry, which is 0 if no active conversation.
         """
         with self._lock:
             cfg = self._effective(config)
-            if not cfg.enabled:
-                return {
-                    "message_count": 0,
-                    "max_messages": cfg.max_messages,
-                    "seconds_until_expiry": 0,
-                    "enabled": False,
-                }
-
             key = self._get_key(nick, channel)
             conv = self._conversations.get(key)
 
@@ -445,7 +427,6 @@ class ConversationContext:
                     "message_count": 0,
                     "max_messages": cfg.max_messages,
                     "seconds_until_expiry": 0,
-                    "enabled": True,
                 }
 
             timeout_seconds = cfg.timeout_minutes * 60
@@ -456,7 +437,6 @@ class ConversationContext:
                 "message_count": len(conv.messages),
                 "max_messages": cfg.max_messages,
                 "seconds_until_expiry": int(remaining),
-                "enabled": True,
             }
 
     def get_stats(self) -> dict[str, Any]:
@@ -476,7 +456,6 @@ class ConversationContext:
                 "total_messages": total_messages,
                 "max_messages_per_conv": self.config.max_messages,
                 "timeout_minutes": self.config.timeout_minutes,
-                "enabled": self.config.enabled,
                 "active_channels": len(self._channel_contexts),
                 "channel_messages": channel_messages,
                 "channel_max_messages": self.config.channel_max_messages,

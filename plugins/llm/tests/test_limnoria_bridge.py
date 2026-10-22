@@ -375,9 +375,9 @@ def test_enumerate_passes_string_form_to_capability_check(mocker):
     assert all(isinstance(n, str) for n in seen)
 
 
-def test_enumerate_skips_mutating_commands_when_gate_closed(mocker):
-    """With allow_mutating=False (the default), MUTATING_COMMANDS leaves
-    are filtered out even if their plugin is allowlisted."""
+def test_enumerate_skips_mutating_commands(mocker):
+    """MUTATING_COMMANDS leaves are filtered out even if their plugin is
+    allowlisted."""
     from llm import limnoria_bridge as lb
 
     cb = _stub_callback(
@@ -391,85 +391,15 @@ def test_enumerate_skips_mutating_commands_when_gate_closed(mocker):
             "remove": "<id>",
             "undo": "takes no arguments",
         },
-    )
-    irc = _fake_irc_with_callbacks(mocker, [cb])
-    msg = _fake_msg(mocker)
-    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
-
-    result = list(lb.enumerate_commands(irc, msg, frozenset({"Later"}), allow_mutating=False))
-
-    leaves = {c.command for c in result}
-    assert leaves == {"notes"}  # tell, remove, undo all in MUTATING_COMMANDS
-
-
-def test_enumerate_yields_mutating_commands_when_gate_open(mocker):
-    """With allow_mutating=True, MUTATING_COMMANDS is not consulted —
-    the existing capability + DENY filters still apply, but writes pass."""
-    from llm import limnoria_bridge as lb
-
-    cb = _stub_callback(
-        mocker,
-        "Later",
-        canonical="later",
-        commands=["tell", "notes", "remove", "undo"],
-        docstrings={
-            "tell": "<nick> <text>",
-            "notes": "takes no arguments",
-            "remove": "<id>",
-            "undo": "takes no arguments",
-        },
-    )
-    irc = _fake_irc_with_callbacks(mocker, [cb])
-    msg = _fake_msg(mocker)
-    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
-
-    result = list(lb.enumerate_commands(irc, msg, frozenset({"Later"}), allow_mutating=True))
-
-    leaves = {c.command for c in result}
-    assert leaves == {"tell", "notes", "remove", "undo"}
-
-
-def test_enumerate_default_keyword_is_gate_closed(mocker):
-    """Calling enumerate_commands without allow_mutating= defaults to the
-    closed gate — backwards-compat safety: an old caller that forgets to
-    pass the kwarg still gets safe behavior."""
-    from llm import limnoria_bridge as lb
-
-    cb = _stub_callback(
-        mocker,
-        "Later",
-        canonical="later",
-        commands=["tell", "notes"],
-        docstrings={"tell": "<nick> <text>", "notes": "x"},
     )
     irc = _fake_irc_with_callbacks(mocker, [cb])
     msg = _fake_msg(mocker)
     mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
 
     result = list(lb.enumerate_commands(irc, msg, frozenset({"Later"})))
+
     leaves = {c.command for c in result}
-    assert leaves == {"notes"}
-
-
-def test_enumerate_gate_preserves_deny_commands_filtering(mocker):
-    """DENY_COMMANDS still bites even when allow_mutating=True. Web.fetch
-    is denied unconditionally (SSRF), independent of the mutation gate."""
-    from llm import limnoria_bridge as lb
-
-    cb = _stub_callback(
-        mocker,
-        "Web",
-        canonical="web",
-        commands=["fetch", "urlquote"],
-        docstrings={"fetch": "<url>", "urlquote": "<text>"},
-    )
-    irc = _fake_irc_with_callbacks(mocker, [cb])
-    msg = _fake_msg(mocker)
-    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
-
-    result = list(lb.enumerate_commands(irc, msg, frozenset({"Web"}), allow_mutating=True))
-    leaves = {c.command for c in result}
-    assert leaves == {"urlquote"}  # fetch is in DENY_COMMANDS even with the gate open
+    assert leaves == {"notes"}  # tell, remove, undo all in MUTATING_COMMANDS
 
 
 def test_dispatch_unknown_plugin(mocker):
@@ -509,7 +439,7 @@ def test_dispatch_deny_command_blocks_call(mocker):
 
 def test_dispatch_blocks_web_ssrf_siblings_without_calling_command(mocker):
     """Defense in depth: dispatch rejects the SSRF siblings and never reaches
-    Limnoria's command path, even with the mutation gate open."""
+    Limnoria's command path."""
     from llm import limnoria_bridge as lb
 
     for leaf in ("location", "headers", "doctype", "size", "title"):
@@ -524,7 +454,6 @@ def test_dispatch_blocks_web_ssrf_siblings_without_calling_command(mocker):
             plugin="Web",
             command=leaf,
             arg_string="http://169.254.169.254/latest/meta-data/",
-            allow_mutating=True,
         )
         assert out == {"error": f"denied: Web.{leaf}"}
         cb._callCommand.assert_not_called()
@@ -594,7 +523,6 @@ def test_dispatch_refuses_loaded_plugin_outside_allowlist(mocker):
         command="add",
         arg_string="x echo y",
         allowed=frozenset({"Time"}),
-        allow_mutating=True,
     )
 
     assert out == {"error": "denied: Alias.add"}
@@ -734,9 +662,8 @@ def test_dispatch_malformed_args_returns_error_envelope(mocker):
     cb._callCommand.assert_not_called()
 
 
-def test_dispatch_rejects_mutating_when_gate_closed(mocker):
-    """With allow_mutating=False (default), dispatching a MUTATING_COMMANDS
-    leaf returns {"error": "denied: write commands disabled"}."""
+def test_dispatch_rejects_mutating(mocker):
+    """Dispatching a MUTATING_COMMANDS leaf returns {"error": "denied: write commands disabled"}."""
     from llm import limnoria_bridge as lb
 
     cb = _stub_callback(mocker, "Later", canonical="later", commands=["tell"])
@@ -747,35 +674,6 @@ def test_dispatch_rejects_mutating_when_gate_closed(mocker):
     out = lb.dispatch(irc, msg, plugin="Later", command="tell", arg_string="alice hi")
     assert out == {"error": "denied: write commands disabled"}
     cb._callCommand.assert_not_called()
-
-
-def test_dispatch_allows_mutating_when_gate_open(mocker):
-    """With allow_mutating=True, dispatch goes through to _callCommand
-    and returns the captured reply envelope."""
-    from llm import limnoria_bridge as lb
-
-    cb = _stub_callback(mocker, "Later", canonical="later", commands=["tell"])
-
-    def _fake_call(_command, proxy, _msg, _tokens):
-        proxy.reply("ok, I'll tell alice next time I see her")
-
-    cb._callCommand.side_effect = _fake_call
-    irc = mocker.MagicMock()
-    irc.getCallback.return_value = cb
-    irc.network = "testnet"
-    msg = _fake_msg(mocker)
-    mocker.patch.object(lb.callbacks, "checkCommandCapability", return_value=False)
-    mocker.patch.object(lb.callbacks, "tokenize", return_value=["alice", "hi"])
-
-    out = lb.dispatch(
-        irc,
-        msg,
-        plugin="Later",
-        command="tell",
-        arg_string="alice hi",
-        allow_mutating=True,
-    )
-    assert out == {"status": "ok", "reply": "ok, I'll tell alice next time I see her"}
 
 
 def test_dispatch_gate_check_runs_after_command_existence_check(mocker):

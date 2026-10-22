@@ -105,6 +105,33 @@ _ = PluginInternationalization("LLM")
 # Constants
 CLEANUP_INTERVAL_SECONDS = 3600
 CHANNEL_MSG_TRUNCATE_LEN = 150
+
+# Models for the jobs that do not run on the channel's assistantModel.
+IMAGE_MODEL = "xai/grok-imagine-image"
+# xAI's Responses API is the only web search the plugin calls, so search (and
+# the @draw subject-research pre-stage that rides on it) needs an xai/ model.
+SEARCH_MODEL = "xai/grok-4.3"
+# Picks a template and writes captions when @meme names none the catalog
+# knows. Not the channel's chat model: grok-4-1-fast copies the template's
+# example captions instead of writing its own (measured 2026-09-18).
+MEME_MODEL = "anthropic/claude-haiku-5-5"
+# Draws a meme's picture slots or edits a captioned meme. xai/ only.
+MEME_EDIT_MODEL = "xai/grok-imagine-image"
+# Re-runs an assistant turn once when the turn's model refuses. Skipped when
+# the turn already runs on it or its provider has no key.
+REFUSAL_FALLBACK_MODEL = "xai/grok-4-1-fast-non-reasoning"
+
+MAX_PROMPT_LENGTH = 10_000  # characters
+# Image calls are slower than text, especially with auto-rewrite retries.
+DRAW_TIMEOUT = 120  # seconds
+META_MAX_STEPS = 12  # tool-call round trips per assistant invocation
+FILE_CLEANUP_MAX = 1000  # files kept in the HTTP directory
+# Active schedule_llm_task tasks per creator per channel.
+SCHEDULED_TASK_LIMIT = 5
+VERSE_STORYBOOK_MAX_CHARS = 6000  # story length cap before image embedding
+VERSE_STORYBOOK_IMAGE_TIMEOUT = 45  # seconds per storybook illustration
+# Seconds to keep retrying a timed-out request in the background, per command.
+_TASK_EXPIRY = {"ask": 60, "draw": 60}
 EXPLICIT_SEARCH_RE = re.compile(
     r"\b(search|find|look\s+up|latest|news|recent|current)\b",
     re.IGNORECASE,
@@ -169,15 +196,8 @@ def _has_tool(tools: list[dict[str, Any]], name: str) -> bool:
     return any(tool.get("function", {}).get("name") == name for tool in tools)
 
 
-def _with_status_context(
-    tools: list[dict], sources: list[str], pages: dict[str, str]
-) -> list[dict]:
-    """Name the POLLED pages in the description and constrain `service`.
-
-    Only ``sources`` (the polled list) reaches the description's host
-    sentence — a queryable-only config still gets the `service` enum from
-    ``pages``, but no "Monitored services: ..." sentence, because there is
-    nothing polled to name that way.
+def _with_status_context(tools: list[dict], pages: dict[str, str]) -> list[dict]:
+    """Name the configured pages in the description and constrain `service`.
 
     Copies FOUR levels — tool, function, parameters, properties. ToolSpec's
     `as_tool()` returns a fresh outer dict but shares the module-level schema
@@ -189,7 +209,7 @@ def _with_status_context(
     prefix, and a page that could name itself would both churn that cache and
     be able to capture another page's selector.
 
-    No early return on ``not sources and not pages``: the base schema
+    No early return on ``not pages``: the base schema
     (assistant.py) now carries a bare ``service`` property with no enum, so
     even the "nothing configured" case must still run the loop below to
     strip it — an early return here would leave it in when this function is
@@ -197,7 +217,7 @@ def _with_status_context(
     in service.py already excludes the tool from the list in that case, but
     this function must be correct on its own).
     """
-    hosts = ", ".join(urlparse(s).hostname or s for s in sources)
+    hosts = ", ".join(urlparse(s).hostname or s for s in pages.values())
     patched = []
     for tool in tools:
         fn = tool.get("function") or {}
@@ -2536,9 +2556,10 @@ class LLMService:
         if not prompt or not prompt.strip():
             return ValidationResult(False, _("Prompt cannot be empty"))
 
-        max_length = self.plugin.registryValue("maxPromptLength")
-        if len(prompt) > max_length:
-            return ValidationResult(False, _("Prompt too long (max %d characters)") % max_length)
+        if len(prompt) > MAX_PROMPT_LENGTH:
+            return ValidationResult(
+                False, _("Prompt too long (max %d characters)") % MAX_PROMPT_LENGTH
+            )
 
         return ValidationResult(True)
 
@@ -2932,9 +2953,10 @@ class LLMService:
                 need a late nick->account lookup.
 
         Returns:
-            True if the task was stashed, False if stashing is disabled.
+            True if the task was stashed, False if there is no expiry for
+            ``task_type`` or nowhere to stash it.
         """
-        expiry = self.plugin.registryValue(f"{task_type}Expiry")
+        expiry = _TASK_EXPIRY.get(task_type)
         if not expiry:
             return False
 
@@ -3168,7 +3190,7 @@ class LLMService:
                 reason=_("Error: %s") % key_error,
             )
 
-        timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
+        timeout = DRAW_TIMEOUT
         aspect = request_data.get("aspect")
         result = self._attempt_image_generation(
             prompt, task.model, timeout, aspect=aspect if isinstance(aspect, str) else None
@@ -3430,9 +3452,8 @@ class LLMService:
         channel: str,
         log_label: str,
         error_message: str,
-        model: str | None = None,
     ) -> ToolResult:
-        """Shared implementation for search_completion and url_completion.
+        """Shared implementation for search_completion, url_completion and subject_dossier.
 
         Runs :func:`provider.search`, xAI's Responses API with its
         ``web_search`` tool, which also reads a URL named in the prompt. Any
@@ -3446,19 +3467,12 @@ class LLMService:
                 or ``"url_completion"``).
             error_message: Human-readable error string placed in the returned
                 ``ToolResult`` when an exception is caught.
-            model: Model to call. ``None`` (the default, and what
-                search_completion and url_completion pass) means
-                ``searchModel``. The subject-research
-                pre-stage resolves its own key first and passes the result,
-                so the chain lives in one place per caller rather than being
-                re-derived here.
         """
         from .assistant import ToolResult
 
         op = f"xai_responses_{kind}"
         try:
-            target = self._channel_target(channel)
-            model = model or self.plugin.registryValue("searchModel", target)
+            model = SEARCH_MODEL
             t0 = time.monotonic()
 
             def timing(**outcome: Any) -> None:
@@ -3549,21 +3563,16 @@ class LLMService:
         """
         from .prompts import SUBJECT_DOSSIER_PROMPT
 
-        target = self._channel_target(channel)
-        model = self.plugin.registryValue(
-            "subjectResearchModel", target
-        ) or self.plugin.registryValue("searchModel", target)
         result = self._grounded_completion(
             SUBJECT_DOSSIER_PROMPT + request_text,
             kind="search",
             channel=channel,
             log_label="subject_dossier",
             error_message="Subject research failed.",
-            model=model,
         )
         return SubjectDossier(
             text=self._parse_dossier(result.content),
-            model=model,
+            model=SEARCH_MODEL,
             prompt_tokens=result.prompt_tokens,
             completion_tokens=result.completion_tokens,
             cost=result.cost,
@@ -3641,10 +3650,7 @@ class LLMService:
         """
         if context:
             request_text = f"{request_text}\n\n{context}"
-        target = self._channel_target(channel)
-        model = self.plugin.registryValue("memeModel", target) or self.plugin.registryValue(
-            "assistantModel", target
-        )
+        model = MEME_MODEL
         if self._missing_key_error(model):
             return MemePick(None, model, error="The meme model has no API key.")
         system = MEME_PICK_PROMPT + (MEME_SEARCH_NOTE if search else "") + catalog_brief
@@ -3768,13 +3774,13 @@ class LLMService:
         aspect_ratio: str | None = None,
         edit_url: str | None = None,
     ) -> tuple[bytes | None, float, str, str | None]:
-        """Draw, or edit the image at ``edit_url``, with ``memeEditModel``.
+        """Draw, or edit the image at ``edit_url``, with ``MEME_EDIT_MODEL``.
 
         ``(png bytes, cost, model, error)``; bytes is None when there is an
         error. A billed refusal is still costed.
         """
-        model = (self.plugin.registryValue("memeEditModel") or "").strip()
-        timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
+        model = MEME_EDIT_MODEL
+        timeout = DRAW_TIMEOUT
         t0 = time.monotonic()
         try:
             picture = provider.draw(
@@ -4171,7 +4177,7 @@ Examples (echo → action_prompt: ""):
         """
         if max_images is None:
             max_images = int(self.plugin.registryValue("verseStorybookMaxImages", channel) or 3)
-        max_chars = int(self.plugin.registryValue("verseStorybookMaxChars", channel) or 6000)
+        max_chars = VERSE_STORYBOOK_MAX_CHARS
         world = (
             STORYBOOK_WORLD_TEMPLATE.format(roster=world_context)
             if world_context and world_context.strip()
@@ -4232,9 +4238,9 @@ Examples (echo → action_prompt: ""):
             story["title"],
             len(story["illustrations"]),
         )
-        max_chars = int(self.plugin.registryValue("verseStorybookMaxChars", channel) or 6000)
-        timeout = int(self.plugin.registryValue("verseStorybookImageTimeout", channel) or 45)
-        model = self.plugin.registryValue("imageModel", channel)
+        max_chars = VERSE_STORYBOOK_MAX_CHARS
+        timeout = VERSE_STORYBOOK_IMAGE_TIMEOUT
+        model = IMAGE_MODEL
 
         wanted = story["illustrations"][:max_images]
         dropped = len(story["illustrations"]) - len(wanted)
@@ -4744,13 +4750,11 @@ Examples (echo → action_prompt: ""):
             # Empty when there is nowhere to fall back to. The re-run carries
             # the fallback as its model, which is what stops it falling back
             # again.
-            fallback_model = self.plugin.registryValue("refusalFallbackModel", target) or ""
-            if fallback_model == model or (
-                fallback_model and self._missing_key_error(fallback_model)
-            ):
+            fallback_model = REFUSAL_FALLBACK_MODEL
+            if fallback_model == model or self._missing_key_error(fallback_model):
                 fallback_model = ""
 
-            max_steps = self.plugin.registryValue("metaMaxSteps")
+            max_steps = META_MAX_STEPS
             timeout = self.plugin.registryValue("timeout")
 
             # Structural framework (IRC output rules, tool-behavior rules) is
@@ -4777,18 +4781,18 @@ Examples (echo → action_prompt: ""):
             ):
                 framework += "\n" + BRIDGE_TOOLS_GUIDANCE
             # Same rule for irc_lookup: its HARD RULE rides only when the
-            # tool is in the request. Stable per channel (ircLookupEnabled).
+            # tool is in the request.
             if any(
                 (t.get("function", t) or {}).get("name") == "irc_lookup"
                 for t in (extra_tools or [])
             ):
                 framework += "\n" + IRC_LOOKUP_GUIDANCE
-            # And make_meme (memeEnabled): transcription rule, same gating.
+            # And make_meme: transcription rule, same gating.
             if any(
                 (t.get("function", t) or {}).get("name") == "make_meme" for t in (extra_tools or [])
             ):
                 framework += "\n" + MEME_GUIDANCE
-            # And react (reactEnabled): when a bare emoji is the reply.
+            # And react: when a bare emoji is the reply.
             if any(
                 (t.get("function", t) or {}).get("name") == "react" for t in (extra_tools or [])
             ):
@@ -4957,14 +4961,11 @@ Examples (echo → action_prompt: ""):
             if profile.max_output_tokens is not None:
                 optional_kwargs["max_tokens"] = profile.max_output_tokens
 
-            # Canonical, deduplicated, capped source list, plus the frozen
-            # name -> source mapping. Read once: they gate both the tool
-            # callback and the schema below, and registryValue is not free.
-            # warn=False: this runs on every chat request, not the poller's
-            # ~2-minute cadence, which already logs bad entries.
-            status_sources = self.plugin._status_sources(warn=False)
-            # The whole point of the queryable allowlist is that it works with
-            # no polled pages at all, so the gate is polled OR queryable.
+            # The frozen name -> source mapping of configured status pages.
+            # Read once: it gates both the tool callback and the schema below,
+            # and registryValue is not free. warn=False: this runs on every
+            # chat request, not the poller's ~2-minute cadence, which already
+            # logs bad entries.
             status_pages = self.plugin._status_named_pages(warn=False)
 
             executor = AssistantToolExecutor(
@@ -4999,10 +5000,10 @@ Examples (echo → action_prompt: ""):
             # ever answer "not configured".
             if not status_pages:
                 exclude_tools = exclude_tools | {"check_service_status"}
-            if self.draw_unavailable_reason(channel):
+            if self.draw_unavailable_reason():
                 exclude_tools = exclude_tools | {"generate_image"}
             profile_tools = get_tools_for_profile(profile.id, exclude=exclude_tools)
-            profile_tools = _with_status_context(profile_tools, status_sources, status_pages)
+            profile_tools = _with_status_context(profile_tools, status_pages)
             if extra_tools:
                 profile_tools = profile_tools + list(extra_tools)
             force_initial_search = (
@@ -5632,17 +5633,15 @@ Examples (echo → action_prompt: ""):
                 error_content = _("Error: %s") % error_msg
                 return ImageResult(content=error_content, error=error_content)
 
-            # Get configuration (channel-specific for model; the API key is
-            # resolved from the model itself, below, not stored in a local var)
+            # The API key is resolved from the model itself, below, not stored
+            # in a local var.
             channel = msg.args[0] if msg and msg.args else None
-            model = self.plugin.registryValue("imageModel", channel)
+            model = IMAGE_MODEL
             key_error = self._missing_key_error(model)
             if key_error:
                 error_content = _("Error: %s") % key_error
                 return ImageResult(content=error_content, error=error_content)
-            timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue(
-                "timeout"
-            )
+            timeout = DRAW_TIMEOUT
             max_rewrites = self.plugin.registryValue("drawAutoRewriteMax", channel)
 
             # Keep original prompt for rewriter (before any augmentation)
@@ -5824,18 +5823,13 @@ Examples (echo → action_prompt: ""):
         finally:
             stop_typing()
 
-    def draw_unavailable_reason(self, channel: str | None) -> str | None:
-        """Why @draw and generate_image are off in ``channel``, or None.
+    def draw_unavailable_reason(self) -> str | None:
+        """Why @draw and generate_image cannot work, or None.
 
         Checked before the tool is advertised: a model offered a tool that
         cannot work will call it and then narrate the failure.
         """
-        if not self.plugin.registryValue("drawEnabled", channel):
-            return _("Drawing is turned off in this channel.")
-        model = (self.plugin.registryValue("imageModel", channel) or "").strip()
-        if not model:
-            return _("Error: no image model configured.")
-        return self._missing_key_error(model)
+        return self._missing_key_error(IMAGE_MODEL)
 
     def own_image_hosts(self) -> frozenset[str]:
         """Hosts that only this bot can legitimately publish images to.
@@ -6166,7 +6160,7 @@ Examples (echo → action_prompt: ""):
         # Same policy as provider-image downloads: a 3xx could point anywhere, so
         # fail closed rather than follow it.
         opener = _no_redirect_opener()
-        timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
+        timeout = DRAW_TIMEOUT
         req = urllib.request.Request(
             endpoint,
             data=body,
@@ -6316,7 +6310,7 @@ Examples (echo → action_prompt: ""):
 
         max_size = 20 * 1024 * 1024  # 20 MB
 
-        timeout = self.plugin.registryValue("drawTimeout") or self.plugin.registryValue("timeout")
+        timeout = DRAW_TIMEOUT
 
         # Disable redirects: a 3xx Location could point at a private host that
         # validate_external_url rejected on the original URL. Fail closed.
@@ -6572,13 +6566,13 @@ Examples (echo → action_prompt: ""):
         Args:
             directory: Directory to clean
             max_age_hours: Delete files older than this (uses config if None)
-            max_files: Keep at most this many files (uses config if None)
+            max_files: Keep at most this many files (FILE_CLEANUP_MAX if None)
         """
         with self._cleanup_lock:
             if max_age_hours is None:
                 max_age_hours = self.plugin.registryValue("fileCleanupAge")
             if max_files is None:
-                max_files = self.plugin.registryValue("fileCleanupMax")
+                max_files = FILE_CLEANUP_MAX
 
             dir_path = Path(directory)
             if not dir_path.exists():
@@ -6844,8 +6838,7 @@ Examples (echo → action_prompt: ""):
           (``msg.tagged('llm_schedule_depth')`` is truthy) — depth cap of 1.
         - The caller is unidentified (defense in depth; the tool spec also
           requires an authenticated account).
-        - ``bridgeScheduledTaskLimit`` is 0 (scheduling disabled in this channel)
-          or the caller already has that many active tasks here.
+        - The caller already has ``SCHEDULED_TASK_LIMIT`` active tasks here.
         - ``reply_target`` fails the validation rules above.
         - ``parse_reminder`` returns ``action='clarify'`` — surface the parser's
           question via the ``clarify`` status.
@@ -6869,12 +6862,7 @@ Examples (echo → action_prompt: ""):
                 message="schedule_llm_task requires an authenticated account.",
             )
 
-        limit = int(self.plugin.registryValue("bridgeScheduledTaskLimit", channel) or 0)
-        if limit == 0:
-            return ScheduleLlmTaskResult(
-                status="error",
-                message="Scheduled LLM tasks are disabled in this channel.",
-            )
+        limit = SCHEDULED_TASK_LIMIT
         existing = db.count_scheduled_llm_tasks_for(
             account=account, nick=creator_nick, channel=channel
         )

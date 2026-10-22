@@ -149,9 +149,9 @@ class MemoryCandidate(NamedTuple):
     """A provisional fact about a user, awaiting enough mentions to promote.
 
     Candidates accumulate ``mentions`` each time the extractor reinforces
-    them. Once ``mentions`` reaches ``memoryPromotionThreshold`` the row is
+    them. Once ``mentions`` reaches the promotion threshold the row is
     moved into ``memories``. Untouched candidates are pruned after
-    ``memoryCandidateTTLDays``.
+    a TTL (the plugin uses 2 mentions and 14 days).
     """
 
     id: int

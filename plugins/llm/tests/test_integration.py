@@ -11,6 +11,7 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
+from llm.service import SubjectDossier
 
 from .conftest import assistant_result
 
@@ -147,17 +148,16 @@ class TestRateLimitFullFlow:
     """
 
     @pytest.fixture
-    def plugin_with_real_db(self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path) -> tuple:
+    def plugin_with_real_db(
+        self, mock_irc: MagicMock, mocker: MockerFixture, llm_data_dir
+    ) -> tuple:
         """Create plugin with real database but mocked LLM service."""
         from llm.plugin import LLM
 
         from .conftest import make_registry_side_effect, plugin_init_patches
 
-        db_path = str(tmp_path / "test.db")
         registry = make_registry_side_effect(
             {
-                "databasePath": db_path,
-                "enforceRateLimits": True,
                 "drawRateLimitCount": 2,
                 "drawRateLimitWindow": 60,
             }
@@ -172,6 +172,8 @@ class TestRateLimitFullFlow:
         plugin._MetaSynchronized_rlock = threading.RLock()
         plugin.llm_service.sanitize_output.side_effect = lambda x: x
         plugin.llm_service.draw_unavailable_reason.return_value = None
+        # Subject research finds nobody real, so it books no usage row.
+        plugin.llm_service.subject_dossier.return_value = SubjectDossier(text="")
 
         return plugin, mock_irc
 
@@ -253,15 +255,14 @@ class TestMemoryIntegration:
 
     @pytest.fixture
     def plugin_with_real_db(
-        self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path: Path
+        self, mock_irc: MagicMock, mocker: MockerFixture, llm_data_dir: Path
     ) -> tuple:
         """Create plugin with real database."""
         from llm.plugin import LLM
 
         from .conftest import make_registry_side_effect, plugin_init_patches
 
-        db_path = str(tmp_path / "test.db")
-        registry = make_registry_side_effect({"databasePath": db_path, "memoryEnabled": True})
+        registry = make_registry_side_effect()
         mocker.patch.object(LLM, "registryValue", side_effect=registry)
         plugin_init_patches(mocker, mock_database=False)
         mocker.patch("llm.plugin.schedule.addEvent")
@@ -356,71 +357,20 @@ class TestMemoryIntegration:
         name_arg = memory_calls[0].kwargs.get("name", memory_calls[0][1].get("name", ""))
         assert name_arg.startswith("llm_memory_")
 
-    def test_ask_skips_extraction_when_memory_disabled(
-        self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path: Path
-    ) -> None:
-        """GIVEN memoryEnabled=False WHEN ask succeeds THEN no extraction event scheduled."""
-        from llm.plugin import LLM
-
-        from .conftest import make_registry_side_effect, plugin_init_patches
-
-        db_path = str(tmp_path / "test.db")
-        registry = make_registry_side_effect({"databasePath": db_path, "memoryEnabled": False})
-        mocker.patch.object(LLM, "registryValue", side_effect=registry)
-        plugin_init_patches(mocker, mock_database=False)
-        mock_add_event = mocker.patch("llm.plugin.schedule.addEvent")
-
-        plugin = LLM(mock_irc)
-        plugin.registryValue = mocker.MagicMock(side_effect=registry)
-        plugin._MetaSynchronized_rlock = threading.RLock()
-        plugin.llm_service.sanitize_output.side_effect = lambda x: x
-        plugin.llm_service.draw_unavailable_reason.return_value = None
-
-        mock_irc.state.nickToAccount.return_value = "testuser"
-
-        mock_msg = mocker.MagicMock()
-        mock_msg.prefix = "testuser!user@host"
-        mock_msg.args = ("#test", "ask hello")
-        mock_msg.time = time.time() + 100
-        mock_msg.channel = "#test"
-        mock_msg.nick = "testuser"
-        mock_msg.server_tags = {}
-
-        mocker.patch(
-            "llm.plugin.ircdb.checkCapability",
-            side_effect=lambda prefix, cap: cap.startswith("llm."),
-        )
-
-        plugin.llm_service.assistant_completion.return_value = assistant_result(
-            content="Hello there!",
-            prompt_tokens=10,
-            completion_tokens=5,
-            cost=0.001,
-            model="gpt-4",
-        )
-        plugin.llm_service.detect_images.return_value = []
-
-        plugin.ask(mock_irc, mock_msg, ["hello"])
-
-        # No memory extraction events should be scheduled
-        memory_calls = [c for c in mock_add_event.call_args_list if "llm_memory_" in str(c)]
-        assert len(memory_calls) == 0
-
 
 class TestMemoriesCommand:
     """Test the %memories command for viewing and managing stored memories."""
 
     @pytest.fixture
     def plugin_with_real_db(
-        self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path: Path
+        self, mock_irc: MagicMock, mocker: MockerFixture, llm_data_dir: Path
     ) -> tuple:
         """Create plugin with real database for memories command testing."""
         from llm.plugin import LLM
 
         from .conftest import make_registry_side_effect, plugin_init_patches
 
-        db_path = str(tmp_path / "test.db")
-        registry = make_registry_side_effect({"databasePath": db_path, "memoryEnabled": True})
+        registry = make_registry_side_effect()
         mocker.patch.object(LLM, "registryValue", side_effect=registry)
         plugin_init_patches(mocker, mock_database=False)
         mocker.patch("llm.plugin.schedule.addEvent")
@@ -797,21 +747,14 @@ class TestMemoryCleanup:
 
     @pytest.fixture
     def plugin_with_real_db(
-        self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path: Path
+        self, mock_irc: MagicMock, mocker: MockerFixture, llm_data_dir: Path
     ) -> tuple:
         """Create plugin with real database for cleanup testing."""
         from llm.plugin import LLM
 
         from .conftest import make_registry_side_effect, plugin_init_patches
 
-        db_path = str(tmp_path / "test.db")
-        registry = make_registry_side_effect(
-            {
-                "databasePath": db_path,
-                "memoryEnabled": True,
-                "memoryCleanupInterval": 3,
-            }
-        )
+        registry = make_registry_side_effect()
         mocker.patch.object(LLM, "registryValue", side_effect=registry)
         plugin_init_patches(mocker, mock_database=False)
         mocker.patch("llm.plugin.schedule.addEvent")

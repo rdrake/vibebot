@@ -15,9 +15,6 @@ _ = PluginInternationalization("LLM")
 
 _log = logging.getLogger("supybot.plugins.LLM.config")
 
-# refusalFallbackModel's default.
-REFUSAL_FALLBACK_MODEL = "xai/grok-4-1-fast-non-reasoning"
-
 
 class ValidatedModelName(registry.String):
     """A ``provider/name`` model string for a provider the plugin can call.
@@ -51,21 +48,6 @@ class ValidatedModelName(registry.String):
                 _log.warning(
                     "Model %r has no price in provider.py; its spend will book as $0.", model
                 )
-
-
-_VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
-
-
-class ValidatedLogLevel(registry.String):
-    """A log level name validated against Python's standard levels."""
-
-    def setValue(self, v: str) -> None:  # noqa: N802
-        v = v.strip().upper()
-        if v not in _VALID_LOG_LEVELS:
-            raise registry.InvalidRegistryValue(
-                f"Invalid log level: {v!r}. Must be one of: {', '.join(sorted(_VALID_LOG_LEVELS))}"
-            )
-        super().setValue(v)
 
 
 def configure(advanced: bool) -> None:
@@ -119,80 +101,12 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
-    "refusalFallbackModel",
-    ValidatedModelName(
-        REFUSAL_FALLBACK_MODEL,
-        _("""Model that re-runs an assistant turn once when the turn's model
-        refuses: a policy refusal that survived its one retry, or a provider
-        refusal error. The fallback sees the original request only, never the
-        refusal. Empty disables. Skipped when the turn already runs on this
-        model or its provider has no key."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "imageModel",
-    ValidatedModelName(
-        "xai/grok-imagine-image",
-        _("""Model for image generation"""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "drawEnabled",
-    registry.Boolean(
-        True,
-        _("""When False, @draw is refused and chat does not advertise the
-        generate_image tool in this channel. The tool is also hidden when
-        imageModel's provider has no key configured."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "searchModel",
-    ValidatedModelName(
-        "xai/grok-4.3",
-        _("""Model for search/fetch tools. Must be an xai/ model: xAI's
-        Responses API is the only web search the plugin calls."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
     "memoryModel",
     ValidatedModelName(
         "",
         _("""Model for the memory extraction that runs after every reply.
         Falls back to assistantModel if empty. Its output is never shown, so a
         small model is enough."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "subjectResearchEnabled",
-    registry.Boolean(
-        True,
-        _("""Research the real subjects a @draw request names before the
-        planner writes the prompt. One grounded completion looks up how the
-        named people, places and events actually look and the facts are
-        layered onto the planner's prompt, because the image generator knows
-        nothing by name. Costs one extra call and a few seconds per request."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "subjectResearchModel",
-    ValidatedModelName(
-        "",
-        _("""Model for the subject-research pre-stage (an xai/ model). Falls
-        back to searchModel. Worth setting when the search model
-        is more reticent about describing real people than the generator
-        downstream is."""),
     ),
 )
 
@@ -223,17 +137,6 @@ conf.registerChannelValue(
     ),
 )
 
-conf.registerGlobalValue(
-    LLM,
-    "drawTimeout",
-    registry.NonNegativeInteger(
-        120,
-        _("""Timeout for image generation API calls in seconds. Image generation
-        is slower than text completion, especially with auto-rewrite retries.
-        Set to 0 to use the global timeout setting instead."""),
-    ),
-)
-
 conf.registerChannelValue(
     LLM,
     "drawAutoRewriteMax",
@@ -249,66 +152,6 @@ conf.registerChannelValue(
         is blocked by content safety filters. Set to 0 to disable. Each retry
         uses the ask model to rewrite the prompt, then spends another billed
         image call."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "drawContextMaxAgeSeconds",
-    registry.NonNegativeInteger(
-        60,
-        _("""Only pass conversation context to draw requests when the
-        conversation's last activity is within this many seconds. Keeps
-        draw calls grounded in very recent discussion without overwhelming
-        the image model with stale history. Set to 0 to disable (always
-        start fresh)."""),
-    ),
-)
-
-# ============================================================================
-# Memory Extraction
-# ============================================================================
-
-conf.registerChannelValue(
-    LLM,
-    "memoryEnabled",
-    registry.Boolean(True, _("""Enable automatic memory extraction from command interactions.""")),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "memoryMaxPerUser",
-    registry.PositiveInteger(50, _("""Maximum number of memories stored per user.""")),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "memoryCleanupInterval",
-    registry.NonNegativeInteger(
-        3,
-        _("""Number of memory extraction passes (that save at least one fact)
-        between automatic cleanup runs. Set to 0 to disable periodic cleanup."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "memoryPromotionThreshold",
-    registry.PositiveInteger(
-        2,
-        _("""Number of times a candidate fact must be reinforced before it
-        becomes a durable memory. 1 disables the candidate stage (every
-        extraction is saved immediately, restoring legacy behavior)."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "memoryCandidateTTLDays",
-    registry.NonNegativeInteger(
-        14,
-        _("""Days a candidate fact may sit unreinforced before it is pruned.
-        Set to 0 to disable TTL pruning."""),
     ),
 )
 
@@ -344,67 +187,12 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
-    "verseEventRetentionDays",
-    registry.NonNegativeInteger(
-        30,
-        _("""Number of days to retain verse events before pruning.
-        Older events are removed during housekeeping runs. Must be
-        non-negative: a negative value would push the prune cutoff into
-        the future and delete every event."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "verseAutoEntityRetireDays",
-    registry.NonNegativeInteger(
-        14,
-        _("""Days of no reference before auto-created NPCs retire. 0 disables sweep."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "verseAutoEntityMaxNamesPerCall",
-    registry.PositiveInteger(
-        8,
-        _("""Hard cap on verse_record `actors` array length. The advertised
-        tool spec's maxItems is set from this; dispatch enforces. Increase
-        past 16 only if your verse routinely cites large casts."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
     "verseRosterMaxChars",
     registry.PositiveInteger(
         4000,
         _("""Max characters of the canon-roster block (pinned or author-locked
         entities) injected into every verse system prompt. Canon entities
         beyond the cap are dropped with a (roster truncated) marker."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "verseCompactionModel",
-    registry.String(
-        "anthropic/claude-haiku-5-5",
-        _("""Model used by the verse compaction job to summarise old events
-        into a lore digest. Mirrors the default of the old
-        ``loomModel`` key; split out when the loom was removed so compaction
-        can be configured independently."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "verseCompactionDailyAt",
-    registry.String(
-        "03:00",
-        _("""Local-time HH:MM at which the daily verse-event-retention
-        compaction job fires. Empty or malformed values defer the next
-        run by one hour."""),
     ),
 )
 
@@ -427,18 +215,6 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
-    "verseRoleplayStickyTtlSeconds",
-    registry.NonNegativeInteger(
-        900,
-        _("""Sliding inactivity timeout (seconds) for sticky @rp roleplay mode
-        (`@rp on`). Each in-character turn refreshes it; after this much silence
-        you drop back to normal chat. 0 = never auto-expire (until `@rp off` or
-        a bot restart)."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
     "verseChatRecordEnabled",
     registry.Boolean(
         False,
@@ -449,18 +225,6 @@ conf.registerChannelValue(
         denied, so canon only grows during explicit roleplay. Guards
         canon-pollution risk behind an opt-in per the cautious verse-write
         rollout pattern."""),
-    ),
-)
-
-# (Verse engagement measurement, not storybook — filed here historically.)
-conf.registerChannelValue(
-    LLM,
-    "verseReactionCaptureEnabled",
-    registry.Boolean(
-        True,
-        _("""Capture inbound IRCv3 emoji reactions (+draft/react) to the bot's
-        verse lines as an offline approval signal (reactions.jsonl). Recency-
-        attributed; measurement only — no behaviour change. Kill-switch."""),
     ),
 )
 
@@ -475,85 +239,11 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
-    "verseStorybookMaxPerTurn",
-    registry.NonNegativeInteger(
-        1,
-        _("""Max verse_storybook calls honored per completion."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
     "verseStorybookCooldownSeconds",
     registry.NonNegativeInteger(
         300,
         _("""Per-account cooldown between stories (shared by verse_storybook
         and @story)."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "verseStorybookDailyImageCap",
-    registry.NonNegativeInteger(
-        30,
-        _("""Per-account daily ceiling on storybook images (enforcement
-        deferred; cooldown + per-turn cap bound spend today)."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "verseStorybookMaxChars",
-    registry.NonNegativeInteger(
-        6000,
-        _("""Story length cap before image embedding (verse_storybook and
-        @story)."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "verseStorybookImageTimeout",
-    registry.NonNegativeInteger(
-        45,
-        _("""Per-image timeout (seconds) for storybook draws (verse_storybook
-        and @story)."""),
-    ),
-)
-
-# (Verse retention compaction, not storybook — filed here historically.)
-conf.registerGlobalValue(
-    LLM,
-    "verseCompactionMinKeepEvents",
-    registry.NonNegativeInteger(
-        20,
-        _("""Floor on total event count below which a verse is left
-        alone by compaction. Prevents thrashing small verses."""),
-    ),
-)
-
-# ============================================================================
-# Pending Task Retry (per-command expiry)
-# ============================================================================
-
-conf.registerGlobalValue(
-    LLM,
-    "askExpiry",
-    registry.NonNegativeInteger(
-        60,
-        _("""Maximum seconds to keep retrying timed-out ask requests.
-        Set to 0 to disable background retry for ask."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "drawExpiry",
-    registry.NonNegativeInteger(
-        60,
-        _("""Maximum seconds to keep retrying timed-out draw requests.
-        Set to 0 to disable background retry for draw."""),
     ),
 )
 
@@ -597,59 +287,9 @@ conf.registerGlobalValue(
     ),
 )
 
-conf.registerGlobalValue(
-    LLM,
-    "helpUrl",
-    registry.String(
-        "https://rdrake.github.io/vibebot-v8/",
-        _("""URL to the help documentation page. Shown in plugin help output."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "longReplyTeaserMaxChars",
-    registry.PositiveInteger(
-        220,
-        _("""Maximum characters for the one-line teaser shown in IRC when a
-        long reply is linked to the full HTML answer."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "multilineMaxLines",
-    registry.NonNegativeInteger(
-        3,
-        _("""Replies that wrap to at most this many IRC lines are sent inline as
-        one IRCv3 draft/multiline batch instead of a teaser plus pastebin link.
-        Needs the draft/multiline capability and
-        supybot.protocols.irc.experimentalExtensions. 0 disables."""),
-    ),
-)
-
-
 # ============================================================================
 # Conversation Context (channel-specific with global defaults)
 # ============================================================================
-
-conf.registerChannelValue(
-    LLM,
-    "contextEnabled",
-    registry.Boolean(
-        True,
-        _("""Enable conversation context (memory between messages)"""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "contextMaxMessages",
-    registry.PositiveInteger(
-        20,
-        _("""Maximum messages to keep in conversation history"""),
-    ),
-)
 
 conf.registerChannelValue(
     LLM,
@@ -674,17 +314,6 @@ conf.registerChannelValue(
     ),
 )
 
-conf.registerChannelValue(
-    LLM,
-    "channelContextMaxMessages",
-    registry.PositiveInteger(
-        10,
-        _("""Maximum messages in shared channel context. This allows the bot to
-        follow group conversations - when Alice asks something, Bob can continue
-        the thread because the bot remembers Alice's exchange."""),
-    ),
-)
-
 # ============================================================================
 # Advanced Settings
 # ============================================================================
@@ -700,28 +329,10 @@ conf.registerGlobalValue(
 
 conf.registerGlobalValue(
     LLM,
-    "maxPromptLength",
-    registry.PositiveInteger(
-        10000,
-        _("""Maximum length of user prompts in characters"""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
     "fileCleanupAge",
     registry.PositiveInteger(
         720,
         _("""Delete HTTP files older than this many hours (default: 720 = 30 days)"""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "fileCleanupMax",
-    registry.PositiveInteger(
-        1000,
-        _("""Maximum number of files to keep in HTTP directory"""),
     ),
 )
 
@@ -736,62 +347,35 @@ conf.registerGlobalValue(
     ),
 )
 
-conf.registerGlobalValue(
-    LLM,
-    "databasePath",
-    registry.String(
-        "",
-        _("""Path to SQLite database file for persistence (reminders, usage tracking).
-        If empty, uses Limnoria's data directory (data/LLM.db)."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "logLevel",
-    ValidatedLogLevel(
-        "WARNING",
-        _("""Log level for LLM plugin (DEBUG, INFO, WARNING, ERROR, CRITICAL).
-        Set to DEBUG for verbose tracing including server response headers."""),
-    ),
-)
-
 # ============================================================================
 # Rate Limiting (per-command, per-tier)
 #
 # Tiers (checked from most to least privileged):
 #   owner/admin  — always exempt (no config needed)
 #   trusted      — relaxed limits (Trusted prefix)
-#   registered   — standard limits (no prefix, backwards-compatible)
-#   unregistered — strictest limits (Unreg prefix)
+#   registered   — standard limits (no prefix)
+#   unregistered — strictest limits (Unreg prefix), ask only: draw, meme and
+#                  story refuse an unauthenticated caller before the rate
+#                  limiter runs, so that tier never reaches them
 #
 # Setting any count to 0 disables rate limiting for that command+tier.
 # ============================================================================
 
-conf.registerGlobalValue(
-    LLM,
-    "enforceRateLimits",
-    registry.Boolean(
-        True,
-        _("""Enable per-user rate limiting for commands.
-        When False, limits are tracked and logged but not enforced (monitor mode).
-        Set to True to actively block requests that exceed the limit."""),
-    ),
-)
+_TIER_LABELS = {
+    "": "registered tier",
+    "Trusted": "trusted tier",
+    "Unreg": "unregistered tier",
+}
 
 
-def _register_rate_limit_block(
-    command: str,
-    *,
-    counts: tuple[int, int, int],  # (registered, trusted, unreg)
-    windows: tuple[int, int, int],  # (registered, trusted, unreg)
-) -> None:
-    tiers: tuple[tuple[str, str], ...] = (
-        ("", "registered tier"),
-        ("Trusted", "trusted tier"),
-        ("Unreg", "unregistered tier"),
-    )
-    for (tier, label), count, window in zip(tiers, counts, windows, strict=True):
+def _register_rate_limit_block(command: str, *, limits: dict[str, tuple[int, int]]) -> None:
+    """Register ``{command}{tier}RateLimit{Count,Window}`` for each tier in ``limits``.
+
+    ``limits`` maps a tier infix ("" for registered, "Trusted", "Unreg") to
+    its (count, window) defaults.
+    """
+    for tier, (count, window) in limits.items():
+        label = _TIER_LABELS[tier]
         conf.registerGlobalValue(
             LLM,
             f"{command}{tier}RateLimitCount",
@@ -814,81 +398,34 @@ def _register_rate_limit_block(
         )
 
 
-# --- ask (cheapest) ---
+# --- ask (cheapest; the only command open to unauthenticated callers) ---
 _register_rate_limit_block(
     "ask",
-    counts=(15, 15, 15),
-    windows=(60, 60, 60),
+    limits={"": (15, 60), "Trusted": (15, 60), "Unreg": (15, 60)},
 )
 
 # --- draw (expensive) ---
-# Unregistered is the STRICTEST tier: 1 image/hour, not 0. A count of 0 means
-# "rate limiting disabled" (see _is_rate_limited), so 0 would give accountless
-# users UNLIMITED access to the most expensive command — the opposite of the
-# intended tier ordering. Keep it a small positive cap.
 _register_rate_limit_block(
     "draw",
-    counts=(2, 5, 1),
-    windows=(300, 60, 3600),
+    limits={"": (2, 300), "Trusted": (5, 60)},
 )
 
 # --- meme (free: rendered locally) ---
 # The ceiling is politeness to the channel, not spend.
 _register_rate_limit_block(
     "meme",
-    counts=(6, 12, 2),
-    windows=(60, 60, 600),
+    limits={"": (6, 60), "Trusted": (12, 60)},
 )
 
 # --- story (expensive, illustrated storybook) ---
 _register_rate_limit_block(
     "story",
-    counts=(2, 5, 1),
-    windows=(300, 60, 3600),
+    limits={"": (2, 300), "Trusted": (5, 60)},
 )
 
 # ============================================================================
-# Assistant Tool-Calling Backend (shared by @ask, @draw, invalidCommand)
+# Bot-to-bot loop guard
 # ============================================================================
-
-conf.registerGlobalValue(
-    LLM,
-    "metaMaxSteps",
-    registry.PositiveInteger(
-        12,
-        _("""Maximum tool-call round trips per assistant invocation.
-        Prevents runaway tool loops."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "skipAutoWhoOnJoin",
-    registry.Boolean(
-        True,
-        _(
-            """If True (default), suppress Limnoria's automatic WHO query on channel join
-            when both 'account-tag' and 'extended-join' IRCv3 capabilities are ACK'd.
-            Set False to restore the legacy WHO query (emergency disable for servers
-            where account-tag/extended-join misbehave). The MODE +b ban-list query is
-            always suppressed regardless of this flag — nothing reads ban state."""
-        ),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "botLoopReplyLimit",
-    registry.NonNegativeInteger(
-        3,
-        _("""How many consecutive replies the bot will give one other bot before
-        going quiet. Two bots that answer each other never tire, and the network
-        already knows which nicks are robots: AfterNET advertises BOT=B and marks
-        them in the WHOX status field. Any human speaking in the channel clears
-        the count, so a conversation a person is part of is never cut off. 0
-        disables the guard entirely."""),
-    ),
-)
 
 conf.registerGlobalValue(
     LLM,
@@ -906,29 +443,6 @@ conf.registerGlobalValue(
     ),
 )
 
-conf.registerChannelValue(
-    LLM,
-    "botLoopWindow",
-    registry.PositiveInteger(
-        300,
-        _("""Seconds of quiet after which a bot's reply count resets. A bot that
-        addresses the channel twice an hour is not a loop; this is what stops it
-        being treated as one."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "maxConcurrentLLMCalls",
-    registry.PositiveInteger(
-        16,
-        _("""Maximum number of simultaneous outbound LLM calls (across the
-        command path and background work — memory extraction, watch-mode
-        reminders, scheduled tasks). Lower this on small hosts or when the
-        provider rate-limits aggressively."""),
-    ),
-)
-
 # ============================================================================
 # Memes (@meme / make_meme tool)
 # ============================================================================
@@ -943,99 +457,6 @@ conf.registerGlobalValue(
         is filed under the quote, yallgot). A target
         that is an image URL adds a two-caption template drawn on that image.
         Use hyphens for spaces in the name."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "memeModel",
-    ValidatedModelName(
-        "anthropic/claude-haiku-5-5",
-        _("""Model that picks a template and writes captions when @meme (or
-        make_meme's brief) does not name a template the catalog knows. One
-        short opening list plus up to two search_templates calls per pick
-        (5-19K tokens, under $0.003 on Haiku, 2-6 s).
-        Empty falls back to assistantModel — but grok-4-1-fast copies the
-        template's example captions instead of writing its own (measured
-        2026-09-18: non-reasoning 4/4, reasoning 2/4; gemini-flash 0/4)."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "memeEditModel",
-    ValidatedModelName(
-        "xai/grok-imagine-image",
-        _("""Image model for the picker's draw field (and make_meme's). On a
-        template with picture slots it generates one picture per slot
-        (xAI /v1/images/generations) that is masked into the blank; on any
-        other template the captioned meme is sent to /v1/images/edits with
-        the instruction. xai/ models only. About $0.02 per picture; a
-        refusal is billed too."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "memeEnabled",
-    registry.Boolean(
-        True,
-        _("""When False, @meme is refused and chat does not advertise the
-        make_meme tool in this channel."""),
-    ),
-)
-
-# ============================================================================
-# Live IRC lookups (@channels / @names / irc_lookup tool)
-# ============================================================================
-
-conf.registerChannelValue(
-    LLM,
-    "ircLookupEnabled",
-    registry.Boolean(
-        True,
-        _("""When True, chat advertises the irc_lookup tool so the model can
-        answer questions about channels (LIST) and who is in one (NAMES) on
-        the live network. The @channels and @names commands work regardless.
-        LIST results are cached for 60 seconds per network."""),
-    ),
-)
-
-
-conf.registerChannelValue(
-    LLM,
-    "reactEnabled",
-    registry.Boolean(
-        True,
-        _("""When True, chat advertises the react tool so the model can add an
-        IRCv3 emoji reaction (+draft/react) to the message it is answering or
-        to another nick's latest line in the channel. A react-only turn sends
-        no text. Needs the message-tags capability; without it the tool
-        reports an error and the model answers in text."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "redactEnabled",
-    registry.Boolean(
-        True,
-        _("""When True, chat advertises the delete_last_reply tool: "delete
-        that" takes back the bot's latest reply in the channel with IRCv3
-        REDACT (draft/message-redaction). Like react, a successful delete
-        sends no text."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "notifyOnlineEnabled",
-    registry.Boolean(
-        True,
-        _("""When True, chat advertises the notify_when_online tool: "tell me
-        when Larry is on" adds Larry to the bot's IRC MONITOR list and says so
-        in the channel when he signs on. Watches fire once, are kept across
-        restarts, and lapse after 7 days; 5 per person."""),
     ),
 )
 
@@ -1062,27 +483,11 @@ conf.registerChannelValue(
         _("""Space-separated list of Limnoria plugin names whose commands
         the LLM may call when bridgeEnabled is True. When empty (the
         default) the bridge falls back to a curated read-safe set: Misc
-        Time Math Utilities Seen Web Later Note Karma QuoteGrabs RSS DDG
-        — write commands inside those plugins stay hidden until
-        bridgeAllowMutating is True. Set this to a non-empty list to
+        Time Math Utilities Seen Web Later Note Karma QuoteGrabs RSS DDG.
+        Write commands are never exposed, whichever plugins are listed
+        (MUTATING_COMMANDS in limnoria_bridge.py). Set this to a non-empty list to
         override the curated set with your own selection. Set
         bridgeEnabled False to disable the bridge entirely."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "bridgeAllowMutating",
-    registry.Boolean(
-        False,
-        _("""When True, the Limnoria bridge exposes commands that modify
-        persistent state (sending notes, registering feeds, mutating karma,
-        etc.). When False (the default), only read-only commands are exposed
-        — write commands are hidden from the LLM's tool description and any
-        attempt to dispatch one returns an error envelope.
-
-        Per-command classification lives in MUTATING_COMMANDS in
-        plugins/llm/src/llm/limnoria_bridge.py."""),
     ),
 )
 
@@ -1102,26 +507,6 @@ conf.registerChannelValue(
         anyone schedules anything. The @remind command and the firing of
         already-created reminders/tasks work regardless of this setting —
         it only gates whether the model can create/list/cancel them."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "bridgeScheduledTaskLimit",
-    registry.NonNegativeInteger(
-        5,
-        _("""Maximum number of active LLM-scheduled tasks per creator in this
-        channel. Enforced at create time by the schedule_llm_task tool. Set to
-        0 to disable scheduling entirely.
-
-        Each fire is checked against the user's ask rate limit but consumes no
-        slot (plugin._unattended_ask_rate_limited peeks with record=False): a
-        fire is skipped when the user has already maxed their own interactive
-        use. This value caps the *number* of pending schedules, not their
-        cumulative cost. The bridge* prefix is a leftover from the Phase 2
-        bridge work that introduced scheduling; a fire runs through
-        _run_unattended_assistant, which wires no bridge tools, so a scheduled
-        task cannot execute Limnoria commands."""),
     ),
 )
 
@@ -1153,30 +538,6 @@ conf.registerGlobalValue(
         url must be a bare scheme://host with no trailing path. Unusable
         entries are dropped with a warning, duplicates collapse, and at most 5
         are polled. Empty disables polling and announcements."""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "statusQueryablePages",
-    registry.SpaceSeparatedListOfStrings(
-        [],
-        _("""Space-separated status pages the bot can be ASKED about but never
-        polls or announces, same Name=url grammar as statusPageUrls. These cost
-        nothing until someone asks: they are fetched lazily and cached, with no
-        incident lifecycle and no channel announcements. Use this for the long
-        tail; use statusPageUrls for pages a channel should be told about. At
-        most 20."""),
-    ),
-)
-
-conf.registerChannelValue(
-    LLM,
-    "auroraEnabled",
-    registry.Boolean(
-        True,
-        _("""Give the chat model the aurora tool: NOAA aurora probability, solar
-        wind, Kp, darkness and cloud cover for a named place. On by default."""),
     ),
 )
 

@@ -28,7 +28,7 @@ class TestProfileResolution:
     )
     def test_model_setting_is_a_known_registry_key(self, pid):
         """profile.model_setting matches a registerChannelValue in config.py."""
-        valid_model_keys = {"assistantModel", "imageModel", "searchModel"}
+        valid_model_keys = {"assistantModel"}
         assert profile.PROFILES[pid].model_setting in valid_model_keys
 
     @pytest.mark.parametrize(

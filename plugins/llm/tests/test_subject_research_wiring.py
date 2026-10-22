@@ -45,7 +45,7 @@ def researching_plugin(plugin_env, mocker):
     """A plugin with research enabled and the generation path stubbed."""
     plugin, mock_irc, mock_msg = plugin_env
     mock_irc.state.nickToAccount.return_value = "test_account"
-    plugin.registryValue.side_effect = make_registry_side_effect({"subjectResearchEnabled": True})
+    plugin.registryValue.side_effect = make_registry_side_effect()
     plugin.llm_service.assistant_completion.side_effect = None
     plugin.llm_service.assistant_completion.return_value = _assistant_result()
     plugin.llm_service.subject_dossier.return_value = _dossier(_FACTS)
@@ -166,18 +166,6 @@ class TestDrawResearch:
         plugin.draw(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
 
         assert order == ["typing", "research"]
-
-    def test_disabled_means_no_call(self, researching_plugin) -> None:
-        """GIVEN the kill switch off WHEN @draw runs THEN no research happens."""
-        plugin, mock_irc, mock_msg = researching_plugin
-        plugin.registryValue.side_effect = make_registry_side_effect(
-            {"subjectResearchEnabled": False}
-        )
-
-        plugin.draw(mock_irc, mock_msg, ["churchill", "on", "a", "balcony"])
-
-        plugin.llm_service.subject_dossier.assert_not_called()
-        assert plugin.llm_service.assistant_completion.call_args.kwargs["system_prompt"] is None
 
     def test_research_failure_still_draws(self, researching_plugin) -> None:
         """GIVEN the research raises WHEN @draw runs THEN the image is still planned."""

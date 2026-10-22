@@ -411,9 +411,7 @@ class TestScheduledTaskUsesZone:
         from llm.service import LLMService
 
         plugin = mocker.MagicMock()
-        plugin.registryValue.side_effect = lambda key, *args: {
-            "bridgeScheduledTaskLimit": 5,
-        }.get(key, "")
+        plugin.registryValue.side_effect = lambda key, *args: {}.get(key, "")
         plugin.db.count_scheduled_llm_tasks_for.return_value = 0
         mocker.patch("llm.service.log")
         return LLMService(plugin)

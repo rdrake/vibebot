@@ -362,8 +362,6 @@ class TestBuildBridgeTool:
             else []
             if k == "bridgeAllowedPlugins"
             else False
-            if k == "bridgeAllowMutating"
-            else False
             if k == "bridgeDebugInChannel"
             else None
         )
@@ -383,8 +381,6 @@ class TestBuildBridgeTool:
             if k == "bridgeEnabled"
             else []
             if k == "bridgeAllowedPlugins"
-            else False
-            if k == "bridgeAllowMutating"
             else False
             if k == "bridgeDebugInChannel"
             else None
@@ -407,8 +403,6 @@ class TestBuildBridgeTool:
             if k == "bridgeEnabled"
             else []
             if k == "bridgeAllowedPlugins"
-            else False
-            if k == "bridgeAllowMutating"
             else False
             if k == "bridgeDebugInChannel"
             else None
@@ -434,8 +428,6 @@ class TestBuildBridgeTool:
             if k == "bridgeEnabled"
             else ["Misc"]
             if k == "bridgeAllowedPlugins"
-            else False
-            if k == "bridgeAllowMutating"
             else False
             if k == "bridgeDebugInChannel"
             else None
@@ -482,8 +474,6 @@ class TestBuildBridgeTool:
             else ["Misc"]
             if k == "bridgeAllowedPlugins"
             else False
-            if k == "bridgeAllowMutating"
-            else False
             if k == "bridgeDebugInChannel"
             else None
         )
@@ -517,8 +507,6 @@ class TestBuildBridgeTool:
             if k == "bridgeEnabled"
             else ["Misc"]
             if k == "bridgeAllowedPlugins"
-            else False
-            if k == "bridgeAllowMutating"
             else False
             if k == "bridgeDebugInChannel"
             else None
@@ -557,8 +545,6 @@ class TestBuildBridgeTool:
             else ["Misc"]
             if k == "bridgeAllowedPlugins"
             else False
-            if k == "bridgeAllowMutating"
-            else False
             if k == "bridgeDebugInChannel"
             else None
         )
@@ -585,8 +571,6 @@ class TestBuildBridgeTool:
             else ["Misc"]
             if k == "bridgeAllowedPlugins"
             else False
-            if k == "bridgeAllowMutating"
-            else False
             if k == "bridgeDebugInChannel"
             else None
         )
@@ -609,192 +593,10 @@ class TestBuildBridgeTool:
         assert len(json.loads(result_over.content)["matches"]) == 25
         assert len(json.loads(result_under.content)["matches"]) == 1
 
-    def test_passes_allow_mutating_false_by_default(self, plugin_env, mocker):
-        """When bridgeAllowMutating is False (default), enumerate_commands is
-        called with allow_mutating=False."""
-        plugin, irc, msg = plugin_env
-        plugin.registryValue.side_effect = lambda k, ch=None: (
-            True
-            if k == "bridgeEnabled"
-            else ["Misc"]
-            if k == "bridgeAllowedPlugins"
-            else False
-            if k == "bridgeAllowMutating"
-            else False
-            if k == "bridgeDebugInChannel"
-            else None
-        )
-        enum_mock = mocker.patch(
-            "llm.limnoria_bridge.enumerate_commands",
-            return_value=[
-                mocker.MagicMock(plugin="Misc", command="ping", arg_syntax="", description="")
-            ],
-        )
-
-        plugin._build_bridge_tool(irc, msg, "#test")
-
-        assert enum_mock.call_args.kwargs["allow_mutating"] is False
-
-    def test_passes_allow_mutating_true_when_gate_open(self, plugin_env, mocker):
-        """When bridgeAllowMutating is True, enumerate_commands receives
-        allow_mutating=True and the bridge dispatch handler does too."""
-        plugin, irc, msg = plugin_env
-        plugin.registryValue.side_effect = lambda k, ch=None: (
-            True
-            if k == "bridgeEnabled"
-            else ["Later"]
-            if k == "bridgeAllowedPlugins"
-            else True
-            if k == "bridgeAllowMutating"
-            else False
-            if k == "bridgeDebugInChannel"
-            else None
-        )
-        enum_mock = mocker.patch(
-            "llm.limnoria_bridge.enumerate_commands",
-            return_value=[
-                mocker.MagicMock(
-                    plugin="Later",
-                    command="tell",
-                    arg_syntax="<nick> <text>",
-                    description="",
-                )
-            ],
-        )
-        dispatch_mock = mocker.patch(
-            "llm.limnoria_bridge.dispatch",
-            return_value={"status": "ok", "reply": "ok"},
-        )
-
-        _, handlers = plugin._build_bridge_tool(irc, msg, "#test")
-
-        assert enum_mock.call_args.kwargs["allow_mutating"] is True
-
-        handlers["run_limnoria_command"]({"plugin": "Later", "command": "tell", "args": "alice hi"})
-        assert dispatch_mock.call_args.kwargs["allow_mutating"] is True
-
-    def test_dispatch_handler_uses_closed_gate_by_default(self, plugin_env, mocker):
-        """The handler closure captures the gate value at build time and uses it
-        for every dispatch call within that turn."""
-        plugin, irc, msg = plugin_env
-        plugin.registryValue.side_effect = lambda k, ch=None: (
-            True
-            if k == "bridgeEnabled"
-            else ["Misc"]
-            if k == "bridgeAllowedPlugins"
-            else False
-            if k == "bridgeAllowMutating"
-            else False
-            if k == "bridgeDebugInChannel"
-            else None
-        )
-        mocker.patch(
-            "llm.limnoria_bridge.enumerate_commands",
-            return_value=[
-                mocker.MagicMock(plugin="Misc", command="ping", arg_syntax="", description="")
-            ],
-        )
-        dispatch_mock = mocker.patch(
-            "llm.limnoria_bridge.dispatch",
-            return_value={"status": "ok", "reply": "pong"},
-        )
-
-        _, handlers = plugin._build_bridge_tool(irc, msg, "#test")
-        handlers["run_limnoria_command"]({"plugin": "Misc", "command": "ping", "args": ""})
-
-        assert dispatch_mock.call_args.kwargs["allow_mutating"] is False
-
-    def test_appends_footer_when_gate_closed_and_both_kinds_present(self, plugin_env, mocker):
-        """Allowlist contains 'Later' (has both writes and reads), gate closed
-        → tool description ends with the footer."""
-        plugin, irc, msg = plugin_env
-        plugin.registryValue.side_effect = lambda k, ch=None: (
-            True
-            if k == "bridgeEnabled"
-            else ["Later"]
-            if k == "bridgeAllowedPlugins"
-            else False
-            if k == "bridgeAllowMutating"
-            else False
-            if k == "bridgeDebugInChannel"
-            else None
-        )
-        mocker.patch(
-            "llm.limnoria_bridge.enumerate_commands",
-            return_value=[
-                mocker.MagicMock(plugin="Later", command="notes", arg_syntax="", description="")
-            ],
-        )
-
-        schemas, _ = plugin._build_bridge_tool(irc, msg, "#test")
-        desc = schemas[0]["function"]["description"]
-        assert "write commands hidden" in desc
-        assert "bridgeAllowMutating" in desc
-
-    def test_omits_footer_when_gate_open(self, plugin_env, mocker):
-        """Gate open → no footer (writes are exposed; nothing to flag)."""
-        plugin, irc, msg = plugin_env
-        plugin.registryValue.side_effect = lambda k, ch=None: (
-            True
-            if k == "bridgeEnabled"
-            else ["Later"]
-            if k == "bridgeAllowedPlugins"
-            else True
-            if k == "bridgeAllowMutating"
-            else False
-            if k == "bridgeDebugInChannel"
-            else None
-        )
-        mocker.patch(
-            "llm.limnoria_bridge.enumerate_commands",
-            return_value=[
-                mocker.MagicMock(
-                    plugin="Later",
-                    command="tell",
-                    arg_syntax="<nick> <text>",
-                    description="",
-                )
-            ],
-        )
-
-        schemas, _ = plugin._build_bridge_tool(irc, msg, "#test")
-        desc = schemas[0]["function"]["description"]
-        assert "write commands hidden" not in desc
-
-    def test_omits_footer_when_only_pure_read_plugins_allowed(self, plugin_env, mocker):
-        """Allowlist is Time + Math (both pure-read) and gate is closed —
-        nothing was hidden, so the footer would be misleading."""
-        plugin, irc, msg = plugin_env
-        plugin.registryValue.side_effect = lambda k, ch=None: (
-            True
-            if k == "bridgeEnabled"
-            else ["Time", "Math"]
-            if k == "bridgeAllowedPlugins"
-            else False
-            if k == "bridgeAllowMutating"
-            else False
-            if k == "bridgeDebugInChannel"
-            else None
-        )
-        mocker.patch(
-            "llm.limnoria_bridge.enumerate_commands",
-            return_value=[
-                mocker.MagicMock(plugin="Time", command="time", arg_syntax="", description=""),
-                mocker.MagicMock(
-                    plugin="Math", command="calc", arg_syntax="<expr>", description=""
-                ),
-            ],
-        )
-
-        schemas, _ = plugin._build_bridge_tool(irc, msg, "#test")
-        desc = schemas[0]["function"]["description"]
-        assert "write commands hidden" not in desc
-
-    def test_behavior_later_notes_visible_tell_hidden_when_gate_closed(self, plugin_env, mocker):
-        """Behavior-level (not plumbing): with Later allowlisted and the gate
-        closed, the rendered tool description must list Later.notes (read) and
-        NOT list Later.tell (mutating). Same setup with gate open must list both.
-        """
+    def test_behavior_later_notes_visible_tell_hidden(self, plugin_env, mocker):
+        """Behavior-level (not plumbing): with Later allowlisted, the rendered
+        tool description must list Later.notes (read) and NOT list Later.tell
+        (mutating)."""
         plugin, irc, msg = plugin_env
 
         # Stub callback shaped to look like the Later plugin: 'tell' (mutating)
@@ -815,39 +617,20 @@ class TestBuildBridgeTool:
             return_value=False,
         )
 
-        # Gate closed: only 'notes' should appear in the description table.
+        # Only 'notes' should appear in the description table.
         plugin.registryValue.side_effect = lambda k, ch=None: (
             True
             if k == "bridgeEnabled"
             else ["Later"]
             if k == "bridgeAllowedPlugins"
             else False
-            if k == "bridgeAllowMutating"
-            else False
             if k == "bridgeDebugInChannel"
             else None
         )
-        schemas_closed, _ = plugin._build_bridge_tool(irc, msg, "#test")
-        desc_closed = schemas_closed[0]["function"]["description"]
-        assert "later.notes" in desc_closed.lower()
-        assert "later.tell" not in desc_closed.lower()
-
-        # Gate open: both should appear.
-        plugin.registryValue.side_effect = lambda k, ch=None: (
-            True
-            if k == "bridgeEnabled"
-            else ["Later"]
-            if k == "bridgeAllowedPlugins"
-            else True
-            if k == "bridgeAllowMutating"
-            else False
-            if k == "bridgeDebugInChannel"
-            else None
-        )
-        schemas_open, _ = plugin._build_bridge_tool(irc, msg, "#test")
-        desc_open = schemas_open[0]["function"]["description"]
-        assert "later.notes" in desc_open.lower()
-        assert "later.tell" in desc_open.lower()
+        schemas, _ = plugin._build_bridge_tool(irc, msg, "#test")
+        desc = schemas[0]["function"]["description"]
+        assert "later.notes" in desc.lower()
+        assert "later.tell" not in desc.lower()
 
 
 class TestStripNickAddress:
@@ -1543,23 +1326,18 @@ class TestAgendaRestart:
     through the one agenda wakeup (real SQLite; the scheduler is a mock)."""
 
     @pytest.fixture
-    def boot(self, mock_irc: MagicMock, mocker: MockerFixture, tmp_path):
+    def boot(self, mock_irc: MagicMock, mocker: MockerFixture, llm_data_dir):
         """Seed a database, then start the plugin on it. Returns a starter."""
         from llm.persistence import LLMDatabase
         from llm.plugin import LLM
 
         from .conftest import make_registry_side_effect, plugin_init_patches
 
-        db_path = str(tmp_path / "llm.db")
-        seed = LLMDatabase(db_path)
+        seed = LLMDatabase(str(llm_data_dir / "LLM.db"))
 
         def start():
             seed.close()
-            mocker.patch.object(
-                LLM,
-                "registryValue",
-                side_effect=make_registry_side_effect({"databasePath": db_path}),
-            )
+            mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
             mocks = plugin_init_patches(mocker, mock_database=False)
             mocks["LLMService"].return_value.sanitize_output.side_effect = lambda x: x
             mocker.patch("llm.plugin.world").ircs = [mock_irc]
@@ -1797,7 +1575,6 @@ class TestRateLimiter:
                 "askRateLimitWindow": 60,
                 "drawRateLimitCount": 3,
                 "drawRateLimitWindow": 60,
-                "enforceRateLimits": True,
             }.get(key, 0)
         )
         return p
@@ -1888,32 +1665,6 @@ class TestRateLimiter:
         assert plugin.db.log_usage.call_args.kwargs["status"] == "rate_limited"
         assert "rate_limited" in plugin.log.info.call_args.args[0]
 
-    def test_check_rate_limit_logs_only_when_not_enforced(
-        self, plugin, mocker: MockerFixture
-    ) -> None:
-        """GIVEN enforce=False and over limit WHEN _check_rate_limit THEN emits shadow log but allows."""
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=lambda key, *a: {
-                "drawRateLimitCount": 3,
-                "drawRateLimitWindow": 60,
-                "enforceRateLimits": False,
-            }.get(key, "")
-        )
-        mock_irc = mocker.MagicMock()
-        now = 1000.0
-        for i in range(3):
-            plugin._record_rate_limit_hit("draw", "alice", now - 10 + i)
-
-        mocker.patch("time.time", return_value=now)
-        blocked = plugin._check_rate_limit(
-            mock_irc, "draw", "alice", "alice", "#test", "prompt", tier="registered"
-        )
-
-        assert blocked is False
-        mock_irc.error.assert_not_called()
-        plugin.db.log_usage.assert_not_called()
-        assert "rate_limit_shadow" in plugin.log.info.call_args.args[0]
-
 
 class TestRunPreflight:
     """Test _run_preflight shared preflight logic."""
@@ -1942,7 +1693,6 @@ class TestRunPreflight:
                 "askRateLimitWindow": 60,
                 "drawRateLimitCount": 3,
                 "drawRateLimitWindow": 60,
-                "enforceRateLimits": False,
             }.get(key, "")
         )
         return p
@@ -2177,7 +1927,7 @@ class TestChatProfileBridgeWiring:
 
         # Override registry: enable bridge with one allowed plugin.
         plugin.registryValue.side_effect = make_registry_side_effect(
-            {"bridgeEnabled": True, "bridgeAllowedPlugins": ["Misc"], "auroraEnabled": False}
+            {"bridgeEnabled": True, "bridgeAllowedPlugins": ["Misc"]}
         )
 
         fake_cmd = mocker.MagicMock(
@@ -2198,7 +1948,7 @@ class TestChatProfileBridgeWiring:
         kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         extra_tools = kwargs.get("extra_tools")
         extra_handlers = kwargs.get("extra_handlers")
-        assert extra_tools is not None and len(extra_tools) == 2
+        assert extra_tools is not None
         names = [t["function"]["name"] for t in extra_tools]
         assert "run_limnoria_command" in names
         assert "search_bridge_commands" in names
@@ -2208,12 +1958,10 @@ class TestChatProfileBridgeWiring:
 
     def test_omits_bridge_extras_when_disabled(self, plugin_env, mocker: MockerFixture):
         """GIVEN bridgeEnabled=False (default) WHEN ask is called
-        THEN assistant_completion receives extra_tools=None and extra_handlers=None."""
+        THEN no bridge tool or handler reaches assistant_completion."""
         plugin, mock_irc, mock_msg = plugin_env
 
-        # Default conftest registry has bridgeEnabled=False. The aurora tool is
-        # on by default, so turn it off to see the bridge's absence alone.
-        plugin.registryValue.side_effect = make_registry_side_effect({"auroraEnabled": False})
+        # Default conftest registry has bridgeEnabled=False.
         plugin.llm_service.detect_images.return_value = []
         plugin.llm_service.assistant_completion.side_effect = None
         plugin.llm_service.assistant_completion.return_value = self._make_assistant_result()
@@ -2222,8 +1970,12 @@ class TestChatProfileBridgeWiring:
 
         plugin.llm_service.assistant_completion.assert_called_once()
         kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
-        assert kwargs.get("extra_tools") is None
-        assert kwargs.get("extra_handlers") is None
+        names = {t["function"]["name"] for t in kwargs["extra_tools"]}
+        assert not names & {"run_limnoria_command", "search_bridge_commands"}
+        assert not set(kwargs["extra_handlers"]) & {
+            "run_limnoria_command",
+            "search_bridge_commands",
+        }
 
     def test_typing_done_is_sent_after_reply_dispatch(
         self, plugin_env, mocker: MockerFixture
@@ -2337,29 +2089,30 @@ class TestMemoryExtractionBackground:
     def test_cap_stops_loop_before_saving_all_facts(
         self, plugin_and_callback, mocker: MockerFixture
     ) -> None:
-        """The save loop respects memoryMaxPerUser; extra facts are dropped."""
+        """Promotion respects the per-user cap; extra candidates stay candidates."""
+        from llm.persistence import MemoryCandidate
+        from llm.plugin import _MEMORY_MAX_PER_USER, _MEMORY_PROMOTION_THRESHOLD
         from llm.service import ExtractionResult
 
         plugin, add_event = plugin_and_callback
-        # Existing rows + max are wired so only ONE additional fact fits.
-        snapshot = self._existing_rows(mocker, 9)
+        # Existing rows are one short of the cap, so only ONE promotion fits.
+        snapshot = self._existing_rows(mocker, _MEMORY_MAX_PER_USER - 1)
         plugin.db.get_memories.side_effect = [snapshot, snapshot]
-        # Threshold=1 reproduces legacy single-stage behavior so this test
-        # keeps exercising the cap on direct saves.
-        plugin.registryValue = mocker.Mock(
-            side_effect=make_registry_side_effect(
-                {
-                    "memoryMaxPerUser": 10,
-                    "memoryEnabled": True,
-                    "memoryCleanupInterval": 0,
-                    "memoryPromotionThreshold": 1,
-                }
+        plugin.db.get_memory_candidates.return_value = [
+            MemoryCandidate(
+                id=i + 1,
+                nick="alice",
+                fact=fact,
+                mentions=_MEMORY_PROMOTION_THRESHOLD - 1,
+                first_seen=100.0,
+                last_seen=100.0,
+                source_channel="#test",
             )
-        )
-        plugin.db.get_memory_candidates.return_value = []
-        plugin.llm_service.extract_memories.return_value = ExtractionResult(
-            add=["one", "two", "three"]
-        )
+            for i, fact in enumerate(["one", "two", "three"])
+        ]
+        plugin.db.reinforce_memory_candidate.return_value = _MEMORY_PROMOTION_THRESHOLD
+        plugin.db.increment_memory_saves.return_value = 0
+        plugin.llm_service.extract_memories.return_value = ExtractionResult(reinforce=[0, 1, 2])
 
         plugin._schedule_memory_extraction("alice", "#test", "user", "bot")
         bg_callback = add_event.call_args.args[0]
@@ -2371,25 +2124,28 @@ class TestMemoryExtractionBackground:
     def test_cleanup_triggers_when_save_counter_reaches_interval(
         self, plugin_and_callback, mocker: MockerFixture
     ) -> None:
-        """When increment_memory_saves crosses cleanup_interval, _run_memory_cleanup runs."""
+        """When increment_memory_saves crosses the cleanup interval, _run_memory_cleanup runs."""
+        from llm.persistence import MemoryCandidate
+        from llm.plugin import _MEMORY_CLEANUP_INTERVAL, _MEMORY_PROMOTION_THRESHOLD
         from llm.service import ExtractionResult
 
         plugin, add_event = plugin_and_callback
         snapshot = self._existing_rows(mocker, 2)
         plugin.db.get_memories.side_effect = [snapshot, snapshot]
-        plugin.registryValue = mocker.Mock(
-            side_effect=make_registry_side_effect(
-                {
-                    "memoryMaxPerUser": 50,
-                    "memoryEnabled": True,
-                    "memoryCleanupInterval": 3,
-                    "memoryPromotionThreshold": 1,
-                }
+        plugin.db.get_memory_candidates.return_value = [
+            MemoryCandidate(
+                id=7,
+                nick="alice",
+                fact="a fresh fact",
+                mentions=_MEMORY_PROMOTION_THRESHOLD - 1,
+                first_seen=100.0,
+                last_seen=100.0,
+                source_channel="#test",
             )
-        )
-        plugin.db.get_memory_candidates.return_value = []
-        plugin.llm_service.extract_memories.return_value = ExtractionResult(add=["a fresh fact"])
-        plugin.db.increment_memory_saves.return_value = 3  # Reached interval.
+        ]
+        plugin.db.reinforce_memory_candidate.return_value = _MEMORY_PROMOTION_THRESHOLD
+        plugin.llm_service.extract_memories.return_value = ExtractionResult(reinforce=[0])
+        plugin.db.increment_memory_saves.return_value = _MEMORY_CLEANUP_INTERVAL
         cleanup_spy = mocker.patch.object(plugin, "_run_memory_cleanup")
 
         plugin._schedule_memory_extraction("alice", "#test", "user", "bot")
@@ -2422,6 +2178,7 @@ class TestMemoryExtractionBackground:
     ) -> None:
         """A reinforcement that doesn't cross the threshold stays a candidate."""
         from llm.persistence import MemoryCandidate
+        from llm.plugin import _MEMORY_PROMOTION_THRESHOLD
         from llm.service import ExtractionResult
 
         plugin, add_event = plugin_and_callback
@@ -2437,10 +2194,7 @@ class TestMemoryExtractionBackground:
             source_channel="#test",
         )
         plugin.db.get_memory_candidates.return_value = [candidate]
-        plugin.registryValue = mocker.Mock(
-            side_effect=make_registry_side_effect({"memoryPromotionThreshold": 3})
-        )
-        plugin.db.reinforce_memory_candidate.return_value = 2  # below threshold
+        plugin.db.reinforce_memory_candidate.return_value = _MEMORY_PROMOTION_THRESHOLD - 1
         plugin.llm_service.extract_memories.return_value = ExtractionResult(reinforce=[0])
 
         plugin._schedule_memory_extraction("alice", "#test", "user", "bot")
@@ -2499,23 +2253,6 @@ class TestMemoryExtractionBackground:
 
         plugin.db.reinforce_memory_candidate.assert_not_called()
         plugin.db.save_memory.assert_not_called()
-
-
-class TestSafeDatabasePath:
-    """_safe_database_path rejects '..' traversal in the operator-set
-    databasePath, falling back to the default data-dir path."""
-
-    def test_plain_absolute_path_is_kept(self) -> None:
-        from llm.plugin import _safe_database_path
-
-        assert _safe_database_path("/var/lib/vibebot/LLM.db", "/data/LLM.db") == (
-            "/var/lib/vibebot/LLM.db"
-        )
-
-    def test_traversal_falls_back_to_default(self) -> None:
-        from llm.plugin import _safe_database_path
-
-        assert _safe_database_path("../../../etc/passwd", "/data/LLM.db") == "/data/LLM.db"
 
 
 class TestUndeadPluginReaper:

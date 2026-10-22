@@ -37,9 +37,10 @@ class TestLLMService:
         assert "empty" in error.lower()
 
     def test_validate_prompt_rejects_too_long(self) -> None:
-        """GIVEN prompt over configured max WHEN validated THEN rejected."""
-        self.mock_plugin.registryValue = self.mocker.Mock(side_effect=lambda key, channel=None: 100)
-        long_prompt = "x" * 101
+        """GIVEN prompt over the max WHEN validated THEN rejected."""
+        from llm.service import MAX_PROMPT_LENGTH
+
+        long_prompt = "x" * (MAX_PROMPT_LENGTH + 1)
         is_valid, error = self.service.validate_prompt(long_prompt)
         assert is_valid is False
         assert "too long" in error.lower()
@@ -264,7 +265,6 @@ class TestXssSanitization:
             httpRoot="/tmp/test_llm",
             httpUrlBase="https://example.com/llm",
             fileCleanupAge=24,
-            fileCleanupMax=1000,
         )
 
     def test_sanitize_html_strips_script_tags(self) -> None:
@@ -328,7 +328,6 @@ class TestXssSanitization:
                 "httpRoot": str(tmp_path),
                 "httpUrlBase": "https://example.com/llm",
                 "fileCleanupAge": 24,
-                "fileCleanupMax": 1000,
             }.get(key)
         )
 

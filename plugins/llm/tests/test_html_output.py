@@ -21,7 +21,6 @@ class TestXssPrevention:
             httpRoot=str(tmp_path),
             httpUrlBase="http://localhost/llm",
             fileCleanupAge=24,
-            fileCleanupMax=1000,
         )
         return service
 
@@ -141,7 +140,6 @@ class TestPageThemes:
             httpRoot=str(tmp_path),
             httpUrlBase="http://localhost/llm",
             fileCleanupAge=24,
-            fileCleanupMax=1000,
         )
         return service
 

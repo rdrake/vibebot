@@ -23,6 +23,7 @@ from llm.assistant import ToolCallbackResult
 from llm.service import (
     _MAX_SAFETY_REFUSAL_RETRIES,
     _SAFETY_REFUSAL_RETRY_NUDGE,
+    REFUSAL_FALLBACK_MODEL,
     LLMService,
     _is_safety_refusal,
     _strip_safety_refusals,
@@ -289,7 +290,7 @@ class TestStaleImageGuard:
         assert "moderation" in (result.content or "").lower()
 
 
-FALLBACK = "xai/grok-4-1-fast-non-reasoning"
+FALLBACK = REFUSAL_FALLBACK_MODEL
 REFUSAL = "I can't help with that."
 
 
@@ -303,9 +304,7 @@ class TestRefusalFallback:
         def _run(
             outcomes: list[object], call: dict[str, Any] | None = None, **overrides: object
         ) -> tuple[Any, list[dict], Any]:
-            svc, _plugin = make_service(
-                **{"assistantModel": "gpt-4", "refusalFallbackModel": FALLBACK, **overrides}
-            )
+            svc, _plugin = make_service(**{"assistantModel": "gpt-4", **overrides})
             svc.log = mocker.MagicMock()
             calls: list[dict] = []
 
@@ -391,14 +390,9 @@ class TestRefusalFallback:
         assert [c["model"] for c in calls] == ["gpt-4", "gpt-4", FALLBACK, FALLBACK]
         assert len(served) == 1
 
-    @pytest.mark.parametrize(
-        "overrides",
-        [{"refusalFallbackModel": ""}, {"assistantModel": FALLBACK}],
-        ids=["disabled", "primary-is-fallback"],
-    )
-    def test_no_fallback(self, run, overrides: dict[str, str]) -> None:  # type: ignore[no-untyped-def]
-        """Empty setting, or a primary that already is the fallback, delivers the refusal."""
-        result, calls, served = run([REFUSAL], **overrides)
+    def test_no_fallback_when_primary_is_the_fallback(self, run) -> None:  # type: ignore[no-untyped-def]
+        """A primary that already is the fallback delivers the refusal."""
+        result, calls, served = run([REFUSAL], assistantModel=FALLBACK)
 
         assert result.content == REFUSAL
         assert len(calls) == 2

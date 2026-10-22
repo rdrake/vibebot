@@ -66,7 +66,7 @@ def write_catalog(entries: list[dict[str, Any]], image_dir: Path) -> meme.MemeCa
 def meme_plugin(plugin_env, mocker, tmp_path):
     plugin, mock_irc, mock_msg = plugin_env
     mock_irc.state.nickToAccount.return_value = "test_account"
-    plugin.registryValue.side_effect = make_registry_side_effect({"memeEnabled": True})
+    plugin.registryValue.side_effect = make_registry_side_effect()
     mocker.patch.object(meme, "bundled_catalog", return_value=write_catalog(_ENTRIES, tmp_path))
     plugin.llm_service._save_image_bytes.return_value = _HOSTED
     plugin.llm_service._download_image_bytes.return_value = (_png_bytes(), "png")
@@ -91,15 +91,6 @@ def _saved(plugin) -> bytes:
 
 
 class TestMemeCommand:
-    def test_refused_when_memes_are_off(self, meme_plugin) -> None:
-        plugin, mock_irc, mock_msg = meme_plugin
-        plugin.registryValue.side_effect = make_registry_side_effect({"memeEnabled": False})
-
-        plugin.meme(mock_irc, mock_msg, ["drake | a | b"])
-
-        assert mock_irc.reply.call_args.args[0] == "Memes are turned off in this channel."
-        plugin.llm_service._save_image_bytes.assert_not_called()
-
     def test_posts_the_hosted_render(self, meme_plugin, rendered) -> None:
         plugin, mock_irc, _ = meme_plugin
 
@@ -359,11 +350,8 @@ class TestChatWiring:
             model="m",
         )
 
-    def test_ask_advertises_make_meme_when_enabled(self, meme_plugin) -> None:
+    def test_ask_advertises_make_meme(self, meme_plugin) -> None:
         plugin, irc, msg = meme_plugin
-        plugin.registryValue.side_effect = make_registry_side_effect(
-            {"memeEnabled": True, "ircLookupEnabled": False, "auroraEnabled": False}
-        )
         plugin.llm_service.detect_images.return_value = []
         plugin.llm_service.assistant_completion.side_effect = None
         plugin.llm_service.assistant_completion.return_value = self._result()
@@ -372,21 +360,8 @@ class TestChatWiring:
 
         kwargs = plugin.llm_service.assistant_completion.call_args.kwargs
         names = [t["function"]["name"] for t in kwargs["extra_tools"]]
-        assert names == ["make_meme"]
+        assert "make_meme" in names
         assert "make_meme" in kwargs["extra_handlers"]
-
-    def test_ask_omits_make_meme_when_disabled(self, meme_plugin) -> None:
-        plugin, irc, msg = meme_plugin
-        plugin.registryValue.side_effect = make_registry_side_effect(
-            {"memeEnabled": False, "ircLookupEnabled": False, "auroraEnabled": False}
-        )
-        plugin.llm_service.detect_images.return_value = []
-        plugin.llm_service.assistant_completion.side_effect = None
-        plugin.llm_service.assistant_completion.return_value = self._result()
-
-        plugin.ask(irc, msg, ["hello"])
-
-        assert plugin.llm_service.assistant_completion.call_args.kwargs["extra_tools"] is None
 
 
 class TestCustomAndAliases:
@@ -438,7 +413,7 @@ class TestCustomAndAliases:
     def test_url_alias_downloads_its_image(self, meme_plugin) -> None:
         plugin, mock_irc, mock_msg = meme_plugin
         plugin.registryValue.side_effect = make_registry_side_effect(
-            {"memeEnabled": True, "memeAliases": [f"wojak={_BG}"]}
+            {"memeAliases": [f"wojak={_BG}"]}
         )
 
         plugin.meme(mock_irc, mock_msg, ["wojak | a | b"])
@@ -456,7 +431,7 @@ class TestCustomAndAliases:
     def test_registry_aliases_reach_the_resolver(self, meme_plugin, rendered) -> None:
         plugin, mock_irc, mock_msg = meme_plugin
         plugin.registryValue.side_effect = make_registry_side_effect(
-            {"memeEnabled": True, "memeAliases": ["hotline=drake"]}
+            {"memeAliases": ["hotline=drake"]}
         )
 
         plugin.meme(mock_irc, mock_msg, ["hotline bling | a | b"])

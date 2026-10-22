@@ -958,16 +958,12 @@ class TestAgendaWakeup:
     """The one wakeup timer for reminders and scheduled tasks (real SQLite)."""
 
     @pytest.fixture
-    def plugin(self, mock_irc, mocker: MockerFixture, tmp_path):
+    def plugin(self, mock_irc, mocker: MockerFixture, llm_data_dir):
         from llm.plugin import LLM
 
         from .conftest import plugin_init_patches
 
-        mocker.patch.object(
-            LLM,
-            "registryValue",
-            side_effect=make_registry_side_effect({"databasePath": str(tmp_path / "llm.db")}),
-        )
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
         plugin_init_patches(mocker, mock_database=False)
         plugin = LLM(mock_irc)
         plugin.llm_service.sanitize_output.side_effect = lambda x: x

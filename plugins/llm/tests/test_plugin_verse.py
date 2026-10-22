@@ -8,9 +8,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 from llm.identity import Caller, Identity
+from llm.plugin import _VERSE_COMPACTION_MODEL
 from llm.service import AssistantResult, Spend
 
-from .conftest import make_completion_response, make_registry_side_effect
+from .conftest import make_completion_response
 from .verse.conftest import link_avatar
 
 if TYPE_CHECKING:
@@ -1886,8 +1887,6 @@ class TestAskOnVerseChannelWithoutOptIn:
         def _registry(key, *args):
             if key == "verseEnabled":
                 return True
-            if key == "verseAutoEntityMaxNamesPerCall":
-                return 8
             from tests.conftest import make_registry_side_effect
 
             return make_registry_side_effect()(key, *args)
@@ -2020,21 +2019,7 @@ class TestCompactionTimerWiring:
         # registryValue("verseEnabled", channel) — return True for both
         # so the iteration faithfully reflects the helper's output.
         plugin.registryValue = mocker.MagicMock(
-            side_effect=lambda key, *args: (
-                True
-                if key == "verseEnabled"
-                else (
-                    30
-                    if key == "verseEventRetentionDays"
-                    else "gemini/x"
-                    if key == "verseCompactionModel"
-                    else 20
-                    if key == "verseCompactionMinKeepEvents"
-                    else "03:00"
-                    if key == "verseCompactionDailyAt"
-                    else ""
-                )
-            )
+            side_effect=lambda key, *args: True if key == "verseEnabled" else ""
         )
 
         # Stub stores expose ``_channel`` so the fake compact_verse can
@@ -2057,45 +2042,6 @@ class TestCompactionTimerWiring:
         plugin._run_compaction_pass()
         assert called_for == ["#afnet"]
 
-    def test_run_compaction_pass_falls_back_when_registry_raises(
-        self, plugin_env, mocker, monkeypatch
-    ) -> None:
-        """Defensive guards in _run_compaction_pass: if the registry
-        raises for either retention or min-keep keys (e.g. F1 key not
-        yet defined on a freshly-upgraded install), defaults kick in
-        and compaction still runs."""
-        plugin, _irc, _msg = plugin_env
-
-        mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#afnet"])
-
-        def _flaky(key, *args):
-            if key == "verseEnabled":
-                return True
-            if key in ("verseEventRetentionDays", "verseCompactionMinKeepEvents"):
-                raise RuntimeError("registry not loaded")
-            if key == "verseCompactionModel":
-                return "gemini/x"
-            return ""
-
-        plugin.registryValue = mocker.MagicMock(side_effect=_flaky)
-        mocker.patch.object(
-            plugin,
-            "_get_or_create_verse_store",
-            return_value=mocker.MagicMock(),
-        )
-        from llm.verse.compaction import CompactionOutcome
-
-        seen: dict = {}
-
-        def _fake_compact(store, **kw):
-            seen.update(kw)
-            return CompactionOutcome("skipped_no_events", 0, 0)
-
-        monkeypatch.setattr("llm.verse.compaction.compact_verse", _fake_compact)
-        plugin._run_compaction_pass()
-        assert seen["retention_days"] == 30
-        assert seen["min_keep_events"] == 20
-
     def test_compaction_failure_does_not_abort_remaining_channels(
         self, plugin_env, mocker, monkeypatch
     ) -> None:
@@ -2104,21 +2050,7 @@ class TestCompactionTimerWiring:
 
         mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#a", "#b"])
         plugin.registryValue = mocker.MagicMock(
-            side_effect=lambda key, *args: (
-                True
-                if key == "verseEnabled"
-                else (
-                    30
-                    if key == "verseEventRetentionDays"
-                    else "gemini/x"
-                    if key == "verseCompactionModel"
-                    else 20
-                    if key == "verseCompactionMinKeepEvents"
-                    else "03:00"
-                    if key == "verseCompactionDailyAt"
-                    else ""
-                )
-            )
+            side_effect=lambda key, *args: True if key == "verseEnabled" else ""
         )
 
         def _fake_store_for(channel: str):
@@ -2156,21 +2088,7 @@ class TestRunCompactionPassCallsAging:
 
         mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#a", "#b"])
         plugin.registryValue = mocker.MagicMock(
-            side_effect=lambda key, *args: (
-                True
-                if key == "verseEnabled"
-                else (
-                    30
-                    if key == "verseEventRetentionDays"
-                    else "gemini/x"
-                    if key == "verseCompactionModel"
-                    else 20
-                    if key == "verseCompactionMinKeepEvents"
-                    else 14
-                    if key == "verseAutoEntityRetireDays"
-                    else ""
-                )
-            )
+            side_effect=lambda key, *args: True if key == "verseEnabled" else ""
         )
 
         def _fake_store_for(channel: str):
@@ -2203,7 +2121,7 @@ class TestRunCompactionPassCallsAging:
         entity in the new digest. If aging runs after it, a long-silent
         auto_created NPC that happens to appear in the compacted events is
         freshly stamped and never older than the retire cutoff — silently
-        defeating verseAutoEntityRetireDays. Aging-first reads the true
+        defeating the retire cutoff. Aging-first reads the true
         last_seen_ts before the heartbeat can resurrect it.
         """
         from llm.verse import aging as aging_mod
@@ -2213,21 +2131,7 @@ class TestRunCompactionPassCallsAging:
 
         mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#afnet"])
         plugin.registryValue = mocker.MagicMock(
-            side_effect=lambda key, *args: (
-                True
-                if key == "verseEnabled"
-                else (
-                    30
-                    if key == "verseEventRetentionDays"
-                    else "gemini/x"
-                    if key == "verseCompactionModel"
-                    else 20
-                    if key == "verseCompactionMinKeepEvents"
-                    else 14
-                    if key == "verseAutoEntityRetireDays"
-                    else ""
-                )
-            )
+            side_effect=lambda key, *args: True if key == "verseEnabled" else ""
         )
         mocker.patch.object(
             plugin,
@@ -2252,51 +2156,6 @@ class TestRunCompactionPassCallsAging:
 
         assert order == ["age", "compact"]
 
-    def test_aging_reads_retire_days_per_channel(self, plugin_env, mocker, monkeypatch) -> None:
-        """The aging call reads verseAutoEntityRetireDays at the channel
-        scope, not global."""
-        from llm.verse import aging as aging_mod
-        from llm.verse.compaction import CompactionOutcome
-
-        plugin, _irc, _msg = plugin_env
-
-        mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#a"])
-        captured: list[tuple[str, str | None]] = []
-
-        def _spy(key, *args):
-            channel = args[0] if args else None
-            captured.append((key, channel))
-            if key == "verseEnabled":
-                return True
-            if key == "verseEventRetentionDays":
-                return 30
-            if key == "verseCompactionMinKeepEvents":
-                return 20
-            if key == "verseCompactionModel":
-                return "gemini/x"
-            if key == "verseAutoEntityRetireDays":
-                return 14
-            return ""
-
-        plugin.registryValue = mocker.MagicMock(side_effect=_spy)
-
-        def _fake_store_for(channel: str):
-            return mocker.MagicMock(_channel=channel)
-
-        mocker.patch.object(plugin, "_get_or_create_verse_store", side_effect=_fake_store_for)
-        monkeypatch.setattr(
-            "llm.verse.compaction.compact_verse",
-            lambda *a, **kw: CompactionOutcome("skipped_disabled", 0, 0),
-        )
-        monkeypatch.setattr(
-            "llm.verse.aging.age_auto_created_entities",
-            lambda *a, **kw: aging_mod.AgingOutcome(0, 0),
-        )
-
-        plugin._run_compaction_pass()
-
-        assert ("verseAutoEntityRetireDays", "#a") in captured
-
     def test_aging_failure_in_one_channel_does_not_abort_others(
         self, plugin_env, mocker, monkeypatch
     ) -> None:
@@ -2308,21 +2167,7 @@ class TestRunCompactionPassCallsAging:
 
         mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#a", "#b"])
         plugin.registryValue = mocker.MagicMock(
-            side_effect=lambda key, *args: (
-                True
-                if key == "verseEnabled"
-                else (
-                    30
-                    if key == "verseEventRetentionDays"
-                    else "gemini/x"
-                    if key == "verseCompactionModel"
-                    else 20
-                    if key == "verseCompactionMinKeepEvents"
-                    else 14
-                    if key == "verseAutoEntityRetireDays"
-                    else ""
-                )
-            )
+            side_effect=lambda key, *args: True if key == "verseEnabled" else ""
         )
 
         def _fake_store_for(channel: str):
@@ -2389,12 +2234,6 @@ class TestVersecompactCommand:
         def _registry(key, *args):
             if key == "verseEnabled":
                 return verse_enabled
-            if key == "verseEventRetentionDays":
-                return 30
-            if key == "verseCompactionMinKeepEvents":
-                return 20
-            if key == "verseCompactionModel":
-                return "test/distinct-compaction-model"
             return defaults(key, *args)
 
         plugin.registryValue = mocker.MagicMock(side_effect=_registry)
@@ -2416,8 +2255,7 @@ class TestVersecompactCommand:
         )
 
         # Substitute a fake compaction client so no network call happens.
-        # Capture the model kwarg to assert the mocked verseCompactionModel
-        # value is genuinely load-bearing (not the production fallback).
+        # Capture the model kwarg to assert which model writes the digest.
         captured_models: list[str] = []
 
         class _FakeClient:
@@ -2451,11 +2289,7 @@ class TestVersecompactCommand:
         reply_text = irc.reply.call_args[0][0]
         assert "compaction outcome for #afnet" in reply_text
         assert "compacted" in reply_text
-        # Verify the mocked verseCompactionModel value reaches the client.
-        # Using a sentinel distinct from the production fallback
-        # ("gemini/gemini-flash-lite-latest") so this assertion fails if the
-        # code reads the wrong key or falls back to the constant.
-        assert captured_models == ["test/distinct-compaction-model"]
+        assert captured_models == [_VERSE_COMPACTION_MODEL]
 
     def test_disabled_verse_says_so(self, compact_env, mocker) -> None:
         """GIVEN verseEnabled=False WHEN @versecompact THEN reply names verseEnabled."""
@@ -2496,143 +2330,6 @@ class TestVersecompactCommand:
         err_text = irc.error.call_args[0][0]
         assert "compaction failed for #afnet" in err_text
         assert "RuntimeError" in err_text
-
-    def test_registry_lookup_failure_uses_defaults(self, compact_env, mocker, monkeypatch) -> None:
-        """GIVEN registryValue raises for retention/min_keep keys WHEN
-        @versecompact THEN defaults kick in and compaction still runs.
-
-        Covers the defensive try/except guards around the registry reads
-        for verseEventRetentionDays and verseCompactionMinKeepEvents.
-        F1 will define verseCompactionMinKeepEvents — until then, the
-        guard ensures the command still works.
-        """
-        from llm.verse.compaction import CompactionOutcome
-
-        plugin, irc, msg, _store = compact_env
-
-        def _flaky_registry(key, *args):
-            if key == "verseEnabled":
-                return True
-            if key in ("verseEventRetentionDays", "verseCompactionMinKeepEvents"):
-                raise RuntimeError("registry not loaded")
-            if key == "verseCompactionModel":
-                return "gemini/gemini-flash-lite-latest"
-            return ""
-
-        plugin.registryValue = mocker.MagicMock(side_effect=_flaky_registry)
-        mocker.patch(
-            "llm.plugin.ircdb.checkCapability",
-            side_effect=lambda prefix, cap: cap.startswith("llm."),
-        )
-        mocker.patch(
-            "llm.verse.compaction.ProviderVerseClient",
-            return_value=mocker.MagicMock(),
-        )
-
-        seen_kwargs: dict = {}
-
-        def _fake_compact(store, **kw):
-            seen_kwargs.update(kw)
-            return CompactionOutcome("skipped_no_events", 0, 0)
-
-        monkeypatch.setattr("llm.verse.compaction.compact_verse", _fake_compact)
-
-        plugin.versecompact(irc, msg, ["#afnet"])
-
-        # Defaults applied via except branches.
-        assert seen_kwargs["retention_days"] == 30
-        assert seen_kwargs["min_keep_events"] == 20
-        irc.reply.assert_called_once()
-
-    def test_zero_retention_and_min_keep_are_honoured(
-        self, compact_env, mocker, monkeypatch
-    ) -> None:
-        """Regression: ``int(0 or 30) == 30`` would coerce a legitimate
-        zero value (the registry types accept 0) into the default. The
-        fix uses an explicit conversion that preserves zero so operators
-        can disable compaction with retention=0."""
-        from llm.verse.compaction import CompactionOutcome
-
-        plugin, irc, msg, _store = compact_env
-
-        def _zero_registry(key, *args):
-            if key == "verseEnabled":
-                return True
-            if key == "verseEventRetentionDays":
-                return 0
-            if key == "verseCompactionMinKeepEvents":
-                return 0
-            if key == "verseCompactionModel":
-                return "gemini/gemini-flash-lite-latest"
-            return ""
-
-        plugin.registryValue = mocker.MagicMock(side_effect=_zero_registry)
-        mocker.patch(
-            "llm.plugin.ircdb.checkCapability",
-            side_effect=lambda prefix, cap: cap.startswith("llm."),
-        )
-        mocker.patch(
-            "llm.verse.compaction.ProviderVerseClient",
-            return_value=mocker.MagicMock(),
-        )
-
-        seen_kwargs: dict = {}
-
-        def _fake_compact(store, **kw):
-            seen_kwargs.update(kw)
-            return CompactionOutcome("skipped_disabled", 0, 0)
-
-        monkeypatch.setattr("llm.verse.compaction.compact_verse", _fake_compact)
-
-        plugin.versecompact(irc, msg, ["#afnet"])
-
-        assert seen_kwargs["retention_days"] == 0
-        assert seen_kwargs["min_keep_events"] == 0
-
-    def test_zero_retention_and_min_keep_in_run_compaction_pass(
-        self, plugin_env, mocker, monkeypatch
-    ) -> None:
-        """Same regression but for the daily-timer driver
-        ``_run_compaction_pass`` — the same ``or default`` pattern was
-        also present there."""
-        from llm.verse.compaction import CompactionOutcome
-
-        plugin, _irc, _msg = plugin_env
-
-        mocker.patch.object(plugin, "_verse_enabled_channels", return_value=["#afnet"])
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=lambda key, *args: (
-                True
-                if key == "verseEnabled"
-                else (
-                    0
-                    if key == "verseEventRetentionDays"
-                    else "gemini/x"
-                    if key == "verseCompactionModel"
-                    else 0
-                    if key == "verseCompactionMinKeepEvents"
-                    else "03:00"
-                    if key == "verseCompactionDailyAt"
-                    else ""
-                )
-            )
-        )
-        mocker.patch.object(
-            plugin,
-            "_get_or_create_verse_store",
-            return_value=mocker.MagicMock(),
-        )
-
-        seen: dict = {}
-
-        def _fake_compact(store, **kw):
-            seen.update(kw)
-            return CompactionOutcome("skipped_disabled", 0, 0)
-
-        monkeypatch.setattr("llm.verse.compaction.compact_verse", _fake_compact)
-        plugin._run_compaction_pass()
-        assert seen["retention_days"] == 0
-        assert seen["min_keep_events"] == 0
 
 
 class TestCanonCommand:
@@ -2825,29 +2522,12 @@ class TestVerseReactionSendHook:
 
 class TestDoTagmsgReactionCapture:
     @pytest.fixture
-    def reaction_env(self, plugin_env, tmp_path):
-        # supybot.conf.supybot.directories.data is a slotted registry Directory
-        # node (no __dict__), so mocker.patch can't replace it; set the value via
-        # the registry's own setValue and restore on teardown. _append_reaction_event
-        # reads conf.supybot.directories.data() -> writes <data>/verse/reactions.jsonl.
-        import supybot.conf as conf
-
+    def reaction_env(self, plugin_env, llm_data_dir):
+        # _append_reaction_event reads conf.supybot.directories.data() and
+        # writes <data>/verse/reactions.jsonl.
         plugin, irc, msg = plugin_env
         irc.network = "testnet"
-        _orig_data = conf.supybot.directories.data()
-        conf.supybot.directories.data.setValue(str(tmp_path))
-        base = make_registry_side_effect()
-
-        def _reg(key, *a):
-            if key == "verseReactionCaptureEnabled":
-                return True
-            return base(key, *a)
-
-        plugin.registryValue.side_effect = _reg
-        try:
-            yield plugin, irc, msg, tmp_path
-        finally:
-            conf.supybot.directories.data.setValue(_orig_data)
+        return plugin, irc, msg, llm_data_dir
 
     def _path(self, tmp_path):
         return tmp_path / "verse" / "reactions.jsonl"
@@ -2872,18 +2552,6 @@ class TestDoTagmsgReactionCapture:
     def test_non_react_tagmsg_ignored(self, reaction_env):
         plugin, irc, msg, tmp_path = reaction_env
         msg.server_tags = {"+typing": "active"}
-        plugin.doTagmsg(irc, msg)
-        assert not self._path(tmp_path).exists()
-
-    def test_capture_disabled_skips(self, reaction_env):
-        plugin, irc, msg, tmp_path = reaction_env
-        base = make_registry_side_effect()
-        plugin.registryValue.side_effect = lambda key, *a: (
-            False if key == "verseReactionCaptureEnabled" else base(key, *a)
-        )
-        plugin._last_bot_line[("testnet", "#test")] = {"text": "x", "ts": time.time()}
-        msg.server_tags = {"+draft/react": "\U0001f44d"}
-        msg.channel = "#test"
         plugin.doTagmsg(irc, msg)
         assert not self._path(tmp_path).exists()
 

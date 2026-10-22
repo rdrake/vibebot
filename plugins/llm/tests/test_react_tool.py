@@ -25,7 +25,7 @@ def react_env(plugin_env):
     plugin, irc, msg = plugin_env
     irc.network = "afternet"
     msg.server_tags = {"msgid": "trigger-1"}
-    plugin.registryValue.side_effect = make_registry_side_effect({"reactEnabled": True})
+    plugin.registryValue.side_effect = make_registry_side_effect()
     plugin.llm_service.send_reaction.return_value = True
     return plugin, irc, msg
 

@@ -20,9 +20,6 @@ class ConversationContextMachine(RuleBasedStateMachine):
     """State machine exercising ConversationContext invariants.
 
     Both caps are deliberately small so the trim invariants are exercised.
-    ``enabled=True`` is fixed: when disabled, ``get_messages`` returns ``[]``
-    unconditionally and the case-insensitivity/isolation invariants
-    collapse to vacuous truths.
     """
 
     def __init__(self) -> None:
@@ -30,7 +27,6 @@ class ConversationContextMachine(RuleBasedStateMachine):
         self.cfg = ContextConfig(
             max_messages=4,
             timeout_minutes=30,
-            enabled=True,
             channel_max_messages=3,
         )
         self.ctx = ConversationContext(self.cfg)

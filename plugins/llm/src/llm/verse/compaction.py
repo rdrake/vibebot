@@ -225,7 +225,7 @@ def _next_local_time(hhmm: str, *, now: Callable[[], float]) -> float:
         if not (0 <= h <= 23 and 0 <= m <= 59):
             raise ValueError
     except ValueError:
-        _LOG.warning("verseCompactionDailyAt malformed (%r); deferring 1h", hhmm)
+        _LOG.warning("compaction fire time malformed (%r); deferring 1h", hhmm)
         return now() + 3600.0
     cur = time.localtime(now())
     candidate = time.mktime(

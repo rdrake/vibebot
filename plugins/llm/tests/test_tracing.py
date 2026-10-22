@@ -6,8 +6,6 @@ import logging
 import re
 import threading
 
-import pytest
-import supybot.registry as registry
 from llm.tracing import TraceFilter, generate_request_id, request_id
 
 
@@ -101,24 +99,3 @@ class TestThreadIsolation:
         request_id.reset(token)
 
         assert result[0] == ""
-
-
-class TestValidatedLogLevel:
-    """Tests for ValidatedLogLevel registry type."""
-
-    def test_accepts_lowercase(self) -> None:
-        """GIVEN 'debug' WHEN set THEN normalized to 'DEBUG'."""
-        from llm.config import ValidatedLogLevel
-
-        v = ValidatedLogLevel("WARNING", "test")
-        v.setValue("debug")
-        assert v() == "DEBUG"
-
-    @pytest.mark.parametrize("value", ["VERBOSE", "3", "TRACE", ""])
-    def test_rejects_invalid(self, value: str) -> None:
-        """GIVEN invalid level WHEN set THEN raises InvalidRegistryValue."""
-        from llm.config import ValidatedLogLevel
-
-        v = ValidatedLogLevel("WARNING", "test")
-        with pytest.raises(registry.InvalidRegistryValue):
-            v.setValue(value)

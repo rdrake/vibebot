@@ -1,7 +1,8 @@
-"""drawEnabled: a feature that is off or unconfigured is not advertised.
+"""A feature that cannot work is not advertised.
 
 A model offered a tool that cannot work calls it and then narrates the failure,
-so the chat surface drops generate_image whenever @draw would be refused.
+so the chat surface drops generate_image whenever @draw would be refused: when
+the image model's provider has no key.
 """
 
 from __future__ import annotations
@@ -34,24 +35,14 @@ class TestDrawSwitch:
     def test_on_and_keyed_advertises_generate_image(self, make_service, mocker) -> None:
         assert "generate_image" in _chat_tool_names(make_service, mocker)
 
-    def test_off_hides_generate_image(self, make_service, mocker) -> None:
-        names = _chat_tool_names(make_service, mocker, drawEnabled=False)
-        assert "generate_image" not in names
-
     def test_missing_image_key_hides_generate_image(
         self, make_service, mocker, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        names = _chat_tool_names(make_service, mocker, imageModel="xai/grok-imagine-image")
+        names = _chat_tool_names(make_service, mocker)
         assert "generate_image" in names
         monkeypatch.delenv("XAI_API_KEY")
-        names = _chat_tool_names(make_service, mocker, imageModel="xai/grok-imagine-image")
+        names = _chat_tool_names(make_service, mocker)
         assert "generate_image" not in names
-
-    def test_reason_names_the_cause(self, make_service) -> None:
-        service, _ = make_service(drawEnabled=False)
-        assert service.draw_unavailable_reason("#test") == "Drawing is turned off in this channel."
-        service, _ = make_service()
-        assert service.draw_unavailable_reason("#test") is None
 
 
 class TestCommandsRefuse:

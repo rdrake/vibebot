@@ -22,7 +22,7 @@ class TestConversationContext:
 
     def test_context_time_expiry(self) -> None:
         """GIVEN context WHEN timeout expires THEN context cleared."""
-        config = ContextConfig(max_messages=20, timeout_minutes=1, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=1)
         ctx = ConversationContext(config)
 
         ctx.add_message("user1", "#channel", "user", "Hello")
@@ -36,7 +36,7 @@ class TestConversationContext:
 
     def test_get_messages_max_age_returns_fresh(self) -> None:
         """GIVEN recent activity WHEN max_age_seconds set THEN messages returned."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config)
 
         ctx.add_message("user1", "#channel", "user", "Hello")
@@ -46,7 +46,7 @@ class TestConversationContext:
 
     def test_get_messages_max_age_drops_stale(self) -> None:
         """GIVEN stale activity WHEN max_age_seconds set THEN empty returned."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config)
 
         ctx.add_message("user1", "#channel", "user", "Hello")
@@ -62,7 +62,7 @@ class TestConversationContext:
 
     def test_get_channel_messages_max_age(self) -> None:
         """GIVEN stale channel activity WHEN max_age_seconds set THEN empty."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config)
 
         ctx.add_channel_message("#channel", "alice", "user", "hello")
@@ -76,7 +76,7 @@ class TestConversationContext:
 
     def test_context_clear_specific_user(self) -> None:
         """GIVEN context WHEN clear specific user THEN only that context cleared."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config)
 
         ctx.add_message("user1", "#channel", "user", "Hello from user1")
@@ -92,7 +92,7 @@ class TestConversationContext:
 
     def test_context_clear_nonexistent(self) -> None:
         """GIVEN context WHEN clear nonexistent user THEN returns False."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config)
 
         cleared = ctx.clear("nonexistent", "#channel")
@@ -100,7 +100,7 @@ class TestConversationContext:
 
     def test_context_clear_all(self) -> None:
         """GIVEN context WHEN clear all THEN all contexts cleared."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config)
 
         ctx.add_message("user1", "#channel1", "user", "Hello")
@@ -112,19 +112,9 @@ class TestConversationContext:
         assert len(ctx.get_messages("user1", "#channel1")) == 0
         assert len(ctx.get_messages("user2", "#channel2")) == 0
 
-    def test_context_disabled(self) -> None:
-        """GIVEN context disabled WHEN operations THEN no storage."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=False)
-        ctx = ConversationContext(config)
-
-        ctx.add_message("user1", "#channel", "user", "Hello")
-        messages = ctx.get_messages("user1", "#channel")
-
-        assert len(messages) == 0
-
     def test_context_stats(self) -> None:
         """GIVEN context WHEN get stats THEN accurate counts returned."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config)
 
         ctx.add_message("user1", "#channel", "user", "Hello")
@@ -136,11 +126,10 @@ class TestConversationContext:
         assert stats["total_messages"] == 3
         assert stats["max_messages_per_conv"] == 20
         assert stats["timeout_minutes"] == 30
-        assert stats["enabled"] is True
 
     def test_user_stats_with_messages(self) -> None:
         """GIVEN user with messages WHEN get_user_stats THEN returns count and expiry."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config)
 
         ctx.add_message("user1", "#channel", "user", "Hello")
@@ -150,11 +139,10 @@ class TestConversationContext:
         assert stats["message_count"] == 2
         assert stats["max_messages"] == 20
         assert stats["seconds_until_expiry"] > 0
-        assert stats["enabled"] is True
 
     def test_context_thread_safe(self) -> None:
         """GIVEN context WHEN concurrent operations THEN thread-safe."""
-        config = ContextConfig(max_messages=1000, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=1000, timeout_minutes=30)
         ctx = ConversationContext(config)
 
         errors: list[Exception] = []
@@ -192,7 +180,7 @@ class TestChannelContext:
 
     def test_channel_context_add_and_get(self) -> None:
         """GIVEN channel context WHEN add messages THEN get returns them."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config)
 
         ctx.add_channel_message("#channel", "alice", "user", "Hello everyone")
@@ -207,7 +195,7 @@ class TestChannelContext:
 
     def test_channel_context_exclude_nick(self) -> None:
         """GIVEN channel context WHEN exclude nick THEN filters correctly."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config)
 
         ctx.add_channel_message("#channel", "alice", "user", "Question from Alice")
@@ -226,7 +214,7 @@ class TestChannelContext:
 
     def test_channel_context_exclude_nick_case_insensitive(self) -> None:
         """GIVEN channel context WHEN exclude nick with different case THEN filters."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config)
 
         ctx.add_channel_message("#channel", "Alice", "user", "From Alice")
@@ -240,9 +228,7 @@ class TestChannelContext:
 
     def test_channel_context_max_messages_limit(self) -> None:
         """GIVEN channel context with limit WHEN exceed THEN oldest removed."""
-        config = ContextConfig(
-            max_messages=20, timeout_minutes=30, enabled=True, channel_max_messages=3
-        )
+        config = ContextConfig(max_messages=20, timeout_minutes=30, channel_max_messages=3)
         ctx = ConversationContext(config)
 
         # Add 5 messages (exceeds limit of 3)
@@ -257,7 +243,7 @@ class TestChannelContext:
 
     def test_channel_context_isolated_by_channel(self) -> None:
         """GIVEN channel context WHEN different channels THEN isolated."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config)
 
         ctx.add_channel_message("#channel1", "alice", "user", "In channel 1")
@@ -276,7 +262,6 @@ class TestChannelContext:
         config = ContextConfig(
             max_messages=20,
             timeout_minutes=1,
-            enabled=True,
         )
         ctx = ConversationContext(config)
 
@@ -288,21 +273,9 @@ class TestChannelContext:
         messages = ctx.get_channel_messages("#channel")
         assert len(messages) == 0
 
-    def test_channel_context_disabled(self) -> None:
-        """GIVEN context disabled WHEN channel operations THEN no storage."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=False)
-        ctx = ConversationContext(config)
-
-        ctx.add_channel_message("#channel", "alice", "user", "Hello")
-        messages = ctx.get_channel_messages("#channel")
-
-        assert len(messages) == 0
-
     def test_channel_context_in_stats(self) -> None:
         """GIVEN channel context WHEN get stats THEN includes channel stats."""
-        config = ContextConfig(
-            max_messages=20, timeout_minutes=30, enabled=True, channel_max_messages=10
-        )
+        config = ContextConfig(max_messages=20, timeout_minutes=30, channel_max_messages=10)
         ctx = ConversationContext(config)
 
         # Add personal context
@@ -319,7 +292,7 @@ class TestChannelContext:
 
     def test_channel_context_clear_all(self) -> None:
         """GIVEN channel context WHEN clear all THEN channel context also cleared."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config)
 
         ctx.add_message("user1", "#channel", "user", "Personal")
@@ -332,7 +305,7 @@ class TestChannelContext:
 
     def test_channel_context_returns_copies(self) -> None:
         """GIVEN channel context WHEN get messages THEN returns copies."""
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config)
 
         ctx.add_channel_message("#channel", "alice", "user", "Hello")
@@ -355,7 +328,7 @@ class TestPersistentContext:
     """Test conversation context with SQLite persistence."""
 
     def _make_ctx(self, db: LLMDatabase) -> tuple[ConversationContext, LLMDatabase]:
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config, db=db)
         return ctx, db
 
@@ -406,7 +379,7 @@ class TestPersistentContext:
             time.time(),
         )
 
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config, db=test_db)
 
         msgs = ctx.get_messages("user1", "#chan")
@@ -423,7 +396,7 @@ class TestPersistentContext:
             old_time,
         )
 
-        config = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
         ctx = ConversationContext(config, db=test_db)
 
         msgs = ctx.get_messages("user1", "#chan")
@@ -437,7 +410,7 @@ class TestPruneDeletesFromDb:
         self, test_db: LLMDatabase, mocker: MockerFixture
     ) -> None:
         """GIVEN persisted conversation WHEN expired and prune runs THEN db has 0 rows."""
-        config = ContextConfig(max_messages=20, timeout_minutes=1, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=1)
         ctx = ConversationContext(config, db=test_db)
 
         # Add a message (persisted to db)
@@ -460,7 +433,7 @@ class TestChannelContextPrune:
 
     def test_channel_context_pruned_on_expiry(self, mocker: MockerFixture) -> None:
         """GIVEN channel context WHEN expired and prune runs THEN channel contexts cleared."""
-        config = ContextConfig(max_messages=20, timeout_minutes=1, enabled=True)
+        config = ContextConfig(max_messages=20, timeout_minutes=1)
         ctx = ConversationContext(config)
 
         ctx.add_channel_message("#channel", "alice", "user", "Hello everyone")
@@ -482,7 +455,7 @@ class TestContextDbResilience:
     the caller or plugin startup. In-memory state remains the live source of
     truth for the session."""
 
-    _CFG = ContextConfig(max_messages=20, timeout_minutes=30, enabled=True)
+    _CFG = ContextConfig(max_messages=20, timeout_minutes=30)
 
     def _mock_db(self, mocker: MockerFixture):
         db = mocker.MagicMock()

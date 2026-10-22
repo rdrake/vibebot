@@ -102,7 +102,6 @@ class TestBilledRefusals:
     ) -> None:
         """End to end: a refused draw returns an error AND a non-zero cost."""
         service, _ = make_service(
-            imageModel=IMAGE_MODEL,
             assistantModel="xai/grok-4.3",
             drawAutoRewriteMax=0,
             httpUrlBase="https://example.com/llm",
@@ -119,7 +118,6 @@ class TestBilledRefusals:
     ) -> None:
         """A refusal plus a refused rewrite is two charges, not one."""
         service, _ = make_service(
-            imageModel=IMAGE_MODEL,
             assistantModel="xai/grok-4.3",
             drawAutoRewriteMax=1,
             httpUrlBase="https://example.com/llm",
@@ -207,7 +205,6 @@ def test_service_price_lookup_is_used_for_successful_generations(
 ) -> None:
     """A delivered image carries the price the provider put on its picture."""
     service, _ = make_service(
-        imageModel=IMAGE_MODEL,
         drawAutoRewriteMax=0,
         httpUrlBase="https://example.com/llm",
     )
@@ -236,7 +233,6 @@ class TestRefusedAttemptsSurviveTheRewriteLoop:
 
     def _service(self, make_service, max_rewrites: int):  # type: ignore[no-untyped-def]
         service, _ = make_service(
-            imageModel=IMAGE_MODEL,
             assistantModel="xai/grok-4.3",
             drawAutoRewriteMax=max_rewrites,
             httpUrlBase="https://example.com/llm",

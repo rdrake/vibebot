@@ -863,23 +863,6 @@ class TestPatchedDoJoin:
         commands = [c.args[0].command for c in mock_irc.queueMsg.call_args_list]
         assert "WHO" in commands
 
-    def test_who_kept_when_flag_disabled(self, plugin_env, mocker: MockerFixture):
-        plugin, mock_irc, _ = plugin_env
-        mock_irc.state.capabilities_ack = {"account-tag", "extended-join"}
-        mock_irc.queueMsg = mocker.MagicMock()
-        # Override the registry default for this test.
-        plugin.registryValue = mocker.MagicMock(
-            side_effect=lambda key, *a: False if key == "skipAutoWhoOnJoin" else ""
-        )
-        msg = self._self_join(mocker)
-
-        from supybot.irclib import Irc
-
-        Irc.doJoin(mock_irc, msg)
-
-        commands = [c.args[0].command for c in mock_irc.queueMsg.call_args_list]
-        assert "WHO" in commands
-
     def test_channel_mode_always_queued(self, plugin_env, mocker: MockerFixture):
         plugin, mock_irc, _ = plugin_env
         mock_irc.state.capabilities_ack = {"account-tag", "extended-join"}

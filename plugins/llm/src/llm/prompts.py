@@ -143,7 +143,7 @@ BRIDGE_TOOLS_GUIDANCE = (
 
 
 # Appended to the chat framework ONLY when the irc_lookup tool is injected
-# (ircLookupEnabled channels). The framework's "answer directly when you
+# (addressed chat). The framework's "answer directly when you
 # can" is exactly wrong for these questions: asked "whois Eck", a
 # non-reasoning model answered "Eck's a phantom in the logs" from its own
 # earlier riff, tool_calls=0, twice in a row. The tool is worthless if it
@@ -168,7 +168,7 @@ IRC_LOOKUP_GUIDANCE = (
 
 
 # Appended to the chat framework ONLY when the react tool is injected
-# (reactEnabled channels). A reaction ends the turn with no text, so the
+# (addressed chat). A reaction ends the turn with no text, so the
 # model must not reach for it when the user wanted an answer.
 REACT_GUIDANCE = (
     "- react adds an emoji reaction to a message and sends no text. Call it "
@@ -194,7 +194,7 @@ NOTIFY_GUIDANCE = (
 
 
 # Appended to the chat framework ONLY when the make_meme tool is injected
-# (memeEnabled channels). The model's job here is transcription, not taste:
+# (addressed chat). The model's job here is transcription, not taste:
 # the user names the template and the captions, the tool resolves the name
 # against the template catalog and reports a miss with suggestions. Left to its own
 # judgement grok picks the wrong template or draws a "meme" with

@@ -39,7 +39,7 @@ class TestProviderErrorTextStaysOutOfTheReply:
 
     def test_refusal_text_never_reaches_the_channel(self, make_service, mocker) -> None:
         """GIVEN a provider refusal WHEN chatting THEN the provider's wording stays in the log."""
-        service, _ = make_service(refusalFallbackModel="")
+        service, _ = make_service()
         mocker.patch(
             "llm.service.provider.chat",
             side_effect=provider.RefusalError(
@@ -76,9 +76,7 @@ class TestProviderErrorTextStaysOutOfTheReply:
         """
         fake_key = "sk-ant-" + "x" * 25
         monkeypatch.setenv("ANTHROPIC_API_KEY", fake_key)
-        service, _ = make_service(
-            assistantModel="anthropic/claude-haiku-5-5", refusalFallbackModel=""
-        )
+        service, _ = make_service(assistantModel="anthropic/claude-haiku-5-5")
         log = mocker.patch.object(service, "log")
         mocker.patch(
             "llm.service.provider.chat",

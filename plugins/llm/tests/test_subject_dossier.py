@@ -196,35 +196,18 @@ class TestDossierParsing:
         assert result.text == "- Churchill — heavyset, bald, cigar"
 
 
-class TestDossierModelSelection:
-    """Two keys, most specific first."""
+class TestDossierModel:
+    def test_runs_on_the_search_model(self, make_service, mocker) -> None:
+        """GIVEN any channel model WHEN researched THEN the search model runs it."""
+        from llm.service import SEARCH_MODEL
 
-    def test_prefers_subject_research_model(self, make_service, mocker) -> None:
-        """GIVEN both keys set WHEN researched THEN the research key wins."""
-        service, _ = make_service(
-            subjectResearchModel="xai/grok-4.3",
-            searchModel="xai/grok-4-1-fast-reasoning",
-            assistantModel="anthropic/claude-haiku-5-5",
-        )
+        service, _ = make_service(assistantModel="anthropic/claude-haiku-5-5")
         call = _answering(mocker, service, "- A — b")
 
         result = service.subject_dossier("x", channel="#test")
 
-        assert call.call_args.args[0] == "xai/grok-4.3"
-        assert result.model == "xai/grok-4.3"
-
-    def test_falls_back_to_search_model(self, make_service, mocker) -> None:
-        """GIVEN no research key WHEN researched THEN searchModel is used."""
-        service, _ = make_service(
-            subjectResearchModel="",
-            searchModel="xai/grok-4-1-fast-reasoning",
-            assistantModel="anthropic/claude-haiku-5-5",
-        )
-        call = _answering(mocker, service, "- A — b")
-
-        service.subject_dossier("x", channel="#test")
-
-        assert call.call_args.args[0] == "xai/grok-4-1-fast-reasoning"
+        assert call.call_args.args[0] == SEARCH_MODEL
+        assert result.model == SEARCH_MODEL
 
 
 class TestDossierFailureAndSpend:

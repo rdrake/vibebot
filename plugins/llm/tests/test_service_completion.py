@@ -44,7 +44,7 @@ class TestGroundedCompletion:
     @pytest.fixture(autouse=True)
     def setup(self, make_service, mocker: MockerFixture) -> None:
         self.mocker = mocker
-        self.service, self.plugin = make_service(searchModel="xai/grok-4.3", timeout=30)
+        self.service, self.plugin = make_service(timeout=30)
 
     def test_search_sends_query_to_search_model(self) -> None:
         search = self.mocker.patch("llm.service.provider.search", return_value=_search_reply())
@@ -282,7 +282,6 @@ class TestSearchCompletion:
     def service(self, make_service) -> LLMService:
         service, self.plugin = make_service(
             assistantModel="anthropic/claude-haiku-5-5",
-            searchModel="xai/grok-4.3",
         )
         return service
 
@@ -299,25 +298,15 @@ class TestSearchCompletion:
         assert isinstance(result, ToolResult)
         assert result.content == "Search answer"
 
-    def test_uses_search_model_when_configured(
-        self, service: LLMService, mocker: MockerFixture
-    ) -> None:
-        """search_completion prefers searchModel over assistantModel."""
-        # Override to provide a searchModel
-        service.plugin = mocker.Mock()
-        service.plugin.registryValue = mocker.Mock(
-            side_effect=lambda key, *a: {
-                "searchModel": "xai/grok-4-1-fast-reasoning",
-                "assistantModel": "anthropic/claude-haiku-5-5",
-                "timeout": 30,
-            }.get(key, "")
-        )
+    def test_uses_the_search_model(self, service: LLMService, mocker: MockerFixture) -> None:
+        """search_completion runs on the search model, not assistantModel."""
+        from llm.service import SEARCH_MODEL
 
         search = mocker.patch("llm.service.provider.search", return_value=_search_reply())
 
         service.search_completion("test", channel="#test")
 
-        assert search.call_args.args[0] == "xai/grok-4-1-fast-reasoning"
+        assert search.call_args.args[0] == SEARCH_MODEL
 
     def test_returns_error_on_exception(self, service: LLMService, mocker: MockerFixture) -> None:
         """search_completion returns error ToolResult on failure."""
@@ -345,7 +334,6 @@ class TestUrlCompletion:
     def service(self, make_service) -> LLMService:
         service, self.plugin = make_service(
             assistantModel="anthropic/claude-haiku-5-5",
-            searchModel="xai/grok-4.3",
         )
         return service
 

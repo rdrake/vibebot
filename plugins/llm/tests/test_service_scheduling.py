@@ -69,9 +69,7 @@ def test_schedule_llm_task_creates_db_row_and_schedules_event(
             watch_mode=False,
         ),
     )
-    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
-        5 if k == "bridgeScheduledTaskLimit" else None
-    )
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: None
 
     result = llm_service.schedule_llm_task(
         irc=irc,
@@ -120,9 +118,7 @@ def test_schedule_llm_task_recurrence_seconds(llm_service, db, mocker: MockerFix
             watch_mode=False,
         ),
     )
-    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
-        5 if k == "bridgeScheduledTaskLimit" else None
-    )
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: None
     result = llm_service.schedule_llm_task(
         irc=irc,
         msg=msg,
@@ -161,9 +157,7 @@ def test_schedule_llm_task_recurrence_rrule(llm_service, db, mocker: MockerFixtu
             watch_mode=False,
         ),
     )
-    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
-        5 if k == "bridgeScheduledTaskLimit" else None
-    )
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: None
     result = llm_service.schedule_llm_task(
         irc=irc,
         msg=msg,
@@ -213,9 +207,7 @@ def test_schedule_llm_task_enforces_per_creator_limit(llm_service, db, mocker: M
             prompt="p",
             fire_at=_time.time() + 60,
         )
-    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
-        5 if k == "bridgeScheduledTaskLimit" else None
-    )
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: None
 
     mocker.patch.object(
         llm_service,
@@ -246,27 +238,6 @@ def test_schedule_llm_task_enforces_per_creator_limit(llm_service, db, mocker: M
     assert "limit" in result.message.lower()
 
 
-def test_schedule_llm_task_limit_zero_disables_scheduling(llm_service, mocker: MockerFixture):
-    msg = _msg_mock(mocker)
-    irc = _irc_mock(mocker)
-    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
-        0 if k == "bridgeScheduledTaskLimit" else None
-    )
-
-    result = llm_service.schedule_llm_task(
-        irc=irc,
-        msg=msg,
-        creator_nick="n",
-        account="a",
-        channel="#t",
-        when_natural="in 1m",
-        prompt="do x",
-    )
-
-    assert result.status == "error"
-    assert "disabled" in result.message.lower()
-
-
 def test_schedule_llm_task_clarify_returns_clarify_envelope(llm_service, mocker: MockerFixture):
     """When parse_reminder returns action='clarify', schedule_llm_task surfaces
     the parser's clarification text instead of scheduling."""
@@ -280,9 +251,7 @@ def test_schedule_llm_task_clarify_returns_clarify_envelope(llm_service, mocker:
             confirmation="When should I run that?",
         ),
     )
-    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
-        5 if k == "bridgeScheduledTaskLimit" else None
-    )
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: None
 
     result = llm_service.schedule_llm_task(
         irc=irc,
@@ -301,9 +270,7 @@ def test_schedule_llm_task_requires_account(llm_service, mocker: MockerFixture):
     """schedule_llm_task refuses unauthenticated callers (defense in depth)."""
     msg = _msg_mock(mocker)
     irc = _irc_mock(mocker)
-    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
-        5 if k == "bridgeScheduledTaskLimit" else None
-    )
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: None
     result = llm_service.schedule_llm_task(
         irc=irc,
         msg=msg,
@@ -462,9 +429,7 @@ def test_fired_task_cannot_schedule_a_nested_task(llm_service, db, mocker: Mocke
             watch_mode=False,
         ),
     )
-    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
-        5 if k == "bridgeScheduledTaskLimit" else None
-    )
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: None
 
     res = llm_service.schedule_llm_task(
         irc=irc,
@@ -555,8 +520,6 @@ def _registry(values):
     """Build a side_effect that returns dict-driven registryValue results."""
 
     def _lookup(key, ch=None):
-        if key == "bridgeScheduledTaskLimit":
-            return values.get("bridgeScheduledTaskLimit", 5)
         if key == "bridgeEnabled":
             return values.get(("bridgeEnabled", ch), False)
         if key == "commandPrefixes":
@@ -594,7 +557,6 @@ def test_reply_target_channel_membership_ok_persists_override(
     _patch_parser(llm_service, mocker)
     llm_service.plugin.registryValue.side_effect = _registry(
         {
-            "bridgeScheduledTaskLimit": 5,
             ("bridgeEnabled", "#deliver"): True,
         }
     )
@@ -620,11 +582,7 @@ def test_reply_target_channel_bot_absent_refused(llm_service, mocker: MockerFixt
     irc = _irc_with_channels(mocker, {"#t": ["rdrake"]})  # bot not in #other
     msg = _msg_mock(mocker)
     _patch_parser(llm_service, mocker)
-    llm_service.plugin.registryValue.side_effect = _registry(
-        {
-            "bridgeScheduledTaskLimit": 5,
-        }
-    )
+    llm_service.plugin.registryValue.side_effect = _registry({})
 
     res = llm_service.schedule_llm_task(
         irc=irc,
@@ -646,7 +604,6 @@ def test_reply_target_channel_creator_absent_refused(llm_service, mocker: Mocker
     _patch_parser(llm_service, mocker)
     llm_service.plugin.registryValue.side_effect = _registry(
         {
-            "bridgeScheduledTaskLimit": 5,
             ("bridgeEnabled", "#deliver"): True,
         }
     )
@@ -671,7 +628,6 @@ def test_reply_target_channel_bridge_disabled_refused(llm_service, mocker: Mocke
     _patch_parser(llm_service, mocker)
     llm_service.plugin.registryValue.side_effect = _registry(
         {
-            "bridgeScheduledTaskLimit": 5,
             ("bridgeEnabled", "#deliver"): False,
         }
     )
@@ -694,7 +650,7 @@ def test_reply_target_pm_self_ok(llm_service, db, mocker: MockerFixture):
     irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
     msg = _msg_mock(mocker)
     _patch_parser(llm_service, mocker)
-    llm_service.plugin.registryValue.side_effect = _registry({"bridgeScheduledTaskLimit": 5})
+    llm_service.plugin.registryValue.side_effect = _registry({})
 
     res = llm_service.schedule_llm_task(
         irc=irc,
@@ -717,7 +673,7 @@ def test_reply_target_pm_other_refused(llm_service, mocker: MockerFixture):
     irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
     msg = _msg_mock(mocker)
     _patch_parser(llm_service, mocker)
-    llm_service.plugin.registryValue.side_effect = _registry({"bridgeScheduledTaskLimit": 5})
+    llm_service.plugin.registryValue.side_effect = _registry({})
 
     res = llm_service.schedule_llm_task(
         irc=irc,
@@ -740,7 +696,6 @@ def test_reply_target_overrides_dispatch_target(llm_service, db, mocker: MockerF
     _patch_parser(llm_service, mocker)
     llm_service.plugin.registryValue.side_effect = _registry(
         {
-            "bridgeScheduledTaskLimit": 5,
             ("bridgeEnabled", "#deliver"): True,
         }
     )
@@ -813,9 +768,7 @@ def _fire_with_answer(llm_service, mocker: MockerFixture, content: str):
     """Schedule a one-shot task in #deliver, fire it with ``content``, return the irc."""
     irc = _irc_with_channels(mocker, {"#deliver": ["rdrake", "bot"]})
     _patch_parser(llm_service, mocker)
-    llm_service.plugin.registryValue.side_effect = _registry(
-        {"bridgeScheduledTaskLimit": 5, ("bridgeEnabled", "#deliver"): True}
-    )
+    llm_service.plugin.registryValue.side_effect = _registry({("bridgeEnabled", "#deliver"): True})
     res = llm_service.schedule_llm_task(
         irc=irc,
         msg=_msg_mock(mocker),
@@ -896,7 +849,7 @@ def test_fire_auto_cancels_when_creator_lost_llm_ask(llm_service, db, mocker: Mo
     irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
     msg = _msg_mock(mocker)
     _patch_parser(llm_service, mocker)
-    llm_service.plugin.registryValue.side_effect = _registry({"bridgeScheduledTaskLimit": 5})
+    llm_service.plugin.registryValue.side_effect = _registry({})
 
     res = llm_service.schedule_llm_task(
         irc=irc,
@@ -956,9 +909,7 @@ class TestScheduleLlmTaskFailurePaths:
                 watch_mode=False,
             ),
         )
-        llm_service.plugin.registryValue.side_effect = lambda k, ch=None: (
-            5 if k == "bridgeScheduledTaskLimit" else None
-        )
+        llm_service.plugin.registryValue.side_effect = lambda k, ch=None: None
         # Replace the db with one that raises IntegrityError on insert.
         bad_db = mocker.MagicMock()
         bad_db.load_scheduled_llm_tasks_for.return_value = []
@@ -1006,7 +957,7 @@ def test_scheduled_fire_short_circuits_when_closing(llm_service, db, mocker: Moc
     irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
     msg = _msg_mock(mocker)
     _patch_parser(llm_service, mocker)
-    llm_service.plugin.registryValue.side_effect = _registry({"bridgeScheduledTaskLimit": 5})
+    llm_service.plugin.registryValue.side_effect = _registry({})
 
     llm_service.schedule_llm_task(
         irc=irc,

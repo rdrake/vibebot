@@ -5,7 +5,7 @@ Exposes loaded Limnoria plugin commands to the LLM as a single
 
 1. Hard-coded ``DENY_PLUGINS`` / ``DENY_COMMANDS`` (this module).
 2. Operator-set ``bridgeAllowedPlugins`` (per-channel registry).
-3. ``MUTATING_COMMANDS`` gated behind ``bridgeAllowMutating``.
+3. ``MUTATING_COMMANDS``, never exposed.
 4. Limnoria's own capability system via ``checkCommandCapability``.
 
 See docs/plans/archive/2026-05-02-limnoria-tool-bridge-plan.md for the full design.
@@ -38,8 +38,8 @@ DENY_PLUGINS: frozenset[str] = frozenset(
 
 # Phase 2 Task 2: curated default allowlist used when ``bridgeAllowedPlugins``
 # is empty. CamelCase to match ``cb.name()`` (the user-facing form). Each
-# plugin is either pure-read or has its writes gated by ``MUTATING_COMMANDS``
-# behind ``bridgeAllowMutating`` (Phase 2 Task 1). Operators can override
+# plugin is either pure-read or has its writes listed in ``MUTATING_COMMANDS``,
+# which the bridge never exposes. Operators can override
 # with any non-empty list to opt out of the curated set; ``bridgeEnabled
 # False`` disables the bridge entirely.
 #
@@ -84,8 +84,8 @@ DENY_COMMANDS: frozenset[tuple[str, str]] = frozenset(
         ("web", "fetch"),
         # Same SSRF shape as web.fetch — every one of these stock Web reads
         # calls utils.web.getUrlFd/getUrl on the caller-supplied URL with the
-        # bot's network identity. They are READS, so bridgeAllowMutating does
-        # NOT gate them, and "Web" is in DEFAULT_ALLOWED_PLUGINS, so they are
+        # bot's network identity. They are READS, so MUTATING_COMMANDS does
+        # NOT cover them, and "Web" is in DEFAULT_ALLOWED_PLUGINS, so they are
         # reachable in the locked-down default. web.location is the worst: it
         # skips _checkURLWhitelist entirely and follows redirects (a redirect-
         # to-internal SSRF primitive); the others honour urlWhitelist but it
@@ -124,8 +124,7 @@ DENY_COMMANDS: frozenset[tuple[str, str]] = frozenset(
 # effect (e.g. marking notes as read). Both elements lowercase — matched
 # against ``cb.canonicalName()`` and the leaf name from ``cb.listCommands()``.
 #
-# Gated by the ``bridgeAllowMutating`` channel registry value: when False
-# (the default), ``enumerate_commands`` skips these and ``dispatch`` rejects
+# Never exposed: ``enumerate_commands`` skips these and ``dispatch`` rejects
 # them defense-in-depth.
 #
 # Sourcing: each entry is keyed to a method in a stock Limnoria plugin
@@ -245,8 +244,6 @@ def enumerate_commands(
     irc: Any,
     msg: Any,
     allowed_plugins: frozenset[str],
-    *,
-    allow_mutating: bool = False,
 ) -> Iterator[BridgeCommand]:
     """Yield every loaded command the LLM is allowed to call.
 
@@ -254,8 +251,7 @@ def enumerate_commands(
     - Its plugin is in ``allowed_plugins`` (operator allowlist).
     - Its plugin is NOT in ``DENY_PLUGINS`` (hard deny).
     - Its (canonical_plugin, leaf) tuple is NOT in ``DENY_COMMANDS``.
-    - When ``allow_mutating`` is False (the default), its
-      (canonical_plugin, leaf) tuple is NOT in ``MUTATING_COMMANDS``.
+    - Its (canonical_plugin, leaf) tuple is NOT in ``MUTATING_COMMANDS``.
     - ``checkCommandCapability(msg, cb, leaf)`` returns falsy
       (i.e. allowed for the calling user).
 
@@ -274,7 +270,7 @@ def enumerate_commands(
         for leaf in cb.listCommands():
             if (canonical, leaf) in DENY_COMMANDS:
                 continue
-            if not allow_mutating and (canonical, leaf) in MUTATING_COMMANDS:
+            if (canonical, leaf) in MUTATING_COMMANDS:
                 continue
             denial = callbacks.checkCommandCapability(msg, cb, leaf)
             if denial:
@@ -348,7 +344,6 @@ def dispatch(
     command: str,
     arg_string: str,
     allowed: frozenset[str] = frozenset(),
-    allow_mutating: bool = False,
 ) -> dict[str, Any]:
     """Run ``plugin.command arg_string`` through Limnoria's command path.
 
@@ -359,8 +354,8 @@ def dispatch(
        resolves it for ``enumerate_commands``).
     3. (canonical_plugin, command) must not be in ``DENY_COMMANDS``.
     4. ``cb.isCommandMethod(command)`` must be True.
-    5. When ``allow_mutating`` is False (the default), (canonical_plugin,
-       command) must not be in ``MUTATING_COMMANDS``. Defense in depth on
+    5. (canonical_plugin, command) must not be in ``MUTATING_COMMANDS``.
+       Defense in depth on
        top of ``enumerate_commands``'s filter — even if the LLM hallucinates
        a write command, the dispatch path still rejects.
     6. ``checkCommandCapability(msg, cb, command)`` must be falsy.
@@ -376,13 +371,12 @@ def dispatch(
     # key). Never log its content at INFO — only its length. Full content goes
     # to DEBUG (off in production), mirroring the reply logging below.
     _log.info(
-        "bridge call: %s.%s args=%i chars nick=%s channel=%s allow_mutating=%s",
+        "bridge call: %s.%s args=%i chars nick=%s channel=%s",
         plugin,
         command,
         len(arg_string),
         getattr(msg, "nick", "?"),
         getattr(msg, "channel", "?"),
-        allow_mutating,
     )
     _log.debug("bridge call args: %s.%s %r", plugin, command, arg_string)
     cb = irc.getCallback(plugin)
@@ -398,12 +392,8 @@ def dispatch(
     if not cb.isCommandMethod(command):
         _log.info("bridge result: %s.%s -> error: unknown command", plugin, command)
         return {"error": f"unknown command: {plugin}.{command}"}
-    if not allow_mutating and (cb.canonicalName(), command) in MUTATING_COMMANDS:
-        _log.info(
-            "bridge result: %s.%s -> error: denied (mutation gate closed)",
-            plugin,
-            command,
-        )
+    if (cb.canonicalName(), command) in MUTATING_COMMANDS:
+        _log.info("bridge result: %s.%s -> error: denied (write command)", plugin, command)
         return {"error": "denied: write commands disabled"}
     denial = callbacks.checkCommandCapability(msg, cb, command)
     if denial:

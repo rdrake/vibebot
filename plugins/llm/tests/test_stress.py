@@ -31,7 +31,6 @@ class TestMultiUserContextIsolation:
         config = ContextConfig(
             max_messages=100,
             timeout_minutes=60,
-            enabled=True,
             channel_max_messages=200,
         )
         return ConversationContext(config)
@@ -245,7 +244,6 @@ class TestOverlappingContextScenarios:
         config = ContextConfig(
             max_messages=50,
             timeout_minutes=30,
-            enabled=True,
             channel_max_messages=100,
         )
         return ConversationContext(config)
@@ -341,7 +339,6 @@ class TestLongRunningSessionScenarios:
         config = ContextConfig(
             max_messages=100,
             timeout_minutes=0,  # Immediate expiry
-            enabled=True,
         )
         ctx = ConversationContext(config)
         errors = []
@@ -384,7 +381,6 @@ class TestLongRunningSessionScenarios:
         config = ContextConfig(
             max_messages=10,
             timeout_minutes=60,
-            enabled=True,
         )
         ctx = ConversationContext(config)
         errors = []
@@ -437,7 +433,6 @@ class TestHighVolumeFileOperations:
             httpRoot=str(tmp_path),
             httpUrlBase="http://localhost/llm",
             fileCleanupAge=24,
-            fileCleanupMax=1000,
         )
         return service
 

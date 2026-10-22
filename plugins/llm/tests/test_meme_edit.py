@@ -30,7 +30,7 @@ PNG = b"\x89PNG\r\n\x1a\nedited"
 
 @pytest.fixture
 def service(make_service, monkeypatch) -> LLMService:  # type: ignore[no-untyped-def]
-    svc, _plugin = make_service(memeEditModel="xai/grok-imagine-image", drawTimeout=30)
+    svc, _plugin = make_service()
     monkeypatch.setenv("XAI_API_KEY", "xai-test")
     svc._save_image_bytes = lambda data, ext="png": EDITED if data == PNG else None  # type: ignore[method-assign]
     return svc
@@ -92,15 +92,6 @@ class TestImageEdit:
 
         assert result.error == "The image model failed." and result.cost == 0.0
 
-    def test_non_xai_model_is_refused_before_any_call(self, make_service, mocker) -> None:
-        svc, _ = make_service(memeEditModel="anthropic/claude-haiku-5-5")
-        opened = mocker.patch("llm.provider._opener.open")
-
-        result = svc.image_edit(CAPTIONED, "x")
-
-        assert result.url is None and result.error
-        opened.assert_not_called()
-
 
 def _boxes(count: int) -> list[dict[str, float]]:
     return [
@@ -121,7 +112,7 @@ def meme_plugin(plugin_env, mocker, tmp_path):
 
     plugin, mock_irc, mock_msg = plugin_env
     mock_irc.state.nickToAccount.return_value = "test_account"
-    plugin.registryValue.side_effect = make_registry_side_effect({"memeEnabled": True})
+    plugin.registryValue.side_effect = make_registry_side_effect()
     mocker.patch.object(meme, "bundled_catalog", return_value=write_catalog(_ENTRIES, tmp_path))
     plugin.llm_service._save_image_bytes.return_value = CAPTIONED
     plugin.llm_service.image_edit.return_value = ImageResult(
@@ -279,7 +270,7 @@ class TestMemeExecutorPermit:
         worker.start()
         worker.join(timeout=5)
 
-        assert not worker.is_alive(), "nested permit deadlocked at maxConcurrentLLMCalls=1"
+        assert not worker.is_alive(), "nested permit deadlocked at a concurrency cap of 1"
         assert running_at_pick == [1]
         assert executor.running() == 0
         executor.shutdown()
@@ -307,7 +298,7 @@ def slot_plugin(plugin_env, mocker, tmp_path):
 
     plugin, mock_irc, mock_msg = plugin_env
     mock_irc.state.nickToAccount.return_value = "test_account"
-    plugin.registryValue.side_effect = make_registry_side_effect({"memeEnabled": True})
+    plugin.registryValue.side_effect = make_registry_side_effect()
     images, masks = tmp_path / "images", tmp_path / "masks"
     images.mkdir()
     masks.mkdir()
@@ -440,12 +431,3 @@ class TestImageGenerate:
         assert body["aspect_ratio"] == "2:3"
         assert body["prompt"].startswith("a tired dad in a lawn chair.")
         assert "No text" in body["prompt"]
-
-    def test_non_xai_model_is_refused(self, make_service, mocker) -> None:
-        svc, _ = make_service(memeEditModel="anthropic/claude-haiku-5-5")
-        opened = mocker.patch("llm.provider._opener.open")
-
-        result = svc.image_generate("x")
-
-        assert result.data is None and result.error
-        opened.assert_not_called()

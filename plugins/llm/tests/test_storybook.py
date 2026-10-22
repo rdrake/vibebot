@@ -49,7 +49,7 @@ def test_generate_storybook_honours_max_images_override(make_service, mocker, tm
 
 
 def test_generate_story_struct_prose_first_prompt_when_budget_low(make_service, mocker):
-    service, plugin = make_service(verseStorybookMaxImages=5, verseStorybookMaxChars=6000)
+    service, plugin = make_service(verseStorybookMaxImages=5)
     ask = mocker.patch.object(service, "_ask_completion", return_value="not json")
     service._generate_story_struct("the lads", channel="#c", persona="v", max_images=1)
     system_prompt = ask.call_args.args[0]
@@ -105,7 +105,7 @@ def test_embed_strips_user_injected_image():
 
 
 def test_generate_story_struct_parses_and_validates(make_service, mocker):
-    service, plugin = make_service(verseStorybookMaxImages=3, verseStorybookMaxChars=6000)
+    service, plugin = make_service(verseStorybookMaxImages=3)
     payload = (
         "Here is your tale! ```json\n"
         '{"title":"The Tin Fox","story_markdown":"Once [[illustration:1]] fin.",'
@@ -125,7 +125,7 @@ def test_generate_story_struct_parses_and_validates(make_service, mocker):
 def test_generate_story_struct_injects_world_context(make_service, mocker):
     """A non-empty world_context grounds the generator: the canon roster must
     reach the system prompt so the model uses established names."""
-    service, plugin = make_service(verseStorybookMaxImages=3, verseStorybookMaxChars=6000)
+    service, plugin = make_service(verseStorybookMaxImages=3)
     payload = (
         '{"title":"T","story_markdown":"a [[illustration:1]]",'
         '"illustrations":[{"id":1,"caption":"c","image_prompt":"p"}]}'
@@ -145,7 +145,7 @@ def test_generate_story_struct_injects_world_context(make_service, mocker):
 def test_generate_story_struct_no_world_block_when_empty(make_service, mocker):
     """Empty world_context (non-verse caller) leaves the prompt unchanged —
     no dangling WORLD header."""
-    service, plugin = make_service(verseStorybookMaxImages=3, verseStorybookMaxChars=6000)
+    service, plugin = make_service(verseStorybookMaxImages=3)
     ask = mocker.patch.object(service, "_ask_completion", return_value="not json")
     service._generate_story_struct(
         "x",
@@ -158,7 +158,7 @@ def test_generate_story_struct_no_world_block_when_empty(make_service, mocker):
 def test_generate_story_struct_injects_scene_context(make_service, mocker):
     """A non-empty scene_context is folded into the user prompt so a thin brief
     draws on what actually happened. Empty leaves the brief untouched."""
-    service, plugin = make_service(verseStorybookMaxImages=3, verseStorybookMaxChars=6000)
+    service, plugin = make_service(verseStorybookMaxImages=3)
     ask = mocker.patch.object(service, "_ask_completion", return_value="not json")
     service._generate_story_struct(
         "recap today",
@@ -176,7 +176,7 @@ def test_generate_story_struct_injects_scene_context(make_service, mocker):
 
 
 def test_generate_story_struct_retries_then_fails(make_service, mocker):
-    service, plugin = make_service(verseStorybookMaxImages=3, verseStorybookMaxChars=6000)
+    service, plugin = make_service(verseStorybookMaxImages=3)
     m = mocker.patch.object(service, "_ask_completion", return_value="no json here")
     out = service._generate_story_struct(
         "x",
