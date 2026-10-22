@@ -38,7 +38,7 @@ Buckets are keyed by account name for identified users and by nick for everyone 
 | `meme` | 6 per 60 s | 12 per 60 s | refused |
 | `story` | 2 per 300 s | 5 per 60 s | refused |
 
-`draw`, `meme`, and `story` require an authenticated account, so media generation is always attributable.
+The `@draw`, `@meme`, and `@story` commands require an authenticated account. The chat `make_meme` tool, picture edits included, runs for any `llm.ask` caller under the `ask` bucket only.
 
 `@rp` has no keys of its own; it draws on the `ask` bucket.
 
@@ -51,16 +51,16 @@ The AI and verse command surfaces require a Limnoria capability:
 | Capability | Gates |
 |------------|-------|
 | `llm.ask` | `@ask`, `@forget`, `@remind`, and general assistant tool access |
-| `llm.draw` | `@draw`, `@meme`, `@story`, the image-generation tool, and the `make_meme` tool |
+| `llm.draw` | `@draw`, `@meme`, `@story`, and the image-generation tool |
 | `llm.verse` | Verse participation: `@verseopt`, `@rp`, `@verse`, `@look`, `@who` |
 | `llm.verse.edit` | Canon editing: `@versedit`, `@canon`, the `verse_edit` tool |
 | `llm.verse.gm` | Game-moderator (GM) operations: `@versedump`, `@versepurge`, `@versecompact` |
 
-`@memories`, `@instruct`, `@avatar`, and `@usage` carry no plugin capability; anyone who can talk to the bot can use them on their own data. Their privileged forms — `@memories <nick>`, `@memories cleanup <nick>`, and the global `@usage` overview by PM — check Limnoria's stock `owner` or `admin` capability instead, as does `@remind admin`.
+`@memories`, `@instruct`, and `@avatar` carry no plugin capability but require an authenticated account and act on the caller's own data. `@usage` carries no capability; `@usage <nick>` and `@usage #channel` show any user's or channel's monthly stats. The chat `make_meme` tool needs only `llm.ask`, not `llm.draw`. The privileged forms check Limnoria's stock capabilities instead: `@memories <nick>`, `@memories cleanup <nick>`, and `@remind admin` require `owner`, and the global `@usage` overview by PM requires `admin`.
 
 !!! warning "The default is allow, not deny"
 
-    None of the `llm.*` capabilities is registered default-deny, and this deployment ships `supybot.capabilities.default` at its stock value of `True`. Limnoria grants any capability a user neither holds nor anti-holds, so on a fresh install every user — identified or not — passes all six checks above. That includes `llm.verse.gm`, which gates `@versepurge`, the command that deletes a channel's verse database file.
+    None of the `llm.*` capabilities is registered default-deny, and this deployment ships `supybot.capabilities.default` at its stock value of `True`. Limnoria grants any capability a user neither holds nor anti-holds, so on a fresh install every user — identified or not — passes all five checks above. That includes `llm.verse.gm`, which gates `@versepurge`, the command that deletes a channel's verse database file.
 
 Lock the destructive surfaces down before you enable verse. Add the anti-capability globally, then hand it back per account:
 
