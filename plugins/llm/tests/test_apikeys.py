@@ -318,10 +318,20 @@ class TestSecretFilter:
         assert self.SECRET not in record.stack_info
 
     def test_never_drops_records(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """GIVEN no secrets configured WHEN filtered THEN record still emitted."""
-        for name in list(apikeys.PROVIDER_ENV_VARS.values()):
-            monkeypatch.delenv(name, raising=False)
-        assert apikeys.SecretFilter().filter(self._record("plain")) is True
+        """GIVEN no secrets configured WHEN filtered THEN record still emitted, unchanged.
+
+        A deploy missing --env-file runs with no keys at all, which is exactly
+        when its logs matter most. Every suffix-matching var is cleared, not
+        just the provider ones: conftest also sets GEMINI/OPENAI fakes, and any
+        one of them leaves redaction with something to do.
+        """
+        for name in list(os.environ):
+            if name.upper().endswith(apikeys.SECRET_SUFFIXES):
+                monkeypatch.delenv(name, raising=False)
+        assert apikeys.known_secret_values() == set()
+        record = self._record("took %d ms for %s", (42, "plain"))
+        assert apikeys.SecretFilter().filter(record) is True
+        assert record.getMessage() == "took 42 ms for plain"
 
     def test_survives_concurrent_env_mutation(self) -> None:
         """GIVEN env churn on another thread WHEN filtering THEN no RuntimeError.
