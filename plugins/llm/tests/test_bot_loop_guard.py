@@ -336,6 +336,19 @@ class TestBotLoopCap:
 
         assert dispatch.call_count == 10
 
+    def test_a_nick_the_network_reports_without_the_bot_flag_is_never_capped(
+        self, wired, mocker: MockerFixture
+    ) -> None:
+        """WHOX proved this nick human: it is a person and is never capped."""
+        plugin, mock_irc, mock_msg, dispatch = wired
+        plugin.do354(mock_irc, mocker.MagicMock(args=_whox("testbot", "rdrake", "H")))
+        self._as(mock_msg, "rdrake")
+
+        for _ in range(10):
+            plugin._route_addressed_to_assistant(mock_irc, mock_msg, "hello")
+
+        assert dispatch.call_count == 10
+
     def test_the_count_expires(self, wired, mocker: MockerFixture) -> None:
         """A bot that pings us once an hour is not a loop and is not capped."""
         plugin, mock_irc, mock_msg, dispatch = wired

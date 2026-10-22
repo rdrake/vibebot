@@ -80,6 +80,26 @@ class TestAskCommand:
         assert kwargs["entry_route"] == "ask"
         mock_irc.reply.assert_called_once_with("Hello from unified assistant", prefixNick=False)
 
+    @pytest.mark.parametrize(
+        ("caps", "expected"), [({"llm.ask"}, False), ({"llm.ask", "owner"}, True)]
+    )
+    def test_only_an_owner_caller_reaches_the_tools_as_owner(
+        self, plugin_env, mocker: MockerFixture, caps: set[str], expected: bool
+    ):
+        """Only bot owners may reach other users' reminders and tasks.
+
+        The tool executor trusts the is_owner flag, so it must come from the
+        caller's 'owner' capability and nothing else.
+        """
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch("llm.plugin.ircdb.checkCapability", side_effect=lambda _p, cap: cap in caps)
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_completion.return_value = assistant_result(content="ok")
+
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        assert plugin.llm_service.assistant_completion.call_args.kwargs["is_owner"] is expected
+
     def test_ask_stores_context_on_success(self, plugin_env, mocker: MockerFixture):
         """GIVEN a successful completion WHEN ask is called THEN conversation context is stored."""
         plugin, mock_irc, mock_msg = plugin_env
@@ -2284,6 +2304,25 @@ class TestRemindAdminCommand:
         assert "task:llm_task_abc" in reply_text
         assert "be annoying" in reply_text
 
+    def test_admin_list_truncates_a_long_task_prompt(self, plugin_env, mocker: MockerFixture):
+        """A task prompt over 40 characters shows its opening and '...'."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        prompt = "a" * 40 + "TAIL-NOT-SHOWN-" + "b" * 5
+        fake_task = mocker.MagicMock(
+            event_name="llm_task_abc", prompt=prompt, creator_nick="targetnick", account=None
+        )
+        mocker.patch.object(
+            plugin.db, "load_scheduled_llm_tasks_for_target", return_value=[fake_task]
+        )
+
+        plugin.remind(mock_irc, mock_msg, ["admin list targetnick"])
+
+        mock_irc.error.assert_not_called()
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert f"task:llm_task_abc: {'a' * 40}..." in reply_text
+        assert "TAIL" not in reply_text
+
     def test_admin_clear_removes_only_target_reminders(self, plugin_env, mocker: MockerFixture):
         """Clearing for a target leaves other users' reminders intact."""
         plugin, mock_irc, mock_msg = plugin_env
@@ -2325,6 +2364,32 @@ class TestRemindAdminCommand:
         assert "llm_remind_aaaa_a1" not in reminder_names(plugin)
         assert "llm_remind_aaaa_a2" in reminder_names(plugin)
         assert "llm_remind_aaaa_a3" in reminder_names(plugin)
+        mock_irc.error.assert_not_called()
+        mock_irc.reply.assert_called_once_with(
+            "Cancelled 1 entry for targetnick.", prefixNick=False
+        )
+
+    def test_admin_unknown_action_is_a_usage_error_and_clears_nothing(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """Only 'clear' wipes a user's rows: an owner's typo must not."""
+        plugin, mock_irc, mock_msg = plugin_env
+        self._seed(plugin)
+        mocker.patch("llm.plugin.ircdb.checkCapability", return_value=True)
+        fake_task = mocker.MagicMock(event_name="llm_task_xyz", account=None)
+        mocker.patch.object(
+            plugin.db, "load_scheduled_llm_tasks_for_target", return_value=[fake_task]
+        )
+        delete_task = mocker.patch.object(plugin.db, "delete_scheduled_llm_task")
+
+        plugin.remind(mock_irc, mock_msg, ["admin show targetnick"])
+
+        mock_irc.error.assert_called_once()
+        assert "usage" in mock_irc.error.call_args[0][0].lower()
+        assert {"llm_remind_aaaa_a1", "llm_remind_aaaa_a2", "llm_remind_aaaa_a3"} <= reminder_names(
+            plugin
+        )
+        delete_task.assert_not_called()
 
     def test_admin_del_scheduled_task_by_event_name(self, plugin_env, mocker: MockerFixture):
         """Owner deletes a scheduled_llm_task by full event_name."""

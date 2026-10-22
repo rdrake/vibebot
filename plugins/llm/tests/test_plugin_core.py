@@ -1402,6 +1402,62 @@ class TestPluginInit:
             assert value not in names_arg
 
 
+class TestDoCapNewRequestsExperimentalCaps:
+    """AfterNET's bouncer advertises draft/multiline by CAP NEW after SASL.
+
+    Stock Limnoria filters CAP NEW through REQUEST_CAPABILITIES only, so
+    without the patch draft/multiline is never requested and long replies
+    fall back to @more. With experimentalExtensions on, the patched handler
+    must register the new caps and request the ones the bot wants.
+    """
+
+    @pytest.fixture
+    def cap_new(self, mocker: MockerFixture):
+        from llm.plugin import _patch_irc_docapnew
+        from supybot import conf, irclib, ircmsgs
+
+        _patch_irc_docapnew()
+        setting = conf.supybot.protocols.irc.experimentalExtensions
+        original = setting()
+        setting.setValue(True)
+
+        def send(caps: str, *, acked: set[str] | None = None, state=None):
+            irc = mocker.MagicMock()
+            irc.state.capabilities_ls = {
+                "draft/multiline": None,
+                "message-tags": None,
+                "vendor/unwanted": None,
+            }
+            irc.state.capabilities_ack = {"message-tags"} if acked is None else acked
+            irc.state.fsm.state = state or irclib.IrcStateFsm.States.CONNECTED
+            msg = ircmsgs.IrcMsg(command="CAP", args=("*", "NEW", caps))
+            irclib.Irc.doCapNew(irc, msg)
+            return irc, msg
+
+        try:
+            yield send
+        finally:
+            setting.setValue(original)
+
+    def test_cap_new_requests_draft_multiline(self, cap_new) -> None:
+        irc, msg = cap_new("draft/multiline")
+
+        irc._addCapabilities.assert_called_once_with("draft/multiline", msg)
+        irc.requestCapabilities.assert_called_once_with({"draft/multiline"})
+
+    def test_an_already_acked_cap_is_not_requested_again(self, cap_new) -> None:
+        irc, _ = cap_new("draft/multiline", acked={"message-tags", "draft/multiline"})
+
+        irc.requestCapabilities.assert_not_called()
+
+    def test_nothing_is_requested_while_shutting_down(self, cap_new) -> None:
+        from supybot import irclib
+
+        irc, _ = cap_new("draft/multiline", state=irclib.IrcStateFsm.States.SHUTTING_DOWN)
+
+        irc.requestCapabilities.assert_not_called()
+
+
 class TestPendingQueueRearm:
     """Each poll re-arms the one-shot wakeup for the next due task, so a
     reminder or deferred result is not left for the 5-minute safety poll."""

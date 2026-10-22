@@ -890,6 +890,17 @@ class TestVersepurgeCommand:
         assert db_path.exists()
         assert "#afnet" in plugin._versepurge_tokens
 
+    def test_a_token_nobody_issued_purges_nothing(self, purge_env) -> None:
+        """Skipping the first step must not skip the confirmation."""
+        plugin, irc, msg, store = purge_env
+        db_path = store.path
+
+        plugin.versepurge(irc, msg, ["#afnet deadbe"])
+
+        assert "Token expired or invalid" in irc.reply.call_args[0][0]
+        assert db_path.exists()
+        assert "#afnet" in plugin._verse_stores
+
     # ------------------------------------------------------------------
     # Test 4: token expires after 60s
     # ------------------------------------------------------------------

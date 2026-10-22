@@ -444,6 +444,53 @@ class TestDeliveryRetry:
 
         plugin.db.delete_pending_task.assert_called_once_with(42)
 
+    def test_a_sent_pm_is_acked_and_never_retried(self, plugin, mocker: MockerFixture) -> None:
+        """A PM result the send accepted is delivered: acked once, no retry.
+
+        Leaving it unacked would re-send the same PM on the next tick.
+        """
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {}
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+        mocker.patch.object(plugin, "_schedule_queue_wakeup")
+
+        plugin._deliver_pending_result(
+            self._make_result(task_id=42, reply_target="alice", is_channel=False)
+        )
+
+        mock_irc.queueMsg.assert_called_once()
+        assert mock_irc.queueMsg.call_args.args[0].args[0] == "alice"
+        plugin.db.delete_pending_task.assert_called_once_with(42)
+        plugin.db.book_pending_task_usage.assert_called_once_with(
+            42, status="success", error_detail=""
+        )
+        plugin.db.update_delivery_attempt.assert_not_called()
+
+    def test_a_channel_the_bot_is_not_in_keeps_the_row_for_retry(
+        self, plugin, mocker: MockerFixture
+    ) -> None:
+        """No connection is in the channel: nothing is sent and the row stays.
+
+        Sending on the first connection anyway and acking would lose the
+        result: it would go nowhere and then be deleted.
+        """
+        import supybot.world as world_mod
+
+        mock_irc = mocker.MagicMock()
+        mock_irc.state.channels = {"#elsewhere": mocker.MagicMock()}
+        mocker.patch.object(world_mod, "ircs", [mock_irc])
+        wakeup = mocker.patch.object(plugin, "_schedule_queue_wakeup")
+
+        plugin._deliver_pending_result(self._make_result(task_id=42, reply_target="#test"))
+
+        mock_irc.queueMsg.assert_not_called()
+        plugin.db.delete_pending_task.assert_not_called()
+        plugin.db.update_delivery_attempt.assert_called_once()
+        assert plugin.db.update_delivery_attempt.call_args.kwargs["delivery_state"] == "retrying"
+        wakeup.assert_called_once()
+
     def test_delivered_then_closing_still_acks(self, plugin, mocker: MockerFixture) -> None:
         """GIVEN a send succeeds but shutdown begins before the ack THEN the row is still deleted.
 
