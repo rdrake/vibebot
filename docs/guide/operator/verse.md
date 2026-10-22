@@ -43,7 +43,7 @@ Grant them the normal Limnoria way:
 
 The `llm.verse.edit` capability is checked globally against the caller's account. A channel-scoped grant fails closed: it denies rather than escalates. Grant trusted accounts globally.
 
-`@avatar` is the one verse command with no capability check. It only stores a persona string, which does nothing until the user also holds `llm.verse` and opts in.
+`@avatar` is the one verse command with no capability check. It only stores a persona string, and only for an authenticated account. The persona shapes verse turns once the user also holds `llm.verse` and opts in, and it also voices that user's storybook pages, from `@story` or an ambient illustrate request.
 
 Without `llm.verse`, a user can still talk to the bot in a verse channel; their messages never enter roleplay. Canon *grounding* is not capability-gated, so naming an entity still pulls the facts block into their reply.
 
@@ -60,7 +60,7 @@ A message carries a canon signal when either of these holds:
 - **Entity reference.** The message names a known active entity other than the speaker's own avatar. Matching is whole-word and alias-aware.
 - **Trigger keyword.** The message matches `verseTriggerRegex`, a case-insensitive pattern with default `\bverse\b`. Set a channel-specific phrase to give users a deliberate cue. An empty value disables the keyword signal; a malformed pattern is ignored.
 
-A canon signal pulls a compact facts block (roster, relations, recent events) into the turn. On `@ask`, and for anyone without an avatar, that is all it does: the reply stays ordinary chat. For an avatar holder speaking ambiently it also promotes *that single turn* to the verse route, so the answer comes back in the avatar's voice — unless the message asks for a picture. What it never does is arm sticky roleplay; see the table below.
+A canon signal pulls a compact facts block (roster, relations, recent events) into the turn. On `@ask`, that is all it does. For a speaker without an avatar the reply stays ordinary chat, except for an explicit illustrate request when `verseStorybookEnabled` is on (see the table). For an avatar holder speaking ambiently it also promotes *that single turn* to the verse route, so the answer comes back in the avatar's voice — unless the message asks for a picture. What it never does is arm sticky roleplay; see the table below.
 
 ### What a signalled message becomes
 
@@ -70,9 +70,9 @@ The table covers *ambient* messages: the bot addressed by nick, or a bare `vibeb
 |---------|--------|
 | `@rp <text>` | One in-character roleplay turn. Needs an avatar; without one it degrades to a canon-grounded chat reply |
 | Ambient, while `@rp on` is live | Roleplay turn, same as `@rp <text>` |
-| Ambient + canon signal + avatar, asking to *illustrate* (`illustrate`, `comic`, `storybook`, `with pictures`) | Illustrated storybook page, when `verseStorybookEnabled` is on and the `@story` cost gates pass (authenticated, `llm.draw`, not on cooldown). With the flag off, the default, this falls through to a prose tale |
+| Ambient + canon signal, asking to *illustrate* (`illustrate`, `comic`, `storybook`, `with pictures`) | Illustrated storybook page, when `verseStorybookEnabled` is on and the `@story` cost gates pass (authenticated, `llm.draw`, not on cooldown). This applies to speakers without an avatar too. With the flag off (the default), or when a spend gate fails, this falls through to a canon-grounded chat reply |
 | Ambient + canon signal, asking to *draw* (`draw`, `sketch`, `paint`, `picture of`) | Canon-grounded chat turn that draws a single image |
-| Ambient + canon signal + avatar, anything else, questions included | Multi-paragraph prose tale in the avatar's voice. No image; as with every multi-line reply, it arrives as a teaser plus a link |
+| Ambient + canon signal + avatar, anything else, questions included | Multi-paragraph prose tale in the avatar's voice. No image; like any reply longer than three IRC lines, it arrives as a teaser plus a link |
 | Ambient + canon signal, no avatar | Ordinary chat reply, grounded in the canon facts |
 | Question-shaped message with no canon signal | Straight factual answer. The channel's tall-tale overlay is swapped out so real-world questions get real answers |
 | No canon signal | Ordinary chat |
@@ -94,7 +94,7 @@ Users bypass the verse for a single message by wrapping it in double parentheses
 // what's the weather tomorrow?
 ```
 
-The message takes the normal chat path and nothing is recorded to the verse. On verse-enabled channels the marker is stripped before the chat model sees the text. The marker also suppresses the ambient prose tale and the storybook, so `// illustrate the lads` costs nothing.
+The message takes the normal chat path and never enters roleplay. On verse-enabled channels the marker is stripped before the chat model sees the text. With `verseChatRecordEnabled` on, that chat turn can still call `verse_record`. The marker also suppresses the ambient prose tale and the storybook, so `// illustrate the lads` spends no storybook.
 
 ## User commands
 
@@ -106,7 +106,7 @@ The message takes the normal chat path and nothing is recorded to the verse. On 
 | `@verse` | Where your avatar is: the place name and its description. Needs an avatar; use `@who` for the roster |
 | `@look [target]` | Describe the current location, or a named entity |
 | `@who` | Roster of active avatars and their locations |
-| `@avatar [persona\|clear]` | Set the persona that shapes your avatar. Independent of `@instruct`; affects only the verse |
+| `@avatar [persona\|clear]` | Set the persona that shapes your avatar. Independent of `@instruct`; affects the verse and your storybook pages |
 
 `@avatar` stores the persona in the plugin's own database (the `user_avatar_personas` table in `LLM.db`), not in the Limnoria registry, so it never lands in `bot.conf`. One persona per user, shared by every verse channel. When the caller has an active avatar in the channel, the persona is mirrored onto that avatar's summary, so `@look` reflects the change immediately.
 
@@ -234,7 +234,7 @@ Permanently delete all verse state for a channel: entities, attributes, relation
 1. `@versepurge #chan` issues a one-time 6-character token valid for 60 seconds.
 2. `@versepurge #chan <token>` performs the purge.
 
-An expired or wrong token cancels the purge. Tokens are single-use and compared in constant time.
+A wrong token is refused and the purge does not run; the issued token stays valid until it expires. An expired token is discarded. Tokens are single-use and compared in constant time.
 
 ### `@versecompact [#channel]`
 
@@ -248,21 +248,23 @@ Verses with fewer than 20 events in total are left alone, which keeps small vers
 
 ### Drain rate
 
-A single pass compacts at most 200 events, a safety cap that keeps one model call inside the cheap model's context window. Consequences:
+A single pass compacts at most 200 events and at most 16,000 characters of event summaries, whichever is smaller. The event count is a safety cap that keeps one model call inside the cheap model's context window. Consequences:
 
-- A backlog of 10,000 over-retention events converges in about 50 daily runs.
-- A verse producing more than 200 over-retention events per day never converges under the daily cap. Run `@versecompact` repeatedly; each run drains another 200-event batch.
+- Each run drains up to 200 events, so a backlog of 10,000 over-retention events needs at least 50 daily runs; long summaries make that more.
+- A verse producing more than 200 over-retention events per day never converges under the daily cap. Run `@versecompact` repeatedly; each run drains up to another 200 events.
 - Realistic avatar-driven verses produce 1 to 10 events per day, so the cap rarely matters.
 
 Failures log at ERROR with a traceback and never block the timer; the re-arm runs in a `finally`, so the next day's run retries.
 
 ### Outcome reference
 
-| State | Meaning |
-|-------|---------|
-| `compacted` | Old events were summarised into one digest event |
-| `skipped_below_floor` | Fewer than 20 events in total |
-| `skipped_no_events` | Nothing is older than the retention cutoff |
+The `@versecompact` reply and the daily log line read `compaction outcome for #chan: <outcome>`, where the outcome is one of:
+
+| Outcome | Meaning |
+|---------|---------|
+| `compacted N events` | Old events were summarised into one digest event. N is the verse's total event count when the pass started, not the number compacted |
+| `skipped (only N events; floor is 20)` | Fewer than 20 events in total |
+| `skipped (no events past retention; total N)` | Nothing is older than the retention cutoff |
 
 The daily pass's log line also reports aging: `aged N entities (kept M)` counts auto-created NPCs retired by the sweep and those scanned but kept.
 
