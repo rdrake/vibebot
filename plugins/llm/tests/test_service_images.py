@@ -501,39 +501,28 @@ class TestDownloadImageBytes:
         self.service, self.mock_plugin = make_service()
 
     def _serve(self, content_type: str) -> Mock:
-        """An opener whose response honours read's size, as a socket does."""
-        data = self.DATA
-        resp = self.mocker.MagicMock()
-        resp.headers = {"Content-Type": content_type}
-        resp.read.side_effect = lambda n=-1: data[:n] if n >= 0 else data
-        resp.__enter__.return_value = resp
-        opener = self.mocker.Mock()
-        opener.open.return_value = resp
-        self.mocker.patch("llm.service._no_redirect_opener", return_value=opener)
-        return opener
+        return self.mocker.patch(
+            "llm.service.fetch_public_bytes", return_value=(self.DATA, content_type)
+        )
 
     def test_a_public_image_downloads(self) -> None:
         """A bare Content-Type with no parameters names the extension."""
-        self.mocker.patch.object(self.service, "_resolves_to_public", return_value=True)
         self._serve("image/png")
 
         assert self.service._download_image_bytes(self.URL) == (self.DATA, "png")
 
     def test_an_unsafe_url_is_never_fetched(self) -> None:
-        self.mocker.patch.object(self.service, "_resolves_to_public", return_value=True)
-        opener = self._serve("image/png")
+        fetch = self._serve("image/png")
 
         assert self.service._download_image_bytes("http://127.0.0.1/cat.png") is None
-        opener.open.assert_not_called()
+        fetch.assert_not_called()
 
-    def test_a_host_resolving_to_a_private_address_is_never_fetched(self) -> None:
-        """DNS-rebinding guard (e09a4dd): the hostname passes the static check
-        but resolves privately, so the fetch must not happen."""
-        self.mocker.patch.object(self.service, "_resolves_to_public", return_value=False)
-        opener = self._serve("image/png")
+    def test_a_refused_fetch_is_none(self) -> None:
+        """A private address, redirect, oversize body or deadline: the pinned
+        fetch refuses (see test_pinned_fetch.py) and nothing is returned."""
+        self.mocker.patch("llm.service.fetch_public_bytes", return_value=None)
 
         assert self.service._download_image_bytes(self.URL) is None
-        opener.open.assert_not_called()
 
 
 class TestFilterImages:

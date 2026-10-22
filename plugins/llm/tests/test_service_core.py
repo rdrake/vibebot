@@ -1649,6 +1649,16 @@ class TestBuildMessages:
             "image_url": {"url": "data:image/png;base64," + base64.b64encode(self.PNG).decode()},
         }
 
+    def test_build_messages_inlines_at_most_four_images(self) -> None:
+        """Every fetch is time the user waits before the model even starts."""
+        fetch = self.mocker.patch.object(
+            self.service, "_download_image_bytes", return_value=(self.PNG, "png")
+        )
+        urls = [f"https://i.example/{n}.png" for n in range(6)]
+        parts = self.service._build_messages("describe these", urls)[-1]["content"]
+        assert [p["type"] for p in parts] == ["text"] + ["image_url"] * 4 + ["text"] * 2
+        assert fetch.call_count == 4
+
     @pytest.mark.parametrize(
         "fetched",
         [None, (b"<!doctype html><html>", "png"), (b"\xff\xd8\xff" + b"\0" * (5 * 2**20), "jpg")],

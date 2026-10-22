@@ -7,10 +7,14 @@ import contextlib
 import functools
 import hashlib
 import html
+import http.client
+import ipaddress
 import json
 import random
 import re
+import socket
 import sqlite3
+import ssl
 import threading
 import time
 import uuid
@@ -191,6 +195,101 @@ def _no_redirect_opener() -> Any:
             return None
 
     return urllib.request.build_opener(_NoRedirect())
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """Dials one pre-checked address; the Host header keeps the URL's name."""
+
+    def __init__(self, host: str, port: int | None, *, address: str, timeout: float) -> None:
+        super().__init__(host, port, timeout=timeout)
+        self._pinned = address
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection((self._pinned, self.port), self.timeout)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """As above, with the certificate checked against the URL's hostname."""
+
+    def __init__(self, host: str, port: int | None, *, address: str, timeout: float) -> None:
+        super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
+        self._pinned = address
+
+    def connect(self) -> None:
+        sock = socket.create_connection((self._pinned, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+def _resolve_host(host: str) -> list[str]:
+    return [str(info[4][0]) for info in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)]
+
+
+def _is_global(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return ip.is_global
+
+
+def fetch_public_bytes(
+    url: str,
+    *,
+    max_bytes: int,
+    deadline_s: float,
+    allow: Callable[[ipaddress.IPv4Address | ipaddress.IPv6Address], bool] = _is_global,
+    resolve: Callable[[str], list[str]] = _resolve_host,
+) -> tuple[bytes, str] | None:
+    """GET a URL a user supplied: ``(body, content type)``, or None.
+
+    The host is resolved once, every address must pass ``allow`` (globally
+    routable by default), and the connection goes to the address that was
+    checked, so DNS rebinding cannot swap in an internal one between the
+    check and the connect. Only a 200 is accepted: a redirect could name a
+    host the check never saw. ``deadline_s`` bounds the whole fetch, since a
+    per-read timeout lets a server that drips bytes stall the caller
+    indefinitely. Never raises.
+    """
+    deadline = time.monotonic() + deadline_s
+    try:
+        parts = urlparse(url)
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not host:
+        return None
+    try:
+        addresses = resolve(host)
+        if not addresses or not all(allow(ipaddress.ip_address(a)) for a in addresses):
+            return None
+    except Exception:  # noqa: BLE001 — getaddrinfo raises UnicodeEncodeError on IDNA
+        return None
+    conn_cls = _PinnedHTTPSConnection if parts.scheme == "https" else _PinnedHTTPConnection
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+    conn = conn_cls(host, port, address=addresses[0], timeout=deadline_s)
+    try:
+        conn.request("GET", path, headers={"User-Agent": "VibeBot/8"})
+        resp = conn.getresponse()
+        if resp.status != 200:
+            return None
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            if conn.sock is not None:
+                conn.sock.settimeout(remaining)
+            chunk = resp.read1(65536)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > max_bytes:
+                return None
+            chunks.append(chunk)
+        return b"".join(chunks), resp.getheader("Content-Type", "")
+    except OSError, http.client.HTTPException, ValueError:
+        return None
+    finally:
+        conn.close()
 
 
 def _has_tool(tools: list[dict[str, Any]], name: str) -> bool:
@@ -1855,6 +1954,11 @@ _IMAGE_MAGIC = (
     (b"RIFF", "image/webp"),
 )
 _INLINE_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+# Fetching happens before the model is called, so it is time the user waits:
+# a few images, a short deadline each, and one budget for the turn.
+_INLINE_IMAGE_MAX_COUNT = 4
+_INLINE_IMAGE_SECONDS = 10.0
+_INLINE_IMAGE_TURN_SECONDS = 20.0
 
 
 def validate_external_url(url: str) -> bool:
@@ -6315,20 +6419,19 @@ Examples (echo → action_prompt: ""):
                 return False
         return bool(infos)
 
-    def _download_image_bytes(self, url: str) -> tuple[bytes, str] | None:
+    def _download_image_bytes(
+        self, url: str, *, max_bytes: int = 20 * 1024 * 1024, deadline_s: float = DRAW_TIMEOUT
+    ) -> tuple[bytes, str] | None:
         """Fetch an image from an untrusted URL: ``(bytes, extension)``.
 
         None on any refusal or failure — unsafe URL, private host, redirect,
-        over 20 MB, network error. The extension comes from Content-Type,
-        then the URL path, then ``png``.
+        over ``max_bytes``, past ``deadline_s``, network error. The fetch is
+        :func:`fetch_public_bytes`, which pins the checked address. The
+        extension comes from Content-Type, then the URL path, then ``png``.
         """
-        import urllib.request
-
-        # SSRF guard: provider-returned URLs are untrusted input. Apply the
-        # same scheme + private-host policy as user-supplied URLs. Both
-        # guards are wrapped: a raising guard must fail closed (return None)
-        # rather than let a bare exception escape past this method's
-        # documented `str | None` contract.
+        # SSRF guard: the URL is untrusted input. The static check fails
+        # closed: a raising guard returns None rather than escape this
+        # method's documented contract.
         try:
             valid = validate_external_url(url)
         except Exception:  # noqa: BLE001 — fail closed, see comment above
@@ -6338,38 +6441,12 @@ Examples (echo → action_prompt: ""):
             self.log.warning("Refusing to fetch unsafe provider URL: %s", url[:200])
             return None
 
-        max_size = 20 * 1024 * 1024  # 20 MB
-
-        timeout = DRAW_TIMEOUT
-
-        # Disable redirects: a 3xx Location could point at a private host that
-        # validate_external_url rejected on the original URL. Fail closed.
-        opener = _no_redirect_opener()
-
-        # DNS-rebinding guard: resolve the hostname now and confirm every
-        # returned IP is globally routable.  validate_external_url accepts
-        # hostnames without resolving them, so a rebinding attack could slip
-        # through that check.  We do this after build_opener so the no-redirect
-        # handler is already in place before we exit early.
-        try:
-            resolves_public = self._resolves_to_public(url)
-        except Exception:  # noqa: BLE001 — fail closed, see comment above
-            self.log.warning("Host resolution raised for provider URL: %s", url[:200])
+        fetched = fetch_public_bytes(url, max_bytes=max_bytes, deadline_s=deadline_s)
+        if fetched is None:
+            self.log.warning("Failed to download image from %s", url[:200])
             return None
-        if not resolves_public:
-            self.log.warning("Refusing image download: host did not resolve to a public IP")
-            return None
-
+        data, content_type = fetched
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "VibeBot/8"})
-            with opener.open(req, timeout=timeout) as resp:  # noqa: S310
-                content_type = resp.headers.get("Content-Type", "")
-                data = resp.read(max_size + 1)
-
-                if len(data) > max_size:
-                    self.log.warning("Image too large to download: %s", url[:200])
-                    return None
-
             # Infer extension from Content-Type
             ct_map = {
                 "image/png": "png",
@@ -6399,7 +6476,7 @@ Examples (echo → action_prompt: ""):
             self.log.warning("Failed to download image from %s: %s", url[:200], e)
             return None
 
-    def _inline_image(self, url: str) -> str | None:
+    def _inline_image(self, url: str, *, deadline_s: float) -> str | None:
         """The image at ``url`` as a ``data:`` URL, or None if it can't be sent.
 
         The bot fetches it rather than the provider: Anthropic fetches a URL
@@ -6407,7 +6484,9 @@ Examples (echo → action_prompt: ""):
         failed the whole turn with HTTP 400 (2026-10-22). The type comes from
         the bytes, since a host can serve an HTML page under an image URL.
         """
-        fetched = self._download_image_bytes(url)
+        fetched = self._download_image_bytes(
+            url, max_bytes=_INLINE_IMAGE_MAX_BYTES, deadline_s=deadline_s
+        )
         if fetched is None:
             return None
         data, _ext = fetched
@@ -6565,8 +6644,16 @@ Examples (echo → action_prompt: ""):
         if images:
             # Multi-modal message with images
             content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-            for img_url in images:
-                inline = self._inline_image(img_url)
+            # One budget for the whole turn: the fetches run before the model
+            # is called, so they are time the user waits.
+            budget_end = time.monotonic() + _INLINE_IMAGE_TURN_SECONDS
+            for i, img_url in enumerate(images):
+                remaining = min(_INLINE_IMAGE_SECONDS, budget_end - time.monotonic())
+                inline = (
+                    self._inline_image(img_url, deadline_s=remaining)
+                    if i < _INLINE_IMAGE_MAX_COUNT and remaining > 0
+                    else None
+                )
                 if inline:
                     content.append({"type": "image_url", "image_url": {"url": inline}})
                 else:
