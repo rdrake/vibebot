@@ -205,7 +205,9 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
         self._pinned = address
 
     def connect(self) -> None:
-        self.sock = socket.create_connection((self._pinned, self.port), self.timeout)
+        self.sock = self.raw_sock = socket.create_connection(
+            (self._pinned, self.port), self.timeout
+        )
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
@@ -216,8 +218,8 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self._pinned = address
 
     def connect(self) -> None:
-        sock = socket.create_connection((self._pinned, self.port), self.timeout)
-        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+        self.raw_sock = socket.create_connection((self._pinned, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(self.raw_sock, server_hostname=self.host)
 
 
 def _resolve_host(host: str) -> list[str]:
@@ -265,6 +267,12 @@ def fetch_public_bytes(
     if parts.query:
         path += "?" + parts.query
     conn = conn_cls(host, port, address=addresses[0], timeout=deadline_s)
+    # Socket timeouts are per read, so a server that drips the handshake or
+    # the headers would outlast any of them: at the deadline, shut the
+    # socket whatever phase the fetch is in.
+    watchdog = threading.Timer(deadline_s, _shut, args=(conn,))
+    watchdog.daemon = True
+    watchdog.start()
     try:
         conn.request("GET", path, headers={"User-Agent": "VibeBot/8"})
         resp = conn.getresponse()
@@ -285,11 +293,24 @@ def fetch_public_bytes(
             if size > max_bytes:
                 return None
             chunks.append(chunk)
+        # The watchdog's shutdown reads as end-of-body: a body that "ended"
+        # at the deadline was cut off, not complete.
+        if time.monotonic() >= deadline:
+            return None
         return b"".join(chunks), resp.getheader("Content-Type", "")
     except OSError, http.client.HTTPException, ValueError:
         return None
     finally:
+        watchdog.cancel()
         conn.close()
+
+
+def _shut(conn: _PinnedHTTPConnection | _PinnedHTTPSConnection) -> None:
+    """Wake a read blocked on ``conn``; the fetch then fails with OSError."""
+    sock = getattr(conn, "raw_sock", None)
+    if sock is not None:
+        with contextlib.suppress(OSError):
+            sock.shutdown(socket.SHUT_RDWR)
 
 
 def _has_tool(tools: list[dict[str, Any]], name: str) -> bool:

@@ -43,6 +43,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             except OSError:
                 pass
             return
+        if self.path == "/drip-headers":
+            try:
+                self.wfile.write(b"HTTP/1.1 200 OK\r\n")
+                for _ in range(200):
+                    self.wfile.write(b"X")
+                    self.wfile.flush()
+                    time.sleep(0.05)
+            except OSError:
+                pass
+            return
         if self.path == "/missing":
             self.send_response(404)
             self.end_headers()
@@ -169,3 +179,17 @@ def test_a_slow_drip_cannot_outlast_the_deadline(server: int) -> None:
 )
 def test_only_http_urls_with_a_host_are_fetched(url: str) -> None:
     assert fetch_public_bytes(url, max_bytes=10, deadline_s=1, allow=_allow_all) is None
+
+
+def test_dripped_headers_cannot_outlast_the_deadline(server: int) -> None:
+    """The deadline covers the status line and headers too, not only the body."""
+    start = time.monotonic()
+    got = fetch_public_bytes(
+        f"http://img.test:{server}/drip-headers",
+        max_bytes=10_000,
+        deadline_s=0.5,
+        allow=_allow_all,
+        resolve=lambda _host: ["127.0.0.1"],
+    )
+    assert got is None
+    assert time.monotonic() - start < 2
