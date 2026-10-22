@@ -1481,6 +1481,44 @@ class TestMetaCompletion:
         }
         assert "tool_choice" not in mock_completion.call_args_list[1].kwargs
 
+    def test_scheduled_task_explicit_search_prompt_forces_search_web_tool_choice(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """A scheduled LLM task that asks for current info fires with search forced.
+
+        The requester is not there to retry, so a "search for the latest X"
+        task must not be answered from the model's stale memory.
+        """
+        tool_call = make_tool_call(
+            "search_web", {"query": "latest nefarious 2 release"}, call_id="call_search"
+        )
+        first_response = make_completion_response(None, tool_calls=[tool_call])
+        second_response = make_completion_response("Nefarious 2 details...")
+
+        mock_completion = mocker.patch(
+            "llm.service.provider.chat",
+            side_effect=[first_response, second_response],
+        )
+
+        result = service.assistant_completion(
+            prompt="search for the latest nefarious 2 release",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            search_fn=lambda _query: ToolResult(content="search results"),
+            route_profile=PROFILE_REMIND_ACTION,
+        )
+
+        assert result.content == "Nefarious 2 details..."
+        first_kwargs = mock_completion.call_args_list[0].kwargs
+        assert first_kwargs["tool_choice"] == {
+            "type": "function",
+            "function": {"name": "search_web"},
+        }
+        assert "tool_choice" not in mock_completion.call_args_list[1].kwargs
+
     def test_explicit_illustrated_prompt_forces_verse_storybook_tool_choice(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
