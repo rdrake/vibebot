@@ -124,7 +124,7 @@ Say who or what should be in the picture and the bot draws it too. Templates wit
 @meme https://i.imgflip.com/1c1uej.jpg | y'all got any more of them | templates?
 ```
 
-`@meme` needs an authenticated account. Memes cost nothing to make, so the rate limit is looser than `@draw`'s; each one still shows in `@usage` as a $0 `meme` row.
+`@meme` needs an authenticated account. Rendering a template you name costs nothing, so the rate limit is looser than `@draw`'s; it still shows in `@usage` as a $0 `meme` row. A pick or a generated picture books its own `meme` row at what it cost.
 
 The same thing works in conversation: "vibebot make a drake meme: left on unread / left on read" calls the `make_meme` tool with the name and captions you gave, and "vibebot make a meme about waiting for CI" hands the request to the same picker. If a name matches nothing and the picker declines, the bot lists the closest templates and asks which one you meant.
 
@@ -243,7 +243,7 @@ In channels with the verse enabled, you can join a persistent shared fiction as 
 | `@look [<target>]` | Show your scene, same as `@verse`, or describe any named person, place, faction, or item in the world |
 | `@who` | List active avatars and their locations |
 
-Once opted in, address the bot and mention someone or something in the world, or the channel's trigger word, and you get a tale: six or more paragraphs in your avatar's voice. The channel sees a one-line teaser and a link, because anything longer than a single IRC line is saved to the bot's web server rather than flooded into the channel. Where the operator has enabled `verseStorybookEnabled`, ask it to "illustrate" and you get an illustrated page instead; ask it to "draw" and you get a single image.
+Once opted in, address the bot and mention someone or something in the world, or the channel's trigger word, and you get a tale: six or more paragraphs in your avatar's voice. The channel sees a one-line teaser and a link, because anything longer than a few IRC lines is saved to the bot's web server rather than flooded into the channel. Where the operator has enabled `verseStorybookEnabled`, ask it to "illustrate" and you get an illustrated page instead; ask it to "draw" and you get a single image.
 
 The bot stays in character for that turn only. `@rp` gives you a deliberate in-character turn without needing a mention, and `@rp on` holds character across a run of them. Without an avatar, a mention just keeps an ordinary answer true to the world.
 

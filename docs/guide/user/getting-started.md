@@ -21,7 +21,7 @@ Starting the line with the bot's nick always works, and so does ending with it: 
 
 For a follow-up, reply to one of the bot's lines with your client's reply feature and skip the nick. The bot answers any reply to something it said in the last 2,000 lines. Your client needs IRCv3 replies (`+draft/reply`), and the bot has to be running since it sent that line, because it forgets which lines are its own when it restarts. Replies from other bots are ignored.
 
-Long answers never flood the channel. Anything that will not fit on one IRC line comes back as a one-line summary plus a link to the full text on the bot's web page.
+Long answers never flood the channel. A reply of up to three lines goes out inline as one multiline message where the server supports it; anything longer comes back as a one-line summary plus a link to the full text on the bot's web page.
 
 In plain language the bot answers questions, draws images, writes code, looks things up on the web, and stores what you ask it to remember:
 
@@ -62,19 +62,19 @@ The two paths do not overlap completely. Chat handles questions, images, code, w
 Some commands, such as `@draw` and `@story`, need you to be authenticated with your network account. The bot tells you when a command needs authentication.
 
 !!! note
-    AfterNet uses network account authentication, not a NickServ service. Log in to your account through your usual method (for example, SASL) before using account-gated commands.
+    AfterNet uses network account authentication. Log in to your account through your usual method (for example, SASL) before using account-gated commands.
 
 Your bot operator controls access to each command through Limnoria's capability system. If the bot says you lack permission, ask your operator for access. See the [Limnoria capabilities documentation](https://docs.limnoria.net/use/capabilities.html) for background.
 
 ## Rate limits
 
-Each command family carries its own rate limit, and your allowance depends on your status: unregistered, registered, or trusted, the last being a capability your operator grants. `@ask` allows 15 requests a minute at every tier. The image commands are tighter: `@draw` and `@story` need an authenticated account and allow two per five minutes, or five a minute at the trusted tier. The bot replies with the length of the window when you hit a limit. Bot admins and owners are exempt. See [Default limits](../operator/rate-limiting-security.md#default-limits).
+Each command family carries its own rate limit, and your allowance depends on your status: unregistered, registered, or trusted, the last being a capability your operator grants. `@ask` allows 15 requests a minute at every tier. The image commands are tighter: `@draw` needs an authenticated account and allows two per five minutes, or five a minute at the trusted tier. The bot replies with the length of the window when you hit a limit. Bot admins and owners are exempt. `@story` also needs an account and allows one page per account every five minutes at every tier, admins and owners included (`verseStorybookCooldownSeconds`). See [Default limits](../operator/rate-limiting-security.md#default-limits).
 
 ## The verse
 
 Channels with the verse enabled host a persistent, collaborative fiction: a shared world where you play as an avatar. Join with `@verseopt in`, give your avatar a voice with `@avatar <persona>`, and check your surroundings with `@verse`, `@look`, and `@who`.
 
-Mention anyone or anything in the world and the bot answers with a tale. Use `@rp <text>` to act as your avatar for one turn, or `@rp on` to stay in character until `@rp off` — or until you go quiet for a while (15 minutes by default).
+Mention anyone or anything in the world and the bot answers with a tale. Use `@rp <text>` to act as your avatar for one turn, or `@rp on` to stay in character until `@rp off` — or until you go quiet for 15 minutes.
 
 To speak out of character in a verse channel, start your message with `//` or wrap it in `((...))`.
 
@@ -96,7 +96,7 @@ See [AI commands](ai-commands.md#the-verse) for the verse command list.
 | `@verseopt` | Opt your avatar in or out of the verse | [AI commands](ai-commands.md#the-verse) |
 | `@rp` | Speak or act as your verse avatar | [AI commands](ai-commands.md#the-verse) |
 
-That is the everyday set. Verse channels add `@verse`, `@look`, and `@who`; editors get `@canon` and `@versedit`, and GMs get `@versedump`, `@versepurge`, and `@versecompact`. The [command reference](../reference/commands.md) lists all twenty.
+That is the everyday set. Verse channels add `@verse`, `@look`, and `@who`; editors get `@canon` and `@versedit`, and GMs get `@versedump`, `@versepurge`, and `@versecompact`. The [command reference](../reference/commands.md) lists every command.
 
 ## Getting help
 
