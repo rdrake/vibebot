@@ -45,7 +45,7 @@ cd vibebot-v8
 make install-service
 ```
 
-This copies the unit file and creates the directory layout:
+This copies the unit file, creates `~/.config/vibebot/` and seeds its `env` file. The bot creates `conf/`, `data/`, `logs/` and `backup/` inside it on first start:
 
 | Path | Purpose |
 |------|---------|
@@ -113,7 +113,7 @@ Useful development targets:
 | `make test-all` | Run every test, including slow ones |
 | `make lint` | Run `ruff check` |
 | `make typecheck` | Run `ty check` on both plugins |
-| `make check` | Lint, format check, typecheck, syntax check, and tests |
+| `make check` | Lint, format check, typecheck, and the fast test suite |
 | `make preflight` | Format, then run the full `check` gate |
 | `make docs-serve` | Preview this documentation site locally |
 

@@ -86,7 +86,7 @@ The repository ships two maintenance scripts:
 | `scripts/prune_backups.py` | Keep the newest `--keep` of Limnoria's rolling `bot.conf.backup.*` files |
 | `scripts/rotate_logs.py` | Size-based rotation of `messages.log`, keeping the last `--keep` copies |
 
-Both default to repository-relative paths, so on a production host give them the real directories:
+Both default to paths relative to the current directory (`backup/` and `logs/messages.log`), so either run them from `~/.config/vibebot` or give them the real paths:
 
 ```bash
 python3 scripts/rotate_logs.py --log ~/.config/vibebot/logs/messages.log --keep 7
@@ -202,4 +202,4 @@ Both targets leave `~/.config/vibebot/` alone: `bot.conf`, the `env` file, and t
 
 If you set `httpRoot`, that output lands there instead, outside `~/.config/vibebot/`; the shipped unit mounts `/var/www/llm` for that case, and removing the config directory leaves it behind.
 
-Installs made before September 2026 also have an empty `~/.local/share/vibebot/{conf,data,logs}`. The container never mounted it, so it is safe to remove.
+Installs made before 29 September 2026 also have an empty `~/.local/share/vibebot/` directory. The container never mounted it, so it is safe to remove.
