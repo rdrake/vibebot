@@ -220,6 +220,81 @@ class TestResolve:
         ids = [t.id for t in catalog.suggest("fin", limit=5)]
         assert ids[0] == "fine"
 
+    def test_hyphenated_id_resolves_to_itself(self):
+        # "npc-meme" normalises to "npc", another template's id: the id the
+        # user copied from @meme list must win before any normalising.
+        cat = meme.MemeCatalog(_parse([_entry("npc", "NPC", 2), _entry("npc-meme", "NPC meme", 2)]))
+        assert cat.resolve("npc-meme").id == "npc-meme"
+
+    def test_query_that_normalises_to_an_id_resolves(self, catalog):
+        assert catalog.resolve("drake meme").id == "drake"
+
+    def test_full_name_wins_over_longer_names_containing_it(self):
+        cat = meme.MemeCatalog(
+            _parse([_entry("gb", "Galaxy Brain", 4), _entry("gbx", "Galaxy Brain Extended", 4)])
+        )
+        assert cat.resolve("galaxy brain").id == "gb"
+        assert cat.resolve("Galaxy Brain Extended").id == "gbx"
+
+    def test_unique_name_substring_beats_a_keyword(self):
+        cat = meme.MemeCatalog(
+            _parse(
+                [
+                    _entry("army-clown", "Army Clown", 2),
+                    _entry("sun-tsu", "Sun Tzu Fake Quote", 2, keywords=("army",)),
+                ]
+            )
+        )
+        assert cat.resolve("army").id == "army-clown"
+
+    def test_ambiguous_substring_is_a_miss_even_when_one_shares_the_word(self):
+        # Word overlap alone would pick Army Clown; two names contain the
+        # query, so it lists them instead of guessing.
+        cat = meme.MemeCatalog(
+            _parse([_entry("army-clown", "Army Clown", 2), _entry("worm", "Armyworm Uprising", 2)])
+        )
+        assert cat.resolve("army") is None
+
+    def test_shared_keyword_is_a_miss_even_when_one_id_shares_the_word(self):
+        # Word overlap alone would pick sad-keanu on its id.
+        cat = meme.MemeCatalog(
+            _parse(
+                [
+                    _entry("sad-keanu", "Keanu Reeves", 2, keywords=("sad",)),
+                    _entry("fry", "Futurama Fry", 2, keywords=("sad",)),
+                ]
+            )
+        )
+        assert cat.resolve("sad") is None
+
+
+class TestExact:
+    """The id or name IS the query: "@meme <template>" alone teaches the format."""
+
+    def test_hyphenated_id_is_exact(self):
+        cat = meme.MemeCatalog(
+            _parse(
+                [
+                    _entry("woman-cat", "Woman Yelling at a Cat", 2),
+                    _entry("afraid", "Afraid", 2),
+                    _entry("afraid-to-ask-andy", "Afraid to Ask Andy", 2),
+                ]
+            )
+        )
+        assert cat.exact("woman-cat").id == "woman-cat"
+        assert cat.exact("afraid-to-ask-andy").id == "afraid-to-ask-andy"
+
+    def test_unique_name_is_exact(self, catalog):
+        assert catalog.exact("Distracted Boyfriend").id == "db"
+        assert catalog.exact("the distracted boyfriend meme").id == "db"
+
+    def test_shared_name_is_not_exact(self):
+        cat = meme.MemeCatalog(_parse([_entry("npc1", "NPC", 2), _entry("npc2", "NPC", 3)]))
+        assert cat.exact("npc") is None
+
+    def test_a_fuzzy_match_is_not_exact(self, catalog):
+        assert catalog.exact("boyfriend") is None
+
 
 class TestPlanMeme:
     """One entry point for both @meme and the chat tool."""
@@ -290,6 +365,9 @@ class TestResolveByTokenOverlap:
 
     def test_one_word_of_five_is_not_enough(self, wonka):
         assert wonka.resolve("what if i told you them") is None
+
+    def test_one_word_of_three_is_not_enough(self, wonka):
+        assert wonka.resolve("wonka gym bro") is None
 
     def test_more_words_in_common_wins(self, wonka):
         assert wonka.resolve("is this a pigeon").id == "pigeon"
@@ -754,6 +832,12 @@ class TestPicker:
         assert meme.parse_pick('{"template": null, "reason": "No gym meme."}', catalog) == (
             "No gym meme."
         )
+
+    @pytest.mark.parametrize(
+        "content", ['{"template": null}', '{"template": null, "reason": 5}', '{"reason": "  "}']
+    )
+    def test_decline_without_a_usable_reason_is_nothing_fits(self, catalog, content):
+        assert meme.parse_pick(content, catalog) == "Nothing fits."
 
     def test_invented_id_is_a_miss(self, catalog):
         result = meme.parse_pick('{"template": "gigachad", "lines": ["a"]}', catalog)

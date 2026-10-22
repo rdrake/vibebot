@@ -253,6 +253,35 @@ class TestPickerInCommand:
 
         plugin.llm_service.meme_pick.assert_not_called()
 
+    def test_template_name_alone_teaches_the_format(self, meme_plugin) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+
+        plugin.meme(mock_irc, mock_msg, ["distracted boyfriend"])
+
+        plugin.llm_service.meme_pick.assert_not_called()
+        err = mock_irc.error.call_args.args[0]
+        assert err.startswith("Give the captions") and "3 captions" in err
+
+    def test_hyphenated_id_alone_teaches_the_format(self, meme_plugin, mocker, tmp_path) -> None:
+        plugin, mock_irc, mock_msg = meme_plugin
+        entries = [
+            *_ENTRIES,
+            {
+                "id": "woman-cat",
+                "name": "Woman Yelling at a Cat",
+                "keywords": [],
+                "example": ["you ate my lunch", "confused cat"],
+                "boxes": _boxes(2),
+            },
+        ]
+        mocker.patch.object(meme, "bundled_catalog", return_value=write_catalog(entries, tmp_path))
+
+        plugin.meme(mock_irc, mock_msg, ["woman-cat"])
+
+        plugin.llm_service.meme_pick.assert_not_called()
+        err = mock_irc.error.call_args.args[0]
+        assert err.startswith("Give the captions") and "you ate my lunch" in err
+
     def test_invented_id_never_renders(self, meme_plugin) -> None:
         plugin, mock_irc, mock_msg = meme_plugin
         plugin.llm_service.meme_pick.return_value = MemePick(
@@ -499,6 +528,16 @@ class TestMemeOptions:
         png = _saved(plugin)
         assert Image.open(io.BytesIO(png)).size == (200, 150 + 150 // 4)
         assert mock_irc.reply.call_args.args[0] == _HOSTED
+
+    def test_tool_made_meme_uses_the_template_boxes(self, meme_plugin, rendered) -> None:
+        # Only --top asks for the white band; the chat tool has no such flag.
+        plugin, _, _ = meme_plugin
+        _, handlers = plugin._build_meme_tool(meme_plugin[2])
+
+        handlers["make_meme"]({"template": "drake", "lines": ["a", "b"]})
+
+        assert rendered.call_args.kwargs == {"font": None, "layout_top": False}
+        assert Image.open(io.BytesIO(_saved(plugin))).size == (200, 150)
 
     def test_unknown_font_lists_the_fonts(self, meme_plugin) -> None:
         plugin, mock_irc, mock_msg = meme_plugin
