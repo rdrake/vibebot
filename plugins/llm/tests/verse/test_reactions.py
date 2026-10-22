@@ -236,3 +236,18 @@ def test_render_reaction_section_empty_recent():
     rep = build_reaction_report([], rollout="2026-06-22", channel="#afnet")
     out = render_reaction_section(rep)
     assert "_none captured yet_" in out
+
+
+def test_render_reaction_section_net_is_approve_minus_disapprove():
+    """The net column is the feature's headline measurement: 👍 minus 👎, signed.
+    Two thumbs up and one thumbs down after rollout must read +1, not a count."""
+    events = [
+        _ev("2026-06-23", "approve"),
+        _ev("2026-06-24", "approve"),
+        _ev("2026-06-25", "disapprove"),
+    ]
+    rep = build_reaction_report(events, rollout="2026-06-22", channel="#afnet")
+    out = render_reaction_section(rep)
+    post_row = next(line for line in out.splitlines() if line.startswith("| post "))
+    assert post_row == "| post [2026-06-22, ..] | 3 | 2 | 1 | 0 | +1 | 1 | thin sample |"
+    assert "| +3 |" not in out
