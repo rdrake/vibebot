@@ -453,9 +453,9 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "search_web",
             "description": (
-                "Search the web for current information. Use when the user asks "
-                "about recent events, current data, or anything that needs "
-                "up-to-date facts."
+                "Search the web. Use when the user asks about recent events or "
+                "current data, and for any specific fact you are not sure of, "
+                "however old (cast, plots, dates, names, numbers)."
             ),
             "parameters": {
                 "type": "object",
