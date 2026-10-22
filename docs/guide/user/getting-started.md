@@ -17,7 +17,7 @@ Mention the bot by name in a channel, or send it a private message:
           a multi-day trek.
 ```
 
-Starting the line with the bot's nick always works, and so does ending with it: `what's the tallest mountain, VibeBot?` gets an answer, as does the `/me` form `* you prods VibeBot`. A trailing nick needs a space or comma in front of it, so `reboot` is still just a word. Naming the bot mid-sentence, as in the second question above, needs the [NickInMiddle plugin](../plugins/nickinmiddle.md) loaded and enabled for the channel, with a space or comma on each side of the nick. Inside a `/me` line the bot handles mid-sentence naming itself, and that one is not switchable per channel.
+Starting the line with the bot's nick always works, and so does ending with it: `what's the tallest mountain, VibeBot?` gets an answer, as does the `/me` form `* you prods VibeBot`. A trailing nick needs a space or comma in front of it, so `reboot` is still just a word. Naming the bot mid-sentence, as in the second question above, needs the [NickInMiddle plugin](../reference/nickinmiddle.md) loaded and enabled for the channel, with a space or comma on each side of the nick. Inside a `/me` line the bot handles mid-sentence naming itself, and that one is not switchable per channel.
 
 For a follow-up, reply to one of the bot's lines with your client's reply feature and skip the nick. The bot answers any reply to something it said in the last 2,000 lines. Your client needs IRCv3 replies (`+draft/reply`), and the bot has to be running since it sent that line, because it forgets which lines are its own when it restarts. Replies from other bots are ignored.
 
