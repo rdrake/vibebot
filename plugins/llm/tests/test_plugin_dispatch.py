@@ -922,6 +922,19 @@ class TestPatchedDoJoin:
         commands = [c.args[0].command for c in mock_irc.queueMsg.call_args_list]
         assert "WHO" in commands
 
+    def test_someone_elses_join_queues_nothing(self, plugin_env, mocker: MockerFixture):
+        """Only the bot's own JOIN syncs the channel; a user joining queues
+        no MODE or WHO, as in stock Limnoria."""
+        plugin, mock_irc, _ = plugin_env
+        mock_irc.state.capabilities_ack = set()
+        mock_irc.queueMsg = mocker.MagicMock()
+
+        from supybot.irclib import Irc
+
+        Irc.doJoin(mock_irc, self._self_join(mocker, nick="someone"))
+
+        mock_irc.queueMsg.assert_not_called()
+
     def test_channel_mode_always_queued(self, plugin_env, mocker: MockerFixture):
         plugin, mock_irc, _ = plugin_env
         mock_irc.state.capabilities_ack = {"account-tag", "extended-join"}
@@ -1130,6 +1143,30 @@ class TestNickAtEndAddressing:
         plugin._route_addressed_to_assistant.assert_called_once_with(
             mock_irc, mock_msg, "* usernick @search things"
         )
+
+
+class TestInFilterLeavesOtherCommandsAlone:
+    """Only PRIVMSG text is scrubbed for the command tokenizer; a TOPIC or
+    NOTICE reaches IrcState and other plugins exactly as sent."""
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            ":n!u@h TOPIC #test :[unbalanced \x02topic\r\n",
+            ":n!u@h NOTICE #test :[x \x1b[6n\r\n",
+        ],
+    )
+    def test_passes_through_untouched(self, plugin_env, line) -> None:
+        import supybot.ircmsgs as ircmsgs
+
+        plugin, irc, _ = plugin_env
+        msg = ircmsgs.IrcMsg(s=line)
+        args = msg.args
+
+        result = plugin.inFilter(irc, msg)
+
+        assert result is msg
+        assert result.args == args
 
 
 class TestInFilterPreservesActions:

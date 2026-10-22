@@ -198,6 +198,23 @@ class TestInflightDedup:
         status_plugin._enqueue_status_poll()
         assert not status_plugin._llm_executor.submit.called
 
+    def test_idle_enqueue_submits_one_poll(self, status_plugin, mocker):
+        mocker.patch("llm.plugin.schedule")
+
+        status_plugin._enqueue_status_poll()
+
+        assert status_plugin._llm_executor.submit.call_count == 1
+        assert status_plugin._llm_executor.submit.call_args.args[0] == "status_poll"
+        assert status_plugin._status_poll_inflight.is_set()
+
+    def test_closing_enqueue_submits_nothing(self, status_plugin, mocker):
+        mocker.patch("llm.plugin.schedule")
+        status_plugin._llm_executor.closing = True
+
+        status_plugin._enqueue_status_poll()
+
+        assert not status_plugin._llm_executor.submit.called
+
 
 class TestNotModified:
     def test_304_with_cache_returns_cached_snapshot_with_new_timestamp(self, status_plugin, mocker):

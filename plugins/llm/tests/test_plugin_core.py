@@ -168,6 +168,50 @@ class TestHTTPCallbackDoGet:
         mock_handler.send_response.assert_called_with(403)
 
 
+class TestHTTPHook:
+    """The built-in HTTP server serves files only when httpRoot is empty;
+    an httpRoot means an external server (nginx) owns that directory."""
+
+    @pytest.mark.parametrize(("http_root", "hooked"), [("", True), ("/srv/llm", False)])
+    def test_hook_only_without_http_root(
+        self, mock_irc: MagicMock, mocker: MockerFixture, http_root: str, hooked: bool
+    ) -> None:
+        from llm.plugin import LLM
+
+        from .conftest import plugin_init_patches
+
+        mocker.patch.object(
+            LLM, "registryValue", side_effect=make_registry_side_effect({"httpRoot": http_root})
+        )
+        mocks = plugin_init_patches(mocker)
+        plugin = LLM(mock_irc)
+
+        assert mocks["httpserver_hook"].called is hooked
+        assert (plugin._http_callback is not None) is hooked
+
+    def test_empty_http_root_serves_limnorias_web_dir(self, mocker: MockerFixture) -> None:
+        """Never the process cwd: Path("") there would expose bot.conf and
+        the env file to the public HTTP server."""
+        import supybot.conf as conf
+        from llm.plugin import LLMHTTPCallback
+
+        plugin = mocker.MagicMock()
+        plugin.registryValue.return_value = ""
+
+        web_dir = LLMHTTPCallback(plugin)._get_web_dir()
+
+        assert web_dir == conf.supybot.directories.data.web.dirize("llm")
+        assert web_dir
+
+
+def test_commands_run_in_worker_threads() -> None:
+    """Limnoria runs a threaded plugin's commands off the driver thread, so a
+    slow model call never stalls pings or other channels."""
+    from llm.plugin import LLM
+
+    assert LLM.threaded is True
+
+
 class TestPluginHelperMethods:
     """Test plugin helper methods."""
 
@@ -370,6 +414,43 @@ class TestBuildBridgeTool:
 
         assert schema is None
         assert handlers is None
+
+    def test_disabled_exposes_nothing_even_with_commands_loaded(self, plugin_env, mocker):
+        """bridgeEnabled False (the default) removes every bridge tool, even
+        though an empty allowlist would fall back to the curated set."""
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = make_registry_side_effect({"bridgeEnabled": False})
+        mocker.patch(
+            "llm.limnoria_bridge.enumerate_commands",
+            return_value=[
+                mocker.MagicMock(plugin="Misc", command="ping", arg_syntax="", description="")
+            ],
+        )
+
+        assert plugin._build_bridge_tool(irc, msg, "#test") == (None, None)
+
+    def test_run_handler_returns_the_dispatch_envelope(self, plugin_env, mocker):
+        """The model sees the command's output: the handler hands back the
+        dispatch envelope as its tool result."""
+        import json
+
+        plugin, irc, msg = plugin_env
+        plugin.registryValue.side_effect = make_registry_side_effect(
+            {"bridgeEnabled": True, "bridgeAllowedPlugins": ["Time"]}
+        )
+        mocker.patch(
+            "llm.limnoria_bridge.enumerate_commands",
+            return_value=[
+                mocker.MagicMock(plugin="Time", command="time", arg_syntax="", description="")
+            ],
+        )
+        envelope = {"status": "ok", "output": "12:00"}
+        mocker.patch("llm.limnoria_bridge.dispatch", return_value=envelope)
+
+        _schema, handlers = plugin._build_bridge_tool(irc, msg, "#test")
+        result = handlers["run_limnoria_command"]({"plugin": "Time", "command": "time"})
+
+        assert json.loads(result.content) == envelope
 
     def test_returns_none_when_no_commands_resolve(self, plugin_env):
         """Empty allowlist falls back to DEFAULT_ALLOWED_PLUGINS, but no
@@ -1321,6 +1402,50 @@ class TestPluginInit:
             assert value not in names_arg
 
 
+class TestPendingQueueRearm:
+    """Each poll re-arms the one-shot wakeup for the next due task, so a
+    reminder or deferred result is not left for the 5-minute safety poll."""
+
+    def _plugin(self, mock_irc, mocker):
+        from llm.plugin import LLM
+
+        from .conftest import plugin_init_patches
+
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin_init_patches(mocker)
+        add_event = mocker.patch("llm.plugin.schedule.addEvent")
+        plugin = LLM(mock_irc)
+        mocker.patch("llm.plugin.world.ircs", [])
+        plugin.llm_service.check_pending_tasks.return_value = []
+        plugin.db.get_next_due_time.return_value = time.time() + 120
+        add_event.reset_mock()
+        return plugin, add_event
+
+    @staticmethod
+    def _wakeups(add_event) -> list[float]:
+        return [
+            c.args[1]
+            for c in add_event.call_args_list
+            if c.kwargs.get("name") == "llm_queue_wakeup"
+        ]
+
+    def test_poll_arms_the_next_wakeup(self, mock_irc, mocker: MockerFixture) -> None:
+        plugin, add_event = self._plugin(mock_irc, mocker)
+        due = plugin.db.get_next_due_time.return_value
+
+        plugin._check_pending_tasks()
+
+        assert self._wakeups(add_event) == [due]
+
+    def test_closing_plugin_arms_nothing(self, mock_irc, mocker: MockerFixture) -> None:
+        plugin, add_event = self._plugin(mock_irc, mocker)
+        plugin._llm_executor.shutdown()
+
+        plugin._check_pending_tasks()
+
+        assert self._wakeups(add_event) == []
+
+
 class TestAgendaRestart:
     """A restart picks persisted reminders and tasks up from the database
     through the one agenda wakeup (real SQLite; the scheduler is a mock)."""
@@ -2066,6 +2191,40 @@ class TestMemoryExtractionBackground:
 
     def _existing_rows(self, mocker: MockerFixture, n: int):
         return [mocker.MagicMock(id=i + 1, fact=f"fact{i + 1}") for i in range(n)]
+
+    def test_a_full_memory_set_spends_no_extraction(
+        self, plugin_and_callback, mocker: MockerFixture
+    ) -> None:
+        """At the per-user cap nothing more can be promoted, so no background
+        extraction call is scheduled at all."""
+        from llm.plugin import _MEMORY_MAX_PER_USER
+
+        plugin, add_event = plugin_and_callback
+        plugin.db.get_memories.return_value = self._existing_rows(mocker, _MEMORY_MAX_PER_USER)
+
+        plugin._schedule_memory_extraction("alice", "#test", "user", "bot")
+
+        add_event.assert_not_called()
+        plugin.llm_service.extract_memories.assert_not_called()
+
+    def test_prune_drops_only_stale_candidates(self, plugin_and_callback, test_db) -> None:
+        """Candidates accumulate across sightings for two weeks; only ones
+        not seen in that time are pruned."""
+        plugin, _ = plugin_and_callback
+        test_db.add_memory_candidate("alice", "likes tea", "#test")
+        test_db.add_memory_candidate("alice", "owns a boat", "#test")
+        with test_db._write_txn() as conn:
+            conn.execute(
+                "UPDATE memory_candidates SET last_seen = last_seen - 20 * 86400 "
+                "WHERE fact = 'owns a boat'"
+            )
+        real_db, plugin.db = plugin.db, test_db
+        try:
+            plugin._prune_stale_memory_candidates("alice")
+        finally:
+            plugin.db = real_db
+
+        assert [c.fact for c in test_db.get_memory_candidates("alice")] == ["likes tea"]
 
     def test_race_abort_when_rows_changed(self, plugin_and_callback, mocker: MockerFixture) -> None:
         """If memory rows changed during extraction, no new memories are saved."""
