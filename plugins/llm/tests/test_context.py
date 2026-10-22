@@ -17,8 +17,10 @@ class TestConversationContext:
     """Test conversation context functionality."""
 
     # NOTE: per-user isolation, per-channel isolation, case-insensitive
-    # lookup, and max_messages trim are now covered by
+    # lookup, and the max_messages trim invariant are covered by
     # test_context_properties.py::TestConversationContextStateMachine.
+    # test_personal_history_keeps_only_last_max_messages below pins the
+    # documented 20-message cap directly.
 
     def test_context_time_expiry(self) -> None:
         """GIVEN context WHEN timeout expires THEN context cleared."""
@@ -139,6 +141,38 @@ class TestConversationContext:
         assert stats["message_count"] == 2
         assert stats["max_messages"] == 20
         assert stats["seconds_until_expiry"] > 0
+
+    def test_user_stats_expiry_counts_down_while_idle(self, mocker: MockerFixture) -> None:
+        """GIVEN a 30-minute timeout and 10 idle minutes WHEN get_user_stats THEN 20 minutes remain.
+
+        @usage reports "expires in Nm" from this value, so it must shrink as
+        idle time grows rather than stay pinned at (or above) the full timeout.
+        """
+        config = ContextConfig(max_messages=20, timeout_minutes=30)
+        ctx = ConversationContext(config)
+        now = 1_000_000.0
+        clock = mocker.patch("llm.context.time.time", return_value=now)
+
+        ctx.add_message("user1", "#channel", "user", "Hello")
+        clock.return_value = now + 600  # ten minutes idle
+
+        stats = ctx.get_user_stats("user1", "#channel")
+        assert stats["seconds_until_expiry"] == 1200
+
+    def test_personal_history_keeps_only_last_max_messages(self) -> None:
+        """GIVEN the default cap WHEN a user adds 25 messages THEN the last 20 remain.
+
+        The documented contract: per-user history keeps the last 20 messages,
+        so the oldest five are dropped and message #6 is now the first.
+        """
+        config = ContextConfig(timeout_minutes=30)
+        ctx = ConversationContext(config)
+
+        for i in range(1, 26):
+            ctx.add_message("user1", "#channel", "user", f"message {i}")
+
+        messages = ctx.get_messages("user1", "#channel")
+        assert [m["content"] for m in messages] == [f"message {i}" for i in range(6, 26)]
 
     def test_context_thread_safe(self) -> None:
         """GIVEN context WHEN concurrent operations THEN thread-safe."""
