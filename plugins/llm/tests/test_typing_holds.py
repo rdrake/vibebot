@@ -133,6 +133,30 @@ class TestKeepalive:
         assert rec.states("afternet", "#chan").count("active") >= 2
 
 
+class TestSingleThread:
+    def test_every_hold_shares_one_keepalive_thread(self, holds) -> None:
+        """GIVEN holds taken one after another and overlapping THEN one thread serves them all.
+
+        The module promises a single keepalive thread. A thread per hold would
+        leak one looping thread per reply until shutdown, and on a small box
+        end in ``can't start new thread``.
+        """
+        before = {t for t in threading.enumerate() if t.name == "typing-keepalive"}
+
+        holds.hold(_irc(), "#chan")()
+        holds.hold(_irc(), "#chan")()
+        overlapping = [holds.hold(_irc(), "#chan"), holds.hold(_irc(), "#other")]
+        for release in overlapping:
+            release()
+
+        ours = [
+            t
+            for t in threading.enumerate()
+            if t.name == "typing-keepalive" and t.is_alive() and t not in before
+        ]
+        assert len(ours) == 1
+
+
 class TestThreadStartFailure:
     def test_a_thread_that_will_not_start_does_not_strand_the_refcount(self, rec) -> None:
         """GIVEN the keepalive thread fails to start WHEN acquiring THEN the count unwinds.
