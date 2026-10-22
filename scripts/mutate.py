@@ -158,6 +158,9 @@ def pytest(wt, tests, timeout):
                 "-q",
                 "-p",
                 "no:cacheprovider",
+                # One temp root per worker: concurrent runs never share or
+                # prune each other's directories.
+                f"--basetemp={wt / '.pytest-tmp'}",
                 "--no-cov",
                 "-m",
                 "not slow",
