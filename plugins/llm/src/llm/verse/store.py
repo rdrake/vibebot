@@ -10,7 +10,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -146,11 +146,11 @@ class VerseStore:
         return conn
 
     @contextmanager
-    def read_connection(self) -> Iterator[sqlite3.Connection]:
+    def read_connection(self) -> Generator[sqlite3.Connection]:
         yield self._connect()
 
     @contextmanager
-    def write_transaction(self) -> Iterator[sqlite3.Connection]:
+    def write_transaction(self) -> Generator[sqlite3.Connection]:
         with self._lock:
             conn = self._connect()
             try:

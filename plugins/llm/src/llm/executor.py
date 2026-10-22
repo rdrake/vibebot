@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from logging import Logger
@@ -81,7 +81,7 @@ class LLMExecutor:
             return self._queued
 
     @contextmanager
-    def permit(self) -> Iterator[None]:
+    def permit(self) -> Generator[None]:
         self._semaphore.acquire()
         with self._counter_lock:
             self._running += 1

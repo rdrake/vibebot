@@ -12,7 +12,7 @@ import logging
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import NamedTuple
 
@@ -217,7 +217,7 @@ class LLMDatabase:
         return conn
 
     @contextmanager
-    def _write_txn(self) -> Iterator[sqlite3.Connection]:
+    def _write_txn(self) -> Generator[sqlite3.Connection]:
         """Yield a connection, commit on clean exit, rollback+raise on exception.
 
         Use for any write that relies on sqlite3's implicit transaction. Callers
