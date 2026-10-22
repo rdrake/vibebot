@@ -135,6 +135,15 @@ class TestParseSummaryRejects:
         with pytest.raises(statuspage.InvalidPayload):
             statuspage.parse_summary(payload, fetched_at=1.0)
 
+    @pytest.mark.parametrize("description", [None, 5])
+    def test_rejects_a_non_string_status_description(self, description):
+        """The poller keeps its last good state on InvalidPayload; a null or
+        numeric description must land there, not in the tool payload."""
+        payload = green_payload()
+        payload["status"]["description"] = description
+        with pytest.raises(statuspage.InvalidPayload):
+            statuspage.parse_summary(payload, fetched_at=1.0)
+
     def test_rejects_unhashable_component_status(self):
         payload = green_payload()
         payload["components"][0]["status"] = ["operational"]

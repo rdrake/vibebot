@@ -403,6 +403,18 @@ class TestRenderResolvedLine:
         assert "https://status.claude.com/incidents/inc1" in line
         assert "Elevated error rates on Claude Opus 4.5" in line
 
+    def test_leads_with_the_page_label(self):
+        line = statuspage.render_resolved_line(
+            view(), page_name="Claude", page_url="https://status.claude.com"
+        )
+        assert line.startswith("Claude status: ")
+
+    def test_falls_back_to_a_generic_label_when_the_page_name_is_empty(self):
+        line = statuspage.render_resolved_line(
+            view(), page_name="", page_url="https://status.claude.com"
+        )
+        assert line.startswith("Status status: ")
+
     def test_never_repeats_the_last_live_status(self):
         """The retained view of a vanished incident still reads
         'investigating'; announcing that alongside 'resolved' contradicts

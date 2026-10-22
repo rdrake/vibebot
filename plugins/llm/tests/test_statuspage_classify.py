@@ -266,6 +266,22 @@ class TestResolution:
         _, state = statuspage.classify(state, snap())
         assert len(state.resolved_announced) <= statuspage.MAX_ANNOUNCED_RETAINED
 
+    def test_pruning_keeps_the_newest_all_clears(self):
+        """An overflowing resolved_announced map drops its OLDEST entries. A
+        page keeps a resolved incident listed for a while; forgetting the
+        newest all-clear would announce it again on every poll."""
+        state = statuspage.StatusState(seeded=True)
+        for n in range(300):
+            state = statuspage.mark_resolved_announced(state, f"I{n}", now=float(n))
+        still_listed = snap(view("I299", status="resolved"))
+        first, state = statuspage.classify(state, still_listed)
+        second, state = statuspage.classify(state, still_listed)
+        assert first.resolved == ()
+        assert second.resolved == (), "a recent all-clear must not be repeated"
+        assert len(state.resolved_announced) == statuspage.MAX_ANNOUNCED_RETAINED
+        assert "I299" in state.resolved_announced
+        assert "I0" not in state.resolved_announced
+
     def test_marking_an_opening_does_not_disturb_resolution_state(self):
         state = self._seeded(view("A"))
         _, state = statuspage.classify(state, snap())
