@@ -227,6 +227,21 @@ class TestNotifyWhenOnline:
 
         assert [m.args for m in sent(irc, "MONITOR")] == [("+", "eve,larry")]
 
+    def test_reconnect_resends_every_watch_across_several_lines(self, env) -> None:
+        """A list too long for one MONITOR line is split, and no watch is lost."""
+        plugin, irc, _ = env
+        nicks = {f"watcher{i:02d}" for i in range(60)}  # 60 x 10 chars: over 400 joined
+        for nick in nicks:
+            plugin.db.add_nick_watch("afternet", nick, "rdrake", "#test")
+
+        plugin._resend_monitors(irc)
+
+        lines = [m.args for m in sent(irc, "MONITOR")]
+        assert len(lines) > 1
+        assert all(op == "+" and len(targets) < 400 for op, targets in lines)
+        resent = [nick for _op, targets in lines for nick in targets.split(",")]
+        assert sorted(resent) == sorted(nicks)
+
     def test_rejects_own_nick(self, env) -> None:
         plugin, irc, msg = env
 

@@ -184,6 +184,15 @@ class TestArming:
         status_plugin._schedule_status_poll()
         assert sched.addEvent.called, "an empty URL must not disarm the timer forever"
 
+    def test_the_next_poll_is_one_interval_ahead(self, status_plugin, mocker):
+        sched = mocker.patch("llm.plugin.schedule")
+        status_plugin._now = 1000.0
+
+        status_plugin._schedule_status_poll()
+
+        assert sched.addEvent.call_args.kwargs["name"] == "llm_status_poll"
+        assert sched.addEvent.call_args.args[1] == 1000.0 + 120
+
     def test_does_not_arm_when_closing(self, status_plugin, mocker):
         sched = mocker.patch("llm.plugin.schedule")
         status_plugin._llm_executor.closing = True

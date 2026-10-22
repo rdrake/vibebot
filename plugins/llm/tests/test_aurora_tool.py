@@ -24,11 +24,11 @@ def _grid(observed: datetime) -> dict:
     }
 
 
-def _rtsw(now: datetime, minutes: int = 200) -> tuple[list[dict], list[dict]]:
+def _rtsw(now: datetime, minutes: int = 200, bz: float = -12.0) -> tuple[list[dict], list[dict]]:
     mag, wind = [], []
     for i in range(minutes):
         tag = (now - timedelta(minutes=minutes - i)).strftime("%Y-%m-%dT%H:%M:%S")
-        mag.append({"time_tag": tag, "active": True, "bz_gsm": -12.0, "bt": 14.0})
+        mag.append({"time_tag": tag, "active": True, "bz_gsm": bz, "bt": 14.0})
         wind.append({"time_tag": tag, "active": True, "proton_speed": 600.0})
     return mag, wind
 
@@ -41,6 +41,7 @@ class Feeds:
         self.down: set[str] = set()
         self.observed = NOW - timedelta(minutes=5)
         self.delay = 0.0
+        self.bz = -12.0
 
     def __call__(self, url, *, timeout=10.0, max_bytes, opener=None):
         self.calls.append(url)
@@ -60,7 +61,7 @@ class Feeds:
         if tag == "ovation":
             return _grid(self.observed)
         if tag in ("mag", "wind"):
-            return _rtsw(NOW)[0 if tag == "mag" else 1]
+            return _rtsw(NOW, bz=self.bz)[0 if tag == "mag" else 1]
         if tag == "alerts":
             return []
         return [
@@ -120,7 +121,10 @@ def test_payload_shape(env) -> None:
     assert p["place"] == "Toronto, Ontario"
     assert p["now"]["bz_nt"] == -12.0
     assert p["now"]["speed_kms"] == 600.0
-    assert p["now"]["storm_minutes"] > 0
+    # Bz sits at -12 nT from NOW-200 min. The episode starts at the first
+    # minute with a full 30-minute mean (24 points: NOW-177), so the bot can
+    # say "storm conditions have held for about 177 minutes".
+    assert p["now"]["storm_minutes"] == 177
     assert p["now"]["lead_minutes"] == 42
     assert p["ovation"]["overhead_pct"] == 4
     assert p["ovation"]["poleward_max_pct"] == 35
@@ -130,6 +134,17 @@ def test_payload_shape(env) -> None:
     assert p["kp_next_24h"][0]["scale"] == "G2"
     assert "active_watch" not in p
     json.dumps(p)
+
+
+def test_no_storm_episode_reports_no_storm_minutes(env) -> None:
+    plugin, feeds, _geo, _clouds = env
+    feeds.bz = 2.0
+
+    now = _payload(plugin)["now"]
+
+    assert now["bz_nt"] == 2.0
+    assert now["storm_minutes"] == 0
+    assert now["lead_minutes"] is None
 
 
 def test_dark_is_tonight_in_place_tz(env, window) -> None:

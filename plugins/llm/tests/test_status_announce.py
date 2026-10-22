@@ -385,6 +385,31 @@ class TestMarkingAndBudget:
         )
         assert "inc1" not in state.announced
 
+    def test_budget_counts_only_the_last_hour_at_real_clock_times(self, announcing_plugin):
+        """Six rewrites inside the hour exhaust the budget; older ones age out."""
+        plugin = announcing_plugin
+        plugin._now = 1.76e9
+        cap = plugin._STATUS_ANNOUNCE_MAX_PER_HOUR
+        plugin._status_announce_times = [plugin._now - 10] * cap
+
+        assert plugin._status_announce_budget_ok() is False
+
+        plugin._status_announce_times = [plugin._now - 3601] + [plugin._now - 10] * (cap - 1)
+
+        assert plugin._status_announce_budget_ok() is True
+        assert plugin._status_announce_times == [plugin._now - 10] * (cap - 1)
+
+    def test_a_malformed_link_in_a_rewrite_rejects_it(self, announcing_plugin):
+        """A URL urlsplit cannot parse is not waved through the host gate."""
+        assert (
+            announcing_plugin._status_rewrite_ok(
+                "Claude is down, see https://[evil.example/x",
+                allowed_host="status.claude.com",
+                label="Claude",
+            )
+            is False
+        )
+
     def test_over_budget_skips_the_rewrite_but_still_announces(self, announcing_plugin):
         plugin = announcing_plugin
         plugin._status_announce_times = [plugin._now] * plugin._STATUS_ANNOUNCE_MAX_PER_HOUR

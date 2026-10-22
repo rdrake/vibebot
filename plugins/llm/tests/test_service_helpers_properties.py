@@ -167,6 +167,29 @@ def test_cjk_teaser_keeps_the_url_on_the_line() -> None:
     assert line.endswith(_URL)
 
 
+def test_an_inline_reply_that_wraps_to_two_lines_goes_to_the_pastebin() -> None:
+    """Inline means one wire line; two lines is overflow, never two raw lines."""
+    inline = "x " * 75  # 150 chars: wraps to exactly two lines at 100
+    saved: list[str] = []
+
+    def save(content: str) -> str:
+        saved.append(content)
+        return _URL
+
+    line = LLM._finish_irc_line(
+        None,
+        "full body",
+        inline=inline,
+        allowed=100,
+        teaser_fn=LLM._fallback_long_reply_teaser,
+        save_fn=save,
+    )
+
+    assert saved == ["full body"]
+    assert line.endswith(_URL)
+    assert _nbytes(line) <= 100
+
+
 def test_label_fallback_respects_a_tiny_budget() -> None:
     """A teaser that trims to nothing no longer returns the 11-char label into 2 chars."""
     assert LLM._trim_long_reply_teaser("--- x", 2) == ""

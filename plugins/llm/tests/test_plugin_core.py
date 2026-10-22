@@ -1402,6 +1402,17 @@ class TestPluginInit:
             assert value not in names_arg
 
 
+def test_known_channels_span_every_connected_network(plugin_env, mocker) -> None:
+    """Status, aurora and verse maintenance reach every channel the bot is in."""
+    plugin, _irc, _msg = plugin_env
+    nets = [mocker.MagicMock(), mocker.MagicMock()]
+    nets[0].state.channels = {"#a": object(), "#shared": object()}
+    nets[1].state.channels = {"#b": object(), "#shared": object()}
+    mocker.patch("llm.plugin.world.ircs", nets)
+
+    assert plugin._all_known_channels() == {"#a", "#b", "#shared"}
+
+
 class TestDoCapNewRequestsExperimentalCaps:
     """AfterNET's bouncer advertises draft/multiline by CAP NEW after SASL.
 
@@ -1782,6 +1793,22 @@ class TestRateLimiter:
             plugin._record_rate_limit_hit("draw", "alice", now - 200 + i)
         assert plugin._is_rate_limited("draw", "alice", now, tier="registered") is False
         assert "draw:alice" not in plugin._rate_buckets
+
+    def test_unattended_fires_never_spend_the_owners_ask_slots(self, plugin, mocker) -> None:
+        """A busy reminder/task chain must not rate-limit its owner's live @ask."""
+        now = 1000.0
+        peeks = [
+            plugin._unattended_ask_rate_limited(account="alice", nick="alice", now=now + i)
+            for i in range(20)
+        ]
+
+        assert peeks == [False] * 20
+        assert not plugin._rate_buckets.get("ask:alice")
+        mocker.patch("time.time", return_value=now + 21)
+        live = plugin._check_rate_limit(
+            mocker.MagicMock(), "ask", "alice", "alice", "#test", "hi", tier="registered"
+        )
+        assert live is False
 
     def test_different_commands_isolated(self, plugin) -> None:
         """GIVEN draw at limit WHEN checking ask THEN not limited."""

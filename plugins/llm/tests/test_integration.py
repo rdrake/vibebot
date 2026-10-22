@@ -781,11 +781,14 @@ class TestMemoryCleanup:
             return_value=CleanupResult(drop=[0], merge=[])
         )
 
-        plugin._run_memory_cleanup("testuser", "#test")
+        summary = plugin._run_memory_cleanup("testuser", "#test")
 
         rows = plugin.db.get_memories("testuser")
         assert len(rows) == 1
         assert rows[0].fact == "useful fact"
+        # The tool reports an applied cleanup as a success, with true counts.
+        assert summary.ok is True
+        assert summary.message == "Before: 2 | dropped: 1 | after: 1"
 
     def test_cleanup_applies_merge(self, plugin_with_real_db: tuple, mocker: MockerFixture) -> None:
         """GIVEN cleanup returns merge WHEN applied THEN memories are merged."""
@@ -800,11 +803,12 @@ class TestMemoryCleanup:
             return_value=CleanupResult(drop=[], merge=[MergeOp([0, 1], "likes Python programming")])
         )
 
-        plugin._run_memory_cleanup("testuser", "#test")
+        summary = plugin._run_memory_cleanup("testuser", "#test")
 
         rows = plugin.db.get_memories("testuser")
         assert len(rows) == 1
         assert rows[0].fact == "likes Python programming"
+        assert summary.message == "Before: 2 | merged: 2 → 1 | after: 1"
 
     def test_cleanup_applies_multiway_merge(
         self, plugin_with_real_db: tuple, mocker: MockerFixture
@@ -825,11 +829,12 @@ class TestMemoryCleanup:
             )
         )
 
-        plugin._run_memory_cleanup("testuser", "#test")
+        summary = plugin._run_memory_cleanup("testuser", "#test")
 
         rows = plugin.db.get_memories("testuser")
         assert len(rows) == 1
         assert rows[0].fact == "uses Linux (Arch, Debian, Fedora)"
+        assert summary.message == "Before: 3 | merged: 3 → 1 | after: 1"
 
     def test_cleanup_aborts_on_error(
         self, plugin_with_real_db: tuple, mocker: MockerFixture

@@ -1336,6 +1336,62 @@ class TestUsageCommand:
         # Sent privately
         assert mock_irc.reply.call_args.kwargs.get("private") is True
 
+    @staticmethod
+    def _freeze_utc(mocker: MockerFixture, frozen):
+        from datetime import datetime
+
+        class _Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):  # noqa: ARG003
+                return frozen
+
+        mocker.patch("llm.plugin.datetime", _Frozen)
+
+    def test_usage_pm_windows_are_utc_midnight_and_the_first(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """Today starts at 00:00 UTC and this month at 00:00 UTC on the 1st."""
+        from datetime import UTC, datetime
+
+        mocker.patch(
+            "llm.plugin.ircdb.checkCapability",
+            side_effect=lambda prefix, cap: cap.startswith("llm.") or cap == "admin",
+        )
+        plugin, mock_irc, mock_msg = plugin_env
+        mock_msg.channel = None
+        self._freeze_utc(mocker, datetime(2026, 10, 17, 0, 30, tzinfo=UTC))
+        plugin.db.get_usage_summary.return_value = UsageSummary(0, 0, 0, 0.0)
+        plugin.db.get_usage_by_nick.return_value = []
+        plugin.db.get_usage_by_channel.return_value = []
+
+        plugin.usage(mock_irc, mock_msg, [])
+
+        since = [c.kwargs["since"] for c in plugin.db.get_usage_summary.call_args_list]
+        assert since == [
+            datetime(2026, 10, 17, tzinfo=UTC).timestamp(),
+            datetime(2026, 10, 1, tzinfo=UTC).timestamp(),
+        ]
+
+    def test_usage_this_month_on_the_first_counts_from_midnight(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        from datetime import UTC, datetime
+
+        from llm.persistence import UsageRank
+
+        plugin, mock_irc, mock_msg = plugin_env
+        self._freeze_utc(mocker, datetime(2026, 10, 1, 5, 0, tzinfo=UTC))
+        plugin.db.get_usage_summary_for_channel.return_value = UsageSummary(0, 0, 0, 0.0)
+        plugin.db.get_usage_summary_for_nick.return_value = UsageSummary(0, 0, 0, 0.0)
+        plugin.db.get_channel_rank.return_value = UsageRank(rank=1, total=1)
+        plugin.db.get_nick_rank.return_value = UsageRank(rank=1, total=1)
+
+        plugin.usage(mock_irc, mock_msg, [])
+
+        assert plugin.db.get_usage_summary_for_channel.call_args.kwargs["since"] == (
+            datetime(2026, 10, 1, tzinfo=UTC).timestamp()
+        )
+
     def test_usage_pm_requires_admin(self, plugin_env, mocker: MockerFixture):
         """GIVEN non-admin via PM WHEN usage called THEN error is returned."""
         plugin, mock_irc, mock_msg = plugin_env

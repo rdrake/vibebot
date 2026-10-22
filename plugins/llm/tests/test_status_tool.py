@@ -516,6 +516,20 @@ class TestStatusHistoryPayload:
         fetch.assert_called_once()
         assert second == []
 
+    def test_backoff_still_serves_the_last_history_read(self, status_plugin, mocker):
+        """During the retry backoff the bot falls back to the cached history."""
+        plugin = self._bind(status_plugin)
+        fetch = mocker.patch("llm.plugin.statuspage.fetch_incidents")
+        plugin._status_history_cache = {CLAUDE: (history_entry(),)}
+        plugin._status_history_at = {CLAUDE: 0.0}
+        plugin._now = 1000.0 + plugin._STATUS_HISTORY_TTL + 1
+        plugin._status_history_failed_at = {CLAUDE: plugin._now - 1}
+
+        result = plugin._status_history_payload(CLAUDE)
+
+        fetch.assert_not_called()
+        assert result[0]["name"] == "Elevated error rates on Claude Opus 4.5"
+
     def test_retries_after_the_backoff_window_elapses(self, status_plugin, mocker):
         plugin = self._bind(status_plugin)
         fetch = mocker.patch(

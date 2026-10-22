@@ -633,3 +633,21 @@ def test_a_zero_image_cap_draws_nothing(make_service, mocker, tmp_path):
 
     assert struct.call_args.kwargs["max_images"] == 0
     gen.assert_not_called()
+
+
+def test_a_story_that_fails_to_render_tells_the_requester(plugin_env, mocker):
+    """Every @story ends in a link or a failure notice, never in silence."""
+    plugin, irc, _msg = plugin_env
+    irc.state.channels = {"#test": mocker.MagicMock()}
+    mocker.patch("llm.plugin.world.ircs", [irc])
+    mocker.patch.object(plugin._llm_executor, "submit", side_effect=lambda _label, fn, *a: fn(*a))
+    safe_queue = mocker.patch.object(plugin, "_safe_queue", return_value=True)
+    plugin.llm_service.generate_storybook.return_value = None
+
+    plugin._submit_storybook_job(
+        caller=Caller.from_row("alice", "alice-acct", "#test"), persona="", brief="a tale"
+    )
+
+    line = safe_queue.call_args.args[1]
+    assert line.args == ("#test", "the tale slipped away before it could be illustrated.")
+    assert not [c for c in plugin.db.log_usage.call_args_list if c.kwargs.get("command") == "story"]

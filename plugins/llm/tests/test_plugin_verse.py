@@ -2820,6 +2820,21 @@ class TestDoTagmsgReactionCapture:
         assert ev["reactor"] == "fc42"
         assert ev["was_verse"] is True
 
+    def test_every_reaction_is_recorded_when_the_verse_dir_exists(self, reaction_env):
+        """In prod data/verse/ already holds the stores; capture must still append."""
+        plugin, irc, msg, tmp_path = reaction_env
+        (tmp_path / "verse").mkdir()
+        plugin._last_bot_line[("testnet", "#test")] = {"text": "x", "ts": time.time()}
+        msg.channel = "#test"
+        msg.nick = "fc42"
+
+        for emoji in ("\U0001f44d", "\U0001f44e"):
+            msg.server_tags = {"+draft/react": emoji}
+            plugin.doTagmsg(irc, msg)
+
+        lines = self._path(tmp_path).read_text(encoding="utf-8").strip().splitlines()
+        assert [json.loads(line)["sentiment"] for line in lines] == ["approve", "disapprove"]
+
     def test_non_react_tagmsg_ignored(self, reaction_env):
         plugin, irc, msg, tmp_path = reaction_env
         msg.server_tags = {"+typing": "active"}

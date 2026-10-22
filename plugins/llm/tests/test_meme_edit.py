@@ -451,6 +451,28 @@ class TestSlotPictures:
         statuses = [c.kwargs["status"] for c in plugin.db.log_usage.call_args_list[1:3]]
         assert sorted(statuses) == ["error", "success"]
 
+    def test_when_the_only_picture_fails_the_captioned_meme_still_goes_out(
+        self, slot_plugin
+    ) -> None:
+        """One description for both slots, refused: blank areas, and the reply says why."""
+        from llm.service import MemePick, MemePicture
+
+        plugin, mock_irc, mock_msg = slot_plugin
+        plugin.llm_service.meme_pick.return_value = MemePick(
+            '{"template": "www", "lines": ["x", "y"], "draw": "a cat"}', "test-model"
+        )
+        plugin.llm_service.image_generate.side_effect = lambda draw, aspect_ratio: MemePicture(
+            None, 0.02, "xai/grok-imagine-image", "The image model refused that picture."
+        )
+
+        plugin.meme(mock_irc, mock_msg, ["a cat twice"])
+
+        mock_irc.error.assert_not_called()
+        reply = mock_irc.reply.call_args.args[0]
+        assert reply.startswith(CAPTIONED)
+        assert "picture not added: The image model refused that picture." in reply
+        assert "of 1 pictures" not in reply
+
     def test_one_description_is_one_picture_reused_for_every_slot(self, slot_plugin) -> None:
         """'They're the same picture' needs the same picture, generated once."""
         from llm.service import MemePick
