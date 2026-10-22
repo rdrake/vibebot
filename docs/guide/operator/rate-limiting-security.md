@@ -2,12 +2,7 @@
 
 ## Rate limiting
 
-Rate limits are checked per user and per command. The `enforceRateLimits` setting (global) controls whether limits block requests or only observe them:
-
-| Value | Behaviour |
-|-------|-----------|
-| `True` (default) | Requests over the limit are blocked |
-| `False` | Limits are tracked and logged but not enforced (observe-only mode) |
+Rate limits are checked per user and per command, and a request over the limit is blocked.
 
 ### Tiers
 
@@ -18,32 +13,32 @@ Users fall into one of four tiers, checked from most to least privileged:
 | Owner or admin | Limnoria `owner` or `admin` capability | Always exempt |
 | Trusted | Has the `trusted` capability | Uses the `Trusted` settings |
 | Registered | Authenticated with the network | Uses the base settings |
-| Unregistered | Not identified | Uses the `Unreg` settings |
+| Unregistered | Not identified | Uses the `Unreg` settings (`ask` only) |
 
 To grant the `trusted` capability, see the [Limnoria capabilities documentation](https://docs.limnoria.net/use/capabilities.html).
 
 ### Setting pattern
 
-The rate-limited commands are `ask`, `draw`, `meme`, and `story`. Each has three setting pairs, one per non-exempt tier:
+The rate-limited commands are `ask`, `draw`, `meme`, and `story`. Each has a setting pair per non-exempt tier:
 
 - `{cmd}RateLimitCount` and `{cmd}RateLimitWindow`: registered users.
 - `{cmd}TrustedRateLimitCount` and `{cmd}TrustedRateLimitWindow`: trusted users.
-- `{cmd}UnregRateLimitCount` and `{cmd}UnregRateLimitWindow`: unregistered users.
+- `askUnregRateLimitCount` and `askUnregRateLimitWindow`: unregistered users. Only `ask` has this pair; `draw`, `meme`, and `story` refuse callers without an authenticated account before the rate limiter runs, so only the registered and Trusted tiers apply to them.
 
 A count of `0` blocks nothing; it disables the limit for that command and tier. All rate-limit settings are global.
 
-Buckets are keyed by account name for identified users and by nick for everyone else, so an unidentified user can reset an `ask` bucket by changing nick. `draw` and `story` are unaffected: they refuse to run without an account at all.
+Buckets are keyed by account name for identified users and by nick for everyone else, so an unidentified user can reset an `ask` bucket by changing nick. `draw`, `meme`, and `story` are unaffected: they refuse to run without an account at all.
 
 ### Default limits
 
 | Command | Registered | Trusted | Unregistered |
 |---------|------------|---------|--------------|
 | `ask` | 15 per 60 s | 15 per 60 s | 15 per 60 s |
-| `draw` | 2 per 300 s | 5 per 60 s | 1 per 3600 s |
-| `meme` | 6 per 60 s | 12 per 60 s | 2 per 600 s |
-| `story` | 2 per 300 s | 5 per 60 s | 1 per 3600 s |
+| `draw` | 2 per 300 s | 5 per 60 s | refused |
+| `meme` | 6 per 60 s | 12 per 60 s | refused |
+| `story` | 2 per 300 s | 5 per 60 s | refused |
 
-`draw`, `meme`, and `story` also require an authenticated account regardless of tier, so media generation is always attributable and the unregistered tier is unreachable in practice. It stays a small positive number rather than `0`, because `0` means "no limit" and would hand accountless users unlimited access to the most expensive commands.
+`draw`, `meme`, and `story` require an authenticated account, so media generation is always attributable.
 
 `@rp` has no keys of its own; it draws on the `ask` bucket.
 
@@ -99,8 +94,8 @@ Model output is sanitised before it reaches IRC, and incoming text before Limnor
 
 - **Structured system prompts.** Prompts separate instructions from context, with a preamble telling the model to ignore instructions embedded in user-provided content.
 - **Channel topics as untrusted data.** Topics arrive as user messages, not system messages, because any channel member can set them. Line separators inside a topic are collapsed to spaces so it cannot open a new instruction line, and the text is trimmed to 300 characters. The anti-injection preamble calls the topic out explicitly as an attack surface.
-- **Input length limit.** `maxPromptLength` (default 10,000 characters) is enforced on image prompts, not on the chat path — `@ask` and nick-addressed text reach the model unmeasured.
-- **Tool-loop cap.** `metaMaxSteps` (default 12) bounds tool-call round trips per turn, so a prompt cannot drive an unbounded tool loop.
+- **Input length limit.** A 10,000-character cap is enforced on image prompts, not on the chat path — `@ask` and nick-addressed text reach the model unmeasured.
+- **Tool-loop cap.** At most 12 tool-call round trips run per turn, so a prompt cannot drive an unbounded tool loop.
 
 ### Verse write safety
 

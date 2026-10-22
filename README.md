@@ -56,8 +56,8 @@ Verse channels add more: `@verseopt`, `@rp`, `@verse`, `@look`, `@who`, `@avatar
 Models and behaviour live in the Limnoria registry under `supybot.plugins.LLM.*`. Most keys support per-channel overrides. API keys are the exception: they come from environment variables, not the registry (see [Quick start](#quick-start)).
 
 ```
-supybot.plugins.LLM.assistantModel: gemini/gemini-flash-latest
-supybot.plugins.LLM.imageModel: gemini/imagen-4.0-fast-generate-001
+supybot.plugins.LLM.assistantModel: anthropic/claude-haiku-5-5
+supybot.plugins.LLM.verseModel: xai/grok-4-1-fast-non-reasoning
 ```
 
 See the [LiteLLM provider list](https://docs.litellm.ai/docs/providers) for supported models and the [operator configuration guide](https://rdrake.github.io/vibebot-v8/operator/configuration/) for every key, including rate limits, memory, context, and verse settings.

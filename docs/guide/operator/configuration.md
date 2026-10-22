@@ -37,7 +37,7 @@ API keys are **not** part of the Limnoria registry. They come from environment v
 | `OPENAI_API_KEY` | OpenAI |
 | `ANTHROPIC_API_KEY` | Anthropic (Claude) |
 
-Any other provider LiteLLM recognises — `vertex_ai`, `openrouter`, `azure`, `bedrock`, and so on — resolves to no key from this plugin, so LiteLLM falls back to that provider's own native credentials: Application Default Credentials, IAM, or its own environment variables. With the defaults, a fresh install needs `ANTHROPIC_API_KEY` for chat, `XAI_API_KEY` for search and `@draw` (the default `imageModel` is `xai/grok-imagine-image`).
+Any other provider LiteLLM recognises — `vertex_ai`, `openrouter`, `azure`, `bedrock`, and so on — resolves to no key from this plugin, so LiteLLM falls back to that provider's own native credentials: Application Default Credentials, IAM, or its own environment variables. With the defaults, a fresh install needs `ANTHROPIC_API_KEY` for chat and `@meme`, and `XAI_API_KEY` for search, `@draw`, meme picture edits and the refusal fallback, which run on fixed xAI models (see [Model selection](#model-selection)).
 
 ### Running on local models
 
@@ -55,11 +55,11 @@ A local server (Ollama, vLLM, LM Studio) takes no key from this plugin. Set its 
 
 Don't use `openai/<model>` with `OPENAI_API_BASE` for a local server. That redirects every OpenAI call in the bot and sends `OPENAI_API_KEY` to your box.
 
-The chat path calls tools, so the local model must support function calling. Each role has its own model setting (`assistantModel`, `searchModel`, `memoryModel`, `verseModel` and the rest under [Model selection](#model-selection)). Any role left on a hosted provider still sends its requests there. That matters when you turn off `privacyOptInOnly`: keep every model a channel uses local, or overheard lines can still reach a hosted provider.
+The chat path calls tools, so the local model must support function calling. Only `assistantModel`, `memoryModel` and `verseModel` are settings; search, images, memes, the refusal fallback and verse compaction run on fixed hosted models (see [Model selection](#model-selection)). Any role on a hosted provider still sends its requests there. That matters when you turn off `privacyOptInOnly`: keep every model a channel uses local, or overheard lines can still reach a hosted provider.
 
 ### Opting in to Vertex AI
 
-Vertex AI is not the default, but it remains a supported `imageModel` (and general model) choice for anyone who wants it — for example to bill image generation to a separate GCP project. Credentials (ADC, IAM) are enough for authentication, but LiteLLM's Vertex Imagen path separately requires the project and region, and it fails closed with `vertex_project and vertex_location are required for Vertex AI` if they are missing:
+Vertex AI is not the default, but it remains a supported model choice for anyone who wants it. Credentials (ADC, IAM) are enough for authentication, but LiteLLM's Vertex path also needs the project and region, and it fails closed with `vertex_project and vertex_location are required for Vertex AI` if they are missing:
 
 | Variable | Required | Notes |
 |----------|----------|-------|
@@ -77,14 +77,19 @@ Models follow [LiteLLM's provider/model format](https://docs.litellm.ai/docs/pro
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
 | `assistantModel` | channel | `anthropic/claude-haiku-5-5` | All assistant text and tool work: chat, planner, memory, reminders, scheduled tasks. Needs vision support if users paste image URLs |
-| `refusalFallbackModel` | channel | `xai/grok-4-1-fast-non-reasoning` | Re-runs a chat turn once when its model refuses: a policy refusal that survives its one retry, or a provider refusal error. The fallback gets the original request without the refusal. Empty turns it off. Skipped when the turn already runs on this model, when its provider has no key, or when a tool that changes something (a reminder, an image, a memory) already worked this turn, since the re-run would repeat it. Its cost books at `xai/grok-4.3` rates, the model behind the alias |
-| `imageModel` | channel | `xai/grok-imagine-image` | Model for `@draw` |
-| `searchModel` | channel | `xai/grok-4.3` | Model for web search and URL fetch. Falls back to `assistantModel`. Only xAI and Gemini models search; any other provider answers from its own knowledge. GitHub links skip it: they are read through GitHub's API. A request can run at most three searches |
 | `memoryModel` | channel | empty | Model for the memory extraction that runs after every reply. Falls back to `assistantModel`. A flash-lite class model is enough |
-| `subjectResearchEnabled` | channel | `True` | Research the real people, places and events a `@draw` request names before the planner writes the prompt — see [Subject research](#subject-research) |
-| `subjectResearchModel` | channel | empty | Model for the subject-research pre-stage. Falls back to `searchModel`, then `assistantModel` |
 | `verseModel` | channel | empty | Model for verse-mode replies. Falls back to `assistantModel`. Set this when the assistant model is a terse reasoning model that writes poor prose |
-| `verseCompactionModel` | global | `anthropic/claude-haiku-5-5` | Cheap model for the daily verse compaction job. Unlike the channel model keys this one is a plain string, so a misspelled model name is accepted at `@config` time and only fails when the nightly job runs |
+
+The other roles run on fixed models:
+
+| Role | Model | Notes |
+|------|-------|-------|
+| Refusal fallback | `xai/grok-4-1-fast-non-reasoning` | Re-runs a chat turn once when its model refuses: a policy refusal that survives its one retry, or a provider refusal error. The fallback gets the original request without the refusal. Skipped when the turn already runs on this model, when `XAI_API_KEY` is unset, or when a tool that changes something (a reminder, an image, a memory) already worked this turn, since the re-run would repeat it. Its cost books at `xai/grok-4.3` rates, the model behind the alias |
+| Images | `xai/grok-imagine-image` | `@draw`, `@story` and the `generate_image` tool |
+| Search | `xai/grok-4.3` | Web search, URL fetch and [subject research](#subject-research). GitHub links skip it: they are read through GitHub's API. A request can run at most three searches |
+| Meme picker | `anthropic/claude-haiku-5-5` | Picks a template and writes captions when `@meme` (or `make_meme`'s `brief`) names no template the catalog knows. It opens on a short list (the 40 most popular templates plus up to 20 sharing a word with the request, about 5K prompt tokens) and can call a `search_templates` tool up to twice to reach the rest of the catalog. No search: one call, about 5K tokens, 2 s. Each search is another round trip: about 12K tokens and 4 s with one, 19K and 6 s with two. Under $0.003 either way |
+| Meme picture edits | `xai/grok-imagine-image` | The picker's `draw` (and `make_meme`'s). Templates with picture slots get one generated picture per slot (`/v1/images/generations`), masked into the blank; other templates send the captioned meme to `/v1/images/edits`. About $0.02 per picture, refusals billed too |
+| Verse compaction | `anthropic/claude-haiku-5-5` | The daily verse compaction job |
 
 Channel overrides let different channels run different models:
 
@@ -104,14 +109,14 @@ but for a real person or a real event it has nothing to build that description
 from: the verse canon block covers characters the channel invented, not people
 the world already contains.
 
-`subjectResearchEnabled` (on by default) closes that gap with one grounded
+Subject research closes that gap with one grounded
 completion in front of the planner. It identifies the real subjects the request
 names, looks up how each actually looks, and layers the answer onto the
 planner's prompt. A request that names nobody real — "a pine forest at
 sunrise" — comes back with nothing and adds nothing to the prompt.
 
-The cost is one extra call and a few seconds, so `@draw` gets visibly
-slower with this on. The typing indicator covers the wait. The usage table
+The cost is one extra call and a few seconds, so `@draw` is visibly
+slower than the image call alone. The typing indicator covers the wait. The usage table
 records research costs under the command name `dossier`, separately from the
 planner's own row, because the two run on different models.
 
@@ -123,11 +128,8 @@ other failure: asked about a name that exists nowhere, a grounded model guesses
 an appearance from the words in it rather than answering `NONE`, and a guess
 has nothing to cite. The tag is stripped before the line reaches the planner.
 
-`subjectResearchModel` picks the model. Left empty it falls back to
-`searchModel` and then `assistantModel`, which in most deployments means the
-researcher is a different provider from the planner. Set it when the search
-model is more reticent about describing real people than the generator
-downstream is.
+The research runs on the search model (`xai/grok-4.3`), which in most
+deployments means the researcher is a different provider from the planner.
 
 ## System prompts
 
@@ -153,16 +155,11 @@ The verse is the per-channel world model. See [The verse](verse.md) for concepts
 |---------|-------|---------|-------------|
 | `verseEnabled` | channel | `False` | Main switch. When off, verse commands are unavailable and no events are recorded |
 | `verseTriggerRegex` | channel | `\bverse\b` | Case-insensitive pattern that marks a message as a canon reference, alongside entity mentions. A match grounds the reply in canon and, for an avatar holder, turns it into a prose tale. It does not enter roleplay mode; that needs `@rp`. Empty disables the keyword signal |
-| `verseRoleplayStickyTtlSeconds` | channel | `900` | Sliding inactivity timeout for sticky `@rp on` roleplay. Each in-character turn refreshes it. `0` never expires |
 | `verseChatRecordEnabled` | channel | `False` | Let an opted-in avatar's ordinary chat turn call `verse_record`. Off keeps canon growing only during roleplay |
-| `verseEventRetentionDays` | channel | `30` | Events older than this are eligible for compaction. `0` disables compaction for the channel |
-| `verseAutoEntityRetireDays` | channel | `14` | Days without a mention before auto-created non-player characters (NPCs) retire. `0` disables the sweep. Pinned entities are exempt |
-| `verseAutoEntityMaxNamesPerCall` | channel | `8` | Cap on the `actors` array in one `verse_record` call |
 | `verseRosterMaxChars` | channel | `4000` | Character cap on the canon-roster block in the verse system prompt |
 | `verseStyleExemplars` | channel | `[]` | Curated style exemplars injected into the verse prompt. Populate offline with the taste miner |
-| `verseReactionCaptureEnabled` | channel | `True` | Capture IRCv3 emoji reactions to verse lines as an offline approval signal |
-| `verseCompactionDailyAt` | global | `03:00` | Local `HH:MM` time for the daily compaction sweep. Empty falls back to `03:00`. A malformed value does not — it defers the next run by an hour, each time, and logs a warning |
-| `verseCompactionMinKeepEvents` | global | `20` | Verses with fewer total events are skipped by compaction |
+
+Fixed behaviour: sticky `@rp on` roleplay lapses after 15 minutes without an in-character turn, and each such turn restarts the clock. Compaction runs daily at 03:00 local time, compacts events older than 30 days, and skips verses with fewer than 20 events in total. Auto-created non-player characters (NPCs) retire after 14 days without a mention; pinned entities are exempt. One `verse_record` call names at most 8 actors. IRCv3 emoji reactions to verse lines are captured as an offline approval signal.
 
 ### Storybook
 
@@ -172,23 +169,15 @@ These caps cover both illustrated-page paths: the `verse_storybook` tool on vers
 |---------|-------|---------|-------------|
 | `verseStorybookEnabled` | channel | `False` | Expose the `verse_storybook` tool on verse turns. It does **not** gate `@story` |
 | `verseStorybookMaxImages` | channel | `5` | Cap on illustrations per storybook |
-| `verseStorybookMaxPerTurn` | channel | `1` | Cap on storybooks per verse turn. Tool-only; `@story` does not read it |
 | `verseStorybookCooldownSeconds` | channel | `300` | Per-account cooldown between storybooks |
-| `verseStorybookDailyImageCap` | channel | `30` | Registered but **not yet enforced** — there is no per-account daily image count to check it against |
-| `verseStorybookMaxChars` | channel | `6000` | Character cap on the storybook body |
-| `verseStorybookImageTimeout` | channel | `45` | Seconds to wait for each illustration |
 
-Turning `verseStorybookEnabled` off does not stop image costs on its own, because `@story` still runs. What bounds them today is `verseStorybookMaxImages` per page and the per-account cooldown between pages, not the daily cap.
+A storybook body is capped at 6,000 characters, each illustration gets 45 seconds, and a verse turn makes at most one storybook.
+
+Turning `verseStorybookEnabled` off does not stop image costs on its own, because `@story` still runs. What bounds them is `verseStorybookMaxImages` per page and the per-account cooldown between pages; there is no daily image cap.
 
 ## Memory
 
-| Setting | Scope | Default | Description |
-|---------|-------|---------|-------------|
-| `memoryEnabled` | channel | `True` | Enable automatic memory extraction |
-| `memoryMaxPerUser` | global | `50` | Cap on durable memories per user |
-| `memoryCleanupInterval` | global | `3` | Extraction passes between cleanup runs. `0` disables |
-| `memoryPromotionThreshold` | global | `2` | Mentions a candidate fact needs before promotion. `1` restores single-stage saving |
-| `memoryCandidateTTLDays` | global | `14` | Days an unreinforced candidate survives. `0` disables pruning |
+Memory extraction always runs after a reply; `memoryModel` (under [Model selection](#model-selection)) picks its model. A candidate fact needs 2 mentions before it is promoted, an unreinforced candidate is pruned after 14 days, durable memories are capped at 50 per user, and cleanup runs every 3 extraction passes that promote something.
 
 See [Memory promotion](memory-promotion.md) for how the two-stage pipeline works.
 
@@ -196,31 +185,28 @@ See [Memory promotion](memory-promotion.md) for how the two-stage pipeline works
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
-| `contextEnabled` | channel | `True` | Enable conversation context |
-| `contextMaxMessages` | channel | `20` | Messages kept in per-user history |
 | `contextTimeoutMinutes` | channel | `5` | Clear context after this much inactivity |
 | `privacyOptInOnly` | channel | `True` | Send only lines addressed to the bot to the provider. Set `False` to track every channel message as context and let `irc_lookup` read the channel's server history (`kind=history`, up to 100 lines) for "what did I miss". Those lines go to whichever provider serves the channel's models. See [Running on local models](#running-on-local-models) |
-| `channelContextMaxMessages` | channel | `10` | Messages in the shared channel context |
+
+Per-user history keeps the last 20 messages; the shared channel context keeps 10.
 
 ## Rate limiting
 
-Rate limits follow the pattern `{command}{tier}RateLimitCount` and `{command}{tier}RateLimitWindow` for the commands `ask`, `draw`, `meme`, and `story`. All rate-limit settings are global. See [Rate limiting and security](rate-limiting-security.md) for tiers, defaults, and the observe-only switch `enforceRateLimits`.
+Rate limits follow the pattern `{command}{tier}RateLimitCount` and `{command}{tier}RateLimitWindow` for the commands `ask`, `draw`, `meme`, and `story`. All rate-limit settings are global. `ask` has unregistered, registered and Trusted tiers; `draw`, `meme` and `story` require an authenticated account, so only the registered and Trusted tiers apply to them. See [Rate limiting and security](rate-limiting-security.md) for tiers and defaults.
 
 ## Bot-to-bot loops
 
-Two bots that answer each other never get bored, so replies to another bot are capped.
+Two bots that answer each other never get bored, so replies to another bot are capped: after 3 consecutive replies to one bot the bot goes quiet toward it, and the count resets after 300 seconds of quiet.
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
-| `botLoopReplyLimit` | channel | `3` | Consecutive replies to one bot before the bot goes quiet. `0` disables the guard |
-| `botLoopWindow` | channel | `300` | Seconds of quiet after which that bot's count resets |
 | `botLoopHostSuffixes` | global | `Bot.AfterNET.Org` | Host suffixes the network reserves for bots. Matched case-insensitively against the sender's host. A sender matched here, or one with the +B mode, cannot address the bot by replying to its lines. A full host works too, for a bot on a user host |
 
 A nick counts as a bot only when the network says so, by either of two signals. AfterNET advertises `BOT=B` and marks flagged users in the WHOX status field, which is where the bot reads it — six nicks carry it today, long-running service bots among them. Anyone unflagged is treated as a person and is never capped, and a human *addressing the bot* clears the counts in that channel, so a conversation someone has joined is never cut short. Only addressed lines reset it: what people say during a bot loop is commentary on the noise ("wtf", "jesus"), and treating that as a reset would license three more replies after every such line.
 
 The `+B` mode is opt-in, and the bot most likely to loop with yours may not set it — `grok` answers on `Hxz` from `grok.Bot.AfterNET.Org`. So the sender's host counts too: AfterNET only issues `*.Bot.AfterNET.Org` to registered bots, and across a full day of channel logs the only nicks on one were `grok`, `grook5`, and `vibebot` itself. The host is checked first because it is free and decides on the very first line, with no WHO round trip.
 
-Because `skipAutoWhoOnJoin` suppresses the WHO on join, the flag is fetched on demand: the first time an unknown nick addresses the bot, a WHO goes out for that nick and the answer is cached for an hour. That first line is always answered — the guard fails open, so the worst case is one extra reply, never a silenced user. A bot that never sets `+B` is invisible to this and will not be capped.
+Because the bot skips Limnoria's automatic WHO on join when `account-tag` and `extended-join` are active, the flag is fetched on demand: the first time an unknown nick addresses the bot, a WHO goes out for that nick and the answer is cached for an hour. That first line is always answered — the guard fails open, so the worst case is one extra reply, never a silenced user. A bot that never sets `+B` is invisible to this and will not be capped.
 
 ## Web and HTTP output
 
@@ -229,11 +215,9 @@ Because `skipAutoWhoOnJoin` suppresses the WHO on join, the flag is fetched on d
 | `httpRoot` | global | empty | Filesystem path for output files. Empty keeps them under Limnoria's `data/web/llm/` and serves them from its built-in HTTP server. Setting it **unhooks that server** — an external server such as nginx must serve the path, and `httpUrlBase` must be set to match, or every generated link 404s |
 | `httpUrlBase` | global | empty | Public base URL for output files. Empty uses Limnoria's `publicUrl` plus `/llm`; if `publicUrl` is also unset the bot falls back to `http://localhost:<http port>/llm`, which nobody off the host can open |
 | `imageUploadUrl` | global | empty | External image host for generated images. Empty stores them locally |
-| `helpUrl` | global | `https://rdrake.github.io/vibebot-v8/` | URL shown in help output |
-| `longReplyTeaserMaxChars` | channel | `220` | Characters in the one-line teaser for long replies saved as HTML |
-| `multilineMaxLines` | channel | `3` | Replies that wrap to at most this many IRC lines go inline as one IRCv3 `draft/multiline` batch instead of a teaser and link. Needs `supybot.protocols.irc.experimentalExtensions`. `0` turns it off |
 | `fileCleanupAge` | global | `720` | Delete output files older than this many hours (30 days) |
-| `fileCleanupMax` | global | `1000` | Cap on files kept in the output directory |
+
+Replies that wrap to at most 3 IRC lines go inline as one IRCv3 `draft/multiline` batch (this needs `supybot.protocols.irc.experimentalExtensions`); longer replies are saved as HTML and announced with a one-line teaser of up to 220 characters and a link. The output directory keeps at most 1,000 files.
 
 ### Offloading images to an external host
 
@@ -255,14 +239,10 @@ Every failure falls back to local storage: endpoint unreachable, upload rejected
 |---------|-------|---------|-------------|
 | `bridgeEnabled` | channel | `False` | Expose loaded Limnoria plugin commands to the LLM as a tool |
 | `bridgeAllowedPlugins` | channel | empty | Plugin allowlist. Empty uses the curated read-safe default set |
-| `bridgeAllowMutating` | channel | `False` | Expose state-changing commands through the bridge |
-| `bridgeScheduledTaskLimit` | channel | `5` | Active scheduled LLM tasks per creator per channel. `0` disables scheduling |
 | `bridgeDebugInChannel` | channel | `False` | Append a bridge-call debug footer to replies |
-| `ircLookupEnabled` | channel | `True` | Advertise the `irc_lookup` tool (live `LIST`, `NAMES`, `WHOIS`, `WHO`, topic, network info, CTCP) to chat. Its `history` kind also needs `privacyOptInOnly` off. `@channels` and `@names` work regardless |
-| `memeModel` | channel | `anthropic/claude-haiku-5-5` | Model that picks a template and writes captions when `@meme` (or `make_meme`'s `brief`) names no template the catalog knows. It opens on a short list (the 40 most popular templates plus up to 20 sharing a word with the request, about 5K prompt tokens) and can call a `search_templates` tool up to twice to reach the rest of the catalog. No search: one call, about 5K tokens, 2 s. Each search is another round trip: about 12K tokens and 4 s with one, 19K and 6 s with two. Under $0.003 on Haiku either way. Empty falls back to `assistantModel`; grok-4-1-fast copies the template's example captions instead of writing new ones |
-| `memeEditModel` | global | `xai/grok-imagine-image` | Image model for the picker's `draw` (and `make_meme`'s). Templates with picture slots get one generated picture per slot (`/v1/images/generations`), masked into the blank; other templates send the captioned meme to `/v1/images/edits`. `xai/` only. About $0.02 per picture, refusals billed too |
-| `memeEnabled` | channel | `True` | `False` refuses `@meme` and hides the `make_meme` tool from chat |
 | `memeAliases` | global | `tyrone=yallgot biggums=yallgot chappelle=yallgot` | Extra template names, `name=id` or `name=https://image`. An id target adds the name as a keyword on that template; a URL target adds a two-caption template drawn on that image. Hyphens for spaces in the name |
+
+The bridge never exposes or runs state-changing commands. A creator can hold at most 5 active scheduled LLM tasks per channel. The `irc_lookup` tool (live `LIST`, `NAMES`, `WHOIS`, `WHO`, topic, network info, CTCP) is always on the chat tool surface; its `history` kind also needs `privacyOptInOnly` off. The models behind `@meme` are listed under [Model selection](#model-selection).
 
 See [Tuning and monitoring](tuning-monitoring.md) for the bridge's security model and the scheduled-task tool.
 
@@ -270,11 +250,10 @@ See [Tuning and monitoring](tuning-monitoring.md) for the bridge's security mode
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
-| `statusPageUrls` | global | `Claude=https://status.claude.com GitHub=https://www.githubstatus.com OpenAI=https://status.openai.com` | Space-separated status pages to poll and announce — both Atlassian Statuspage and incident.io pages work — each written as `Name=url` or as a bare url, which takes its host as its name. Names are 1-32 chars of `[A-Za-z0-9._-]`, case-insensitively unique across this key and `statusQueryablePages`, and are what the model uses to ask about one service. Unusable entries are dropped with a warning and the rest survive; at most 5 are polled |
-| `statusQueryablePages` | global | empty | Same `Name=url` grammar as `statusPageUrls`, for pages the bot can be **asked** about but never polls or announces — the long tail like Cloudflare or AWS, where polling forever to answer an occasional question is the wrong trade. Fetched lazily on request and cached for 5 minutes, with a failure backoff. An entry naming the same page as a `statusPageUrls` entry is dropped, whatever its name — that page is already reachable, polled, as the fresher entry. At most 20 |
-| `statusAnnounce` | channel | `False` | Announce incidents from every configured `statusPageUrls` page in this channel as they open and again as they resolve. `statusQueryablePages` pages never announce, no matter how this is set |
+| `statusPageUrls` | global | `Claude=https://status.claude.com GitHub=https://www.githubstatus.com OpenAI=https://status.openai.com` | Space-separated status pages to poll and announce — both Atlassian Statuspage and incident.io pages work — each written as `Name=url` or as a bare url, which takes its host as its name. Names are 1-32 chars of `[A-Za-z0-9._-]`, case-insensitively unique, and are what the model uses to ask about one service. Unusable entries are dropped with a warning and the rest survive; at most 5 are polled |
+| `statusAnnounce` | channel | `False` | Announce incidents from every configured `statusPageUrls` page in this channel as they open and again as they resolve |
 
-`check_service_status` is on the model's tool surface whenever either key holds at least one page. An empty `statusPageUrls` no longer removes the tool by itself — only polling and announcing stop; a non-empty `statusQueryablePages` keeps the tool available for on-request lookups.
+`check_service_status` is on the model's tool surface whenever `statusPageUrls` holds at least one page. An empty `statusPageUrls` removes the tool and stops polling and announcing.
 
 See [Tuning and monitoring](tuning-monitoring.md#status-pages) for the polling rotation, staleness, and the RSS cutover order.
 
@@ -282,11 +261,10 @@ See [Tuning and monitoring](tuning-monitoring.md#status-pages) for the polling r
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
-| `auroraEnabled` | channel | `True` | Give the chat model the `aurora` tool: NOAA aurora probability, solar wind, Kp, darkness, and cloud cover for a named place |
-| `auroraAnnounce` | channel | `False` | Announce G3+ storm watches and sustained storm conditions in this channel. Works without `auroraEnabled` |
+| `auroraAnnounce` | channel | `False` | Announce G3+ storm watches and sustained storm conditions in this channel |
 | `auroraAnnouncePlaces` | channel | empty | Optional space-separated places for this channel's announcements; `_` stands for a space, as in `Sault_Ste._Marie`. Adds cloud cover for them and holds a storm line until one is dark. A place that matches nothing is skipped (warned once in the log) |
 
-The tool reads NOAA SWPC (`services.swpc.noaa.gov`) and Open-Meteo (`geocoding-api.open-meteo.com`, `api.open-meteo.com`). No API keys are needed. The tool and the announcer share one cache: solar wind for 2 minutes, aurora probability for 10 minutes, storm alerts for 5 minutes, the Kp forecast for 3 hours, cloud cover for 1 hour per place (a 5-day forecast), and place lookups for 24 hours (misses for 1 hour). A failed fetch is not cached. See [Aurora](../user/aurora.md).
+The chat model always has the `aurora` tool: NOAA aurora probability, solar wind, Kp, darkness, and cloud cover for a named place. The tool reads NOAA SWPC (`services.swpc.noaa.gov`) and Open-Meteo (`geocoding-api.open-meteo.com`, `api.open-meteo.com`). No API keys are needed. The tool and the announcer share one cache: solar wind for 2 minutes, aurora probability for 10 minutes, storm alerts for 5 minutes, the Kp forecast for 3 hours, cloud cover for 1 hour per place (a 5-day forecast), and place lookups for 24 hours (misses for 1 hour). A failed fetch is not cached. See [Aurora](../user/aurora.md).
 
 Announcements go to every channel with `auroraAnnounce` on; set `auroraAnnouncePlaces` to add cloud cover and hold storm alerts until it is dark there. The bot checks every 5 minutes and posts two kinds of line, both fixed templates with no model rewrite:
 
@@ -305,32 +283,24 @@ The `@remind` command and the firing of reminders and tasks already created work
 
 ## Timeouts and retries
 
-When an API call times out, the bot retries in the background for a bounded window.
+When an `@ask` or `@draw` call times out, the bot keeps retrying in the background for 60 seconds. Image generation has its own 120-second timeout.
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
 | `timeout` | global | `30` | Timeout for LLM API calls, in seconds |
-| `drawTimeout` | global | `120` | Timeout for image generation. `0` uses the global timeout |
-| `askExpiry` | global | `60` | Seconds to keep retrying a timed-out `@ask`. `0` disables |
-| `drawExpiry` | global | `60` | Seconds to keep retrying a timed-out `@draw`. `0` disables |
 
 ## Draw behaviour
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
-| `drawEnabled` | channel | `True` | `False` refuses `@draw` and hides the `generate_image` tool from chat. The tool is also hidden when `imageModel`'s provider has no key |
 | `drawAutoRewriteMax` | channel | `1` | Automatic prompt rewordings when a safety filter blocks a request. `0` disables. Each rewording costs a second billed image call on top of the refused one, and every recovery observed in prod landed on the first attempt, so raising this mostly buys repeat refusals of a prompt that was never going to pass |
-| `drawContextMaxAgeSeconds` | channel | `60` | Pass conversation context to draw requests only when the last activity is this recent. `0` always starts fresh |
+
+`@draw` passes conversation context to the planner only when the last activity was within 60 seconds. When `XAI_API_KEY` is unset, `@draw` refuses and the `generate_image` tool is hidden from chat.
 
 ## Other settings
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
-| `maxPromptLength` | global | `10000` | Longest accepted user prompt, in characters |
 | `commandPrefixes` | global | `. @` | Space-separated prefixes sanitised in output to prevent IRC command injection. The default covers both the conventional `.` and VibeBot's own `@` |
-| `databasePath` | global | empty | Path to the SQLite database. Empty uses `data/LLM.db` |
-| `logLevel` | global | `WARNING` | Plugin log level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
-| `metaMaxSteps` | global | `12` | Cap on tool-call round trips per assistant turn. Stops runaway tool loops |
-| `maxConcurrentLLMCalls` | global | `16` | Cap on simultaneous outbound LLM calls across all surfaces |
-| `skipAutoWhoOnJoin` | global | `True` | Skip Limnoria's automatic `WHO` on join when the `account-tag` and `extended-join` capabilities are active |
-| `enforceRateLimits` | global | `True` | Enforce rate limits. `False` tracks and logs without blocking |
+
+Fixed limits: a user prompt is at most 10,000 characters, an assistant turn makes at most 12 tool-call round trips, and at most 16 outbound LLM calls run at once across all surfaces. The SQLite database is `data/LLM.db` in Limnoria's data directory, and the plugin logs at `WARNING`. Limnoria's automatic `WHO` on join is skipped when the `account-tag` and `extended-join` capabilities are active.

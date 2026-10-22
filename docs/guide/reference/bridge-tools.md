@@ -18,10 +18,8 @@ loaded at that moment. Newly loaded plugins become visible without a bot
 restart.
 
 `run_limnoria_command`'s description carries the whole exposed command
-list, one line per command with its argument syntax and docstring. When
-the mutation gate is closed and an allowlisted plugin has writes to hide,
-the list ends with `(write commands hidden — set bridgeAllowMutating True
-to expose)`. `search_bridge_commands` substring-searches that same list
+list, one line per command with its argument syntax and docstring.
+`search_bridge_commands` substring-searches that same list
 (`limit` 1 to 25, default 10); it exists because Limnoria's
 `Misc.apropos` matches command names only, not descriptions.
 
@@ -39,16 +37,15 @@ The bridge exposes a command when **all** of these hold:
 3. The command is **not** in `DENY_COMMANDS`. Examples: `misc more`
    (interactive pagination) and the `web` fetch-style commands, which
    the bridge denies as server-side request forgery risks.
-4. Either the command is read-only, or `bridgeAllowMutating` is `True`
-   for the channel.
+4. The command is read-only: it is **not** in `MUTATING_COMMANDS`.
 5. The caller holds the Limnoria capability for the command, the same
    check Limnoria runs for IRC dispatch.
 
 ## Default allowlist
 
 The curated set applies when `bridgeAllowedPlugins` is empty. Every
-plugin in the set is either read-only by nature or has its writes gated
-behind `bridgeAllowMutating`.
+plugin in the set is either read-only by nature or has its writes listed
+in `MUTATING_COMMANDS`, which the bridge never exposes.
 
 `Misc`, `Time`, `Math`, `Utilities`, `Seen`, `Web`, `Later`, `Note`,
 `Karma`, `QuoteGrabs`, `RSS`, `DDG`, `Network`
@@ -100,27 +97,17 @@ minus anything held back by `DENY_COMMANDS` or `MUTATING_COMMANDS`.
 
 ## Mutating commands
 
-When `bridgeAllowMutating` is `False`, the default, the bridge filters
-out commands that change persistent state, send messages on behalf of
-another user, or read with side effects. Filtering happens at
-enumeration *and* at dispatch, as a defence-in-depth measure. The full
-set lives
-at the top of `limnoria_bridge.py` under `MUTATING_COMMANDS`.
+The bridge never exposes commands that change persistent state, send
+messages on behalf of another user, or read with side effects. Filtering
+happens at enumeration *and* at dispatch, as a defence-in-depth measure.
+The full set lives at the top of `limnoria_bridge.py` under
+`MUTATING_COMMANDS`. Examples:
 
-To allow mutations on a specific channel:
-
-```
-@config channel #yourchan plugins.LLM.bridgeAllowMutating True
-```
-
-Operator caveats:
-
-- `RSS` mutations can announce feed entries to every channel subscribed
-  to the feed. Enabling mutations in one channel can cause writes
-  elsewhere.
-- `Karma` `clear`, `dump`, and `load` are destructive against the karma
-  database.
-- `Factoids` `whatis` counts as mutating because the default
+- `RSS` mutations, which can announce feed entries to every channel
+  subscribed to the feed.
+- `Karma` `clear`, `dump`, and `load`, which are destructive against the
+  karma database.
+- `Factoids` `whatis`, which counts as mutating because the default
   `keepRankInfo` writes a usage counter on every read.
 
 ## Refused calls
@@ -130,7 +117,7 @@ can correct itself or tell the user why. A call that runs returns
 `{"status": "ok", "reply": "<captured text>"}`; a refusal returns one of:
 
 - `{"error": "denied: write commands disabled"}` — the command is in
-  `MUTATING_COMMANDS` and `bridgeAllowMutating` is `False`.
+  `MUTATING_COMMANDS`.
 - `{"error": "not permitted: Plugin.command"}` — the caller lacks the
   Limnoria capability for that command.
 - `{"error": "denied: Plugin.command"}` — a `DENY_COMMANDS` entry, or a
@@ -148,8 +135,7 @@ can correct itself or tell the user why. A call that runs returns
 ## Live IRC lookups
 
 `irc_lookup` is a third per-request tool that rides with the bridge
-pair whenever `ircLookupEnabled` is on for the channel (the default),
-bridge or no bridge. It exists because nothing stock answers the first
+pair, bridge or no bridge. It exists because nothing stock answers the first
 two questions — Limnoria has no `LIST` command at all, and
 `Channel.nicks` only reads channels the bot has joined — and because a
 `whois` buried in the bridge's command table is one the model tends to
@@ -194,7 +180,7 @@ it is offered depends on the route that handled the message:
 
 | Route | Entry points | Tools offered |
 |-------|--------------|---------------|
-| chat | `@ask`, nick-addressed mentions, PMs | `check_service_status`, `fetch_url`, `generate_image`, `save_memory`, `search_web`; plus `set_reminder` and `schedule_llm_task` where `pendingTasksEnabled` is on. Five with the shipped defaults; seven when `pendingTasksEnabled` is on; one fewer in each case when both `statusPageUrls` and `statusQueryablePages` are empty. |
+| chat | `@ask`, nick-addressed mentions, PMs | `check_service_status`, `fetch_url`, `generate_image`, `save_memory`, `search_web`; plus `set_reminder` and `schedule_llm_task` where `pendingTasksEnabled` is on. Five with the shipped defaults; seven when `pendingTasksEnabled` is on; one fewer in each case when `statusPageUrls` is empty. |
 | verse | `@rp`, a live sticky `@rp` session, the one-shot ambient-prose promotion | `fetch_url`, `generate_image`, `save_memory`, `search_web` (4) |
 | draw | `@draw` | `generate_image` (1) |
 | remind_action | reminder and scheduled-task fires | all 20 |
@@ -244,17 +230,12 @@ the gate. The matching list and cancel tools are off the chat surface
 either way: users list and cancel both kinds with `@remind list`,
 `@remind del` and `@remind clear`.
 
-`check_service_status` covers two tiers of page. `statusPageUrls` entries back
-the poller's cached snapshot: one entry per page when the model omits
-`service`, or a single named lookup. `statusQueryablePages` entries are
-answered only by name, fetched lazily and cached for 5 minutes — they never
-appear in the omitted-`service` answer. Only `statusPageUrls` pages are named
-in the tool's description text, in a "Monitored services" sentence, since
-that sentence describes what an omitted `service` returns; the `service`
-argument's enum is wider and lists every configured name across both keys,
-which is how a queryable page gets asked for by name at all. The tool leaves
-the request only when both keys are empty, rather than shipping a tool that
-could only answer "not configured".
+`check_service_status` answers from the poller's cached snapshot of the
+`statusPageUrls` pages: one entry per page when the model omits `service`,
+or a single named lookup. The pages are named in the tool's description
+text, in a "Monitored services" sentence, and the `service` argument's enum
+lists the same names. The tool leaves the request when `statusPageUrls` is
+empty, rather than shipping a tool that could only answer "not configured".
 
 Verse is a strict subset of chat: everything chat hides, plus
 `set_reminder`, `schedule_llm_task` and `check_service_status`, none of
@@ -274,9 +255,8 @@ set is `verse_act`, `verse_move`, `verse_look`, `verse_recall`,
 ## Scheduled LLM tasks
 
 `schedule_llm_task` lets the assistant create recurring agentic work
-("every weekday at 09:00, summarise the news"). The
-`bridgeScheduledTaskLimit` key (default 5, 0 disables scheduling) caps
-active schedules per creator in a channel. Each fire still counts
+("every weekday at 09:00, summarise the news"). A creator can hold at
+most 5 active schedules in a channel. Each fire still counts
 against the user's normal `@ask` rate-limit bucket; the cap limits the
 number of pending schedules, not their cumulative cost. Owners can
 list and cancel any user's tasks with `@remind admin`.
@@ -287,10 +267,8 @@ list and cancel any user's tasks with `@remind admin`.
 |---------|---------|-------------|
 | `bridgeEnabled` | `False` | Primary switch, per channel. `False` removes every bridge tool. |
 | `bridgeAllowedPlugins` | empty (curated default applies) | Space-separated plugin names. A non-empty value replaces the curated set entirely. Names use camel case to match `cb.name()`. |
-| `bridgeAllowMutating` | `False` | Per channel. Exposes commands listed in `MUTATING_COMMANDS`. |
-| `bridgeScheduledTaskLimit` | `5` | Per-creator cap on active `schedule_llm_task` entries. `0` disables scheduling. |
 | `pendingTasksEnabled` | `False` | Per channel. Advertises `set_reminder` and `schedule_llm_task` on the chat surface, so the model can create reminders and schedules from plain language. Listing and cancelling stay command-only. |
-| `bridgeDebugInChannel` | `False` | Per channel. Appends a one-line footer listing every bridge call made during the turn, as `Plugin.command (N chars) [ok]`, or `[err:<reason>]` when the call was refused. Argument text is never echoed, only its length: bridge arguments are model-generated and can carry secrets. Full arguments go to the DEBUG log. |
+| `bridgeDebugInChannel` | `False` | Per channel. Appends a one-line footer listing every bridge call made during the turn, as `Plugin.command (N chars) [ok]`, or `[err:<reason>]` when the call was refused. Argument text is never echoed, only its length: bridge arguments are model-generated and can carry secrets. Full arguments are logged only at `DEBUG`, below the plugin's fixed `WARNING` level. |
 
 To add a plugin outside the curated default, list every plugin you want
 exposed, because the registry value replaces the default rather than

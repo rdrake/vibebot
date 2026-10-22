@@ -3,8 +3,8 @@
 Ask the bot whether the northern lights are likely at a place. It reads
 NOAA's live aurora forecast, the current solar wind, and the Kp forecast for
 the next 24 hours, then adds when it gets dark there and how cloudy it will
-be while it is. It is on in every channel unless an operator turns
-`auroraEnabled` off; see [Aurora](../operator/configuration.md#aurora).
+be while it is. It is on in every channel; see
+[Aurora](../operator/configuration.md#aurora).
 
 ## Quick how-to
 
@@ -26,9 +26,7 @@ for cloud cover and to hold storm alerts until dark:
 @config channel #yourchan plugins.LLM.auroraAnnouncePlaces Ottawa Toronto
 ```
 
-Turn the tool off in a channel with
-`@config channel #yourchan plugins.LLM.auroraEnabled False`. A runtime
-`@config` change is lost when the bot restarts; to keep it, set it in
+A runtime `@config` change is lost when the bot restarts; to keep it, set it in
 `bot.conf` with the bot stopped.
 
 ## Asking

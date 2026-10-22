@@ -79,7 +79,7 @@ The table covers *ambient* messages: the bot addressed by nick, or a bare `vibeb
 
 ### Sticky roleplay
 
-`@rp on` keeps a caller in character without prefixing every line. Ambient messages become roleplay turns until `@rp off`. The session is keyed by channel plus account, falling back to nick, and expires on a sliding `verseRoleplayStickyTtlSeconds` window (default 900 seconds, `0` never expires). Being per channel, `@rp on` in `#a` does not follow you into `#b`. Every in-character turn refreshes the window, so a session lapses only after silence. Sessions live in memory and are lost on restart.
+`@rp on` keeps a caller in character without prefixing every line. Ambient messages become roleplay turns until `@rp off`. The session is keyed by channel plus account, falling back to nick, and expires after 15 minutes without an in-character turn. Being per channel, `@rp on` in `#a` does not follow you into `#b`. Every in-character turn refreshes the window, so a session lapses only after silence. Sessions live in memory and are lost on restart.
 
 ### Canon written from chat
 
@@ -123,7 +123,7 @@ Each channel's verse lives in its own SQLite database under `data/verse/`. The s
 
 ### Canon, pinning, and aging
 
-Entities the model creates during play are tagged auto-created. The daily sweep retires auto-created NPCs that go unmentioned for `verseAutoEntityRetireDays` days (default 14, `0` disables). Retirement is a soft status flip and is reversible.
+Entities the model creates during play are tagged auto-created. The daily sweep retires auto-created NPCs that go unmentioned for 14 days. Retirement is a soft status flip and is reversible.
 
 Two marks exempt an entity from aging and pull it into every verse prompt:
 
@@ -142,7 +142,7 @@ The assistant calls the `verse_record` tool with `actors=["stinky dan", "Andrew"
 
 Items and props belong in the recorded summary as prose, not in `actors`. That is an instruction to the model, not a server-side filter: the server only checks the type, drops blanks, and truncates to the cap. A model that lists a weapon as an actor really will get an NPC called `guff grenade`, and `@versedit retire` is the cleanup.
 
-`verseAutoEntityMaxNamesPerCall` (default 8) caps the actors array. Raise it for verses with large casts; values past 16 invite entity flooding.
+The actors array is capped at 8 names per call, which keeps one call from flooding the verse with entities.
 
 ## Editing canon
 
@@ -199,7 +199,7 @@ Review the candidates by hand, then set the survivors as a JSON list on the chan
 
 Two signals tell you whether verse output lands:
 
-- **Reactions.** With `verseReactionCaptureEnabled` (default on), the bot records IRCv3 emoji reactions to its verse lines into `data/verse/reactions.jsonl`. Capture is measurement-only; the bot never replies to a reaction.
+- **Reactions.** The bot records IRCv3 emoji reactions to its verse lines into `data/verse/reactions.jsonl`. Capture is measurement-only; the bot never replies to a reaction.
 - **Landing-rate report.** The offline `taste_report` CLI counts how often that same taste-setter reacts to verse output, with their own message volume in the same logs as the denominator. Log filenames must carry a `YYYY-MM-DD`; the rest are skipped. Pass `--reactions` to append the explicit thumbs section:
 
 ```bash
@@ -215,9 +215,9 @@ The `@story <brief>` command generates the same illustrated page on request, in 
 
 The storybook is reserved for pictures people asked for. A plain canon mention produces a prose tale instead, so an illustrated page only comes from `@story`, the `verse_storybook` tool, or — where `verseStorybookEnabled` is on — an ambient mention that carries an explicit illustrate cue.
 
-Cost controls: `verseStorybookMaxImages` (default 5), `verseStorybookMaxPerTurn` (1), `verseStorybookCooldownSeconds` (300, per account, shared between the tool and `@story`), `verseStorybookMaxChars` (6000), and `verseStorybookImageTimeout` (45 seconds). Illustrations render concurrently; the page is published through the bot's HTTP output.
+Cost controls: `verseStorybookMaxImages` (default 5) and `verseStorybookCooldownSeconds` (300, per account, shared between the tool and `@story`). The body is capped at 6,000 characters, each illustration gets 45 seconds, and a verse turn makes at most one storybook. Illustrations render concurrently; the page is published through the bot's HTTP output.
 
-`verseStorybookDailyImageCap` (30) is registered but **not enforced**: there is no per-account daily image count to check it against. What bounds image cost is `verseStorybookMaxImages` per page and the per-account cooldown between pages; the verse tool path adds `verseStorybookMaxPerTurn` on top, which `@story` does not read.
+There is no daily image cap. What bounds image cost is `verseStorybookMaxImages` per page and the per-account cooldown between pages; the verse tool path adds the one-storybook-per-turn cap on top.
 
 ## GM operations
 
@@ -242,16 +242,16 @@ Run retention compaction for one channel immediately instead of waiting for the 
 
 ## Compaction
 
-Once a day at `verseCompactionDailyAt` (global, default `03:00` local time), the plugin walks every verse-enabled channel and replaces the oldest events past `verseEventRetentionDays` (channel, default 30) with a single lore-digest event written by `verseCompactionModel`. The digest is stamped at compaction time and lists up to 32 involved entities.
+Once a day at 03:00 local time, the plugin walks every verse-enabled channel and replaces the oldest events older than 30 days with a single lore-digest event written by `anthropic/claude-haiku-5-5`. The digest is stamped at compaction time and lists up to 32 involved entities.
 
-`verseCompactionMinKeepEvents` (global, default 20) sets a floor: verses with fewer total events are left alone, which keeps small verses from thrashing.
+Verses with fewer than 20 events in total are left alone, which keeps small verses from thrashing.
 
 ### Drain rate
 
 A single pass compacts at most 200 events, a safety cap that keeps one model call inside the cheap model's context window. Consequences:
 
 - A backlog of 10,000 over-retention events converges in about 50 daily runs.
-- A verse producing more than 200 over-retention events per day never converges under the daily cap. Lower `verseEventRetentionDays`, or run `@versecompact` repeatedly; each run drains another 200-event batch.
+- A verse producing more than 200 over-retention events per day never converges under the daily cap. Run `@versecompact` repeatedly; each run drains another 200-event batch.
 - Realistic avatar-driven verses produce 1 to 10 events per day, so the cap rarely matters.
 
 Failures log at ERROR with a traceback and never block the timer; the re-arm runs in a `finally`, so the next day's run retries.
@@ -261,8 +261,7 @@ Failures log at ERROR with a traceback and never block the timer; the re-arm run
 | State | Meaning |
 |-------|---------|
 | `compacted` | Old events were summarised into one digest event |
-| `skipped_disabled` | `verseEventRetentionDays` is 0 or lower; retention is off |
-| `skipped_below_floor` | Total events are under `verseCompactionMinKeepEvents` |
+| `skipped_below_floor` | Fewer than 20 events in total |
 | `skipped_no_events` | Nothing is older than the retention cutoff |
 
 The daily pass's log line also reports aging: `aged N entities (kept M)` counts auto-created NPCs retired by the sweep and those scanned but kept.

@@ -76,8 +76,7 @@ Every blocking LLM call goes through `LLMExecutor` (in `executor.py`),
 which combines a `BoundedSemaphore` and a `ThreadPoolExecutor`. This
 design:
 
-- caps total in-flight LLM I/O with
-  `supybot.plugins.LLM.maxConcurrentLLMCalls` (default 16),
+- caps total in-flight LLM I/O at 16 calls,
 - keeps the IRC main thread responsive, because no `litellm.*` call can
   block it directly, and
 - shares one shutdown gate, so plugin reloads drain in-flight work

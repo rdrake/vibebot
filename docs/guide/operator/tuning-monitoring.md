@@ -2,25 +2,19 @@
 
 ## Choosing models
 
-The model surface splits by workload so cost and quality can differ per task. Every model setting below is channel-overridable except `verseCompactionModel`, which is global.
+The model surface splits by workload so cost and quality can differ per task. The three model settings below are channel-overridable; the other roles run on fixed models listed under [Configuration → Model selection](configuration.md#model-selection): images on `xai/grok-imagine-image`, search and subject research on `xai/grok-4.3`, the `@meme` picker and verse compaction on `anthropic/claude-haiku-5-5`.
 
 | Setting | Used for |
 |---------|----------|
 | `assistantModel` | Chat, the planner loop, bridge tool selection, reminder parsing, memory cleanup, image-prompt rewrites, scheduled tasks |
 | `memoryModel` | Memory extraction after every reply. Falls back to `assistantModel` when empty |
-| `imageModel` | Image generation |
-| `searchModel` | Web search and URL fetch tools. Falls back to `assistantModel` when empty. GitHub links are read through GitHub's API instead |
-| `subjectResearchModel` | The subject-research pre-stage in front of the `@draw` planner. Falls back to `searchModel`, then `assistantModel` |
 | `verseModel` | Verse-mode narration. Falls back to `assistantModel` when empty |
-| `verseCompactionModel` | The daily verse compaction digest |
 
 Guidance from operating this surface:
 
 - `assistantModel` needs vision support if users paste image URLs into chat.
 - Reasoning models make terse, flat narrators. If the assistant model is a reasoning model, point `verseModel` at a non-reasoning model for verse prose.
-- Compaction is a cheap summarization job; leave `verseCompactionModel` on a flash-lite class model.
 - Memory extraction runs after every reply and its output is never shown. Put `memoryModel` on a flash-lite class model. On Gemini's free tier each model has its own daily quota, so a different model also keeps extraction from using up the chat model's.
-- Subject research is a lookup, not a writing job, so a flash-class model is enough. What matters is whether it will describe real people at all: a model that declines contributes nothing and the picture loses its likeness. If dossiers come back empty on obvious subjects, point `subjectResearchModel` at a more permissive model than `searchModel`.
 
 Keys are not part of this per-command surface: one environment variable per *provider* covers every model on that provider, regardless of which setting names the model. Point a channel at a different model and, if that model's provider is already configured, no key change is needed. See [Configuration → API keys](configuration.md#api-keys) for the variable names.
 
@@ -30,15 +24,12 @@ Keys are not part of this per-command surface: one environment variable per *pro
 
 ## Context tuning
 
-Conversation context lets the bot follow recent exchanges in a channel.
+Conversation context lets the bot follow recent exchanges in a channel. It is always on: per-user history keeps the last 20 messages, and the shared channel context keeps 10.
 
 | Setting | Default | Scope | Description |
 |---------|---------|-------|-------------|
-| `contextEnabled` | `True` | channel | Enable conversation context |
-| `contextMaxMessages` | `20` | channel | Messages kept in per-user history |
 | `contextTimeoutMinutes` | `5` | channel | Clear context after this much inactivity |
 | `privacyOptInOnly` | `True` | channel | Send only bot-addressed lines to the provider; `False` tracks every message and enables history lookup |
-| `channelContextMaxMessages` | `10` | channel | Messages in the shared channel context |
 
 The shared channel context is what lets the bot connect a question from one user with a follow-up from another.
 
@@ -68,25 +59,19 @@ With `bridgeAllowedPlugins` empty, the bridge exposes:
 
 `Misc Time Math Utilities Seen Web Later Note Karma QuoteGrabs RSS DDG Network`
 
-Each is pure-read or has its write commands gated by `bridgeAllowMutating`. The list lives in `DEFAULT_ALLOWED_PLUGINS` (`plugins/llm/src/llm/limnoria_bridge.py`).
+Each is pure-read or has its write commands listed in `MUTATING_COMMANDS`, which the bridge never exposes. The list lives in `DEFAULT_ALLOWED_PLUGINS` (`plugins/llm/src/llm/limnoria_bridge.py`).
 
 ### Security model
 
 Three independent layers limit what the bridge reaches:
 
 1. **Hard-denied plugins**, never bridged regardless of config: `LLM` (recursion), `Owner`, `Admin`, `Config`, `Channel`, `User` (bot, channel, and account management).
-2. **Hard-denied commands**, blocked even inside allowlisted plugins: every URL-fetching `Web` read — `fetch`, `location`, `headers`, `doctype`, `size`, `title` — because each hands the bot's network position to a caller-supplied URL; `Utilities.apply` and `Utilities.let` (re-dispatch bypass); `Misc.more` and `Misc.clearmores` (interactive scrollback only). Those six `Web` reads are not writes, so `bridgeAllowMutating` does not gate them, and `Web` ships in the curated default set, so the deny is unconditional.
+2. **Hard-denied commands**, blocked even inside allowlisted plugins: every URL-fetching `Web` read — `fetch`, `location`, `headers`, `doctype`, `size`, `title` — because each hands the bot's network position to a caller-supplied URL; `Utilities.apply` and `Utilities.let` (re-dispatch bypass); `Misc.more` and `Misc.clearmores` (interactive scrollback only). Those six `Web` reads are not writes, so `MUTATING_COMMANDS` does not cover them, and `Web` ships in the curated default set, so the deny is unconditional.
 3. **Limnoria capabilities**, applied per command at dispatch time. Commands guarded by default-deny anti-capabilities are refused unless explicitly granted.
 
 ### Write-command gate
 
-Commands that change persistent state (offline notes, RSS registrations, karma changes, queued PMs) stay hidden from the LLM by default, even when their plugin is allowlisted. Any hallucinated dispatch of a hidden write returns a denial. Open the gate per channel:
-
-```
-@config channel #yourchan plugins.LLM.bridgeAllowMutating True
-```
-
-The classification lives in `MUTATING_COMMANDS` (`plugins/llm/src/llm/limnoria_bridge.py`). When the gate is closed and an allowlisted plugin has hidden writes, the tool description tells the model the gate exists.
+Commands that change persistent state (offline notes, RSS registrations, karma changes, queued PMs) are always hidden from the LLM, even when their plugin is allowlisted. Any hallucinated dispatch of a hidden write returns a denial. The classification lives in `MUTATING_COMMANDS` (`plugins/llm/src/llm/limnoria_bridge.py`).
 
 ### Scheduled LLM tasks
 
@@ -97,9 +82,9 @@ The `schedule_llm_task` tool schedules a future assistant turn. At fire time the
 
 Operational properties:
 
-- `bridgeScheduledTaskLimit` (default 5, channel) caps each creator's active schedules; `0` disables scheduling. Each fire still counts against the creator's `ask` rate-limit bucket.
+- Each creator can hold at most 5 active schedules per channel. Each fire still counts against the creator's `ask` rate-limit bucket.
 - Schedules bind to the creator's account at create time; the tool refuses unauthenticated callers.
-- A schedule auto-cancels the first time it fires after its creator loses `llm.ask`: the row is deleted, the reply target gets a one-line notice, and an `INFO` line records `scheduled_llm_task fire: <event> creator <nick> lost llm.ask; auto-cancelling`. At the default `WARNING` that notice is the only trace.
+- A schedule auto-cancels the first time it fires after its creator loses `llm.ask`: the row is deleted, the reply target gets a one-line notice, and that notice is the only trace: the matching log line is `INFO`, below the plugin's fixed `WARNING` level.
 - A fired task cannot schedule another task (depth cap of 1), which blocks recursion.
 - Users cannot list or cancel schedules by talking to the bot — the unified pending-task tools are off the chat surface — but `@remind list`, `del` and `clear` reach their own tasks as well as their reminders. Owners use `@remind admin list <nick>` and `@remind admin del <nick> <id>` to reach anyone's. Limnoria's own `@scheduler list` does not show these tasks; they live in the plugin's database.
 
@@ -118,45 +103,35 @@ Plugins that nest sub-leaves under a `Commands` group (notably `RSS`'s `announce
 |---------|---------|-------------|
 | `httpRoot` | empty | Filesystem path for output files. Empty uses the built-in server |
 | `httpUrlBase` | empty | Public base URL. Empty uses Limnoria's public URL plus `/llm/` |
-| `longReplyTeaserMaxChars` | `220` | Characters in the one-line teaser when a long reply is saved as HTML and linked |
-| `multilineMaxLines` | `3` | Replies up to this many IRC lines go inline as one `draft/multiline` batch; longer ones get the teaser and link. `0` turns it off |
 | `fileCleanupAge` | `720` | Delete output files older than this many hours (30 days) |
-| `fileCleanupMax` | `1000` | Cap on files kept in the output directory |
+
+Replies up to 3 IRC lines go inline as one `draft/multiline` batch; longer ones are saved as HTML and linked with a one-line teaser of up to 220 characters. The output directory keeps at most 1,000 files.
 
 ## Concurrency
 
-Every outbound LLM call, foreground or background, takes a slot from one bounded executor, so a single knob caps how much load reaches a provider no matter which thread started the call. Keeping a slow call off the IRC driver is a separate mechanism: nick-addressed messages are dispatched on their own thread so the driver can flush typing notifications while the call is in flight.
+Every outbound LLM call, foreground or background, takes a slot from one bounded executor of 16 slots, so a single cap limits how much load reaches a provider no matter which thread started the call. Keeping a slow call off the IRC driver is a separate mechanism: nick-addressed messages are dispatched on their own thread so the driver can flush typing notifications while the call is in flight.
 
-| Setting | Default | Scope | Description |
-|---------|---------|-------|-------------|
-| `maxConcurrentLLMCalls` | `16` | global | Cap on simultaneous outbound LLM calls |
-
-Lower it on small hosts or when a provider rate-limits aggressively. The global `@usage` report (admin, by PM) appends an `executor: running/queued/max` field. `queued` counts background submissions only: a foreground command waiting for a slot blocks inside `permit()` before either counter moves, so `16/0/16` does not mean nothing is waiting. `running` pinned at `max` is the signal, not `queued`.
+The global `@usage` report (admin, by PM) appends an `executor: running/queued/max` field. `queued` counts background submissions only: a foreground command waiting for a slot blocks inside `permit()` before either counter moves, so `16/0/16` does not mean nothing is waiting. `running` pinned at `max` is the signal, not `queued`.
 
 ## Status pages
 
 The bot polls up to 5 status pages and can announce incidents from them on
-its own as they open and resolve. It can also be **asked** about up to 20
-further pages it never polls or announces — the long tail like Cloudflare or
-AWS, where polling forever just to answer an occasional question is the
-wrong trade. Both Atlassian Statuspage and incident.io pages work —
+its own as they open and resolve. It can be asked only about the pages it
+polls. Both Atlassian Statuspage and incident.io pages work —
 incident.io is read through its Atlassian-compatible endpoints, no separate
 configuration needed. See [Service status](../user/service-status.md) for
 the user-facing behaviour.
 
 | Setting | Default | Scope | Description |
 |---------|---------|-------|-------------|
-| `statusPageUrls` | `Claude=https://status.claude.com GitHub=https://www.githubstatus.com OpenAI=https://status.openai.com` | global | Space-separated status pages to poll and announce, each `Name=url` or a bare `scheme://host` that takes its host as its name. Entries that don't parse are dropped with a warning; duplicate names and same-page duplicates (trailing slash, case, default port) collapse to one; at most 5 are polled. The bot polls each `{url}/api/v2/summary.json` to answer status questions and to announce new incidents. Empty stops polling and announcing, but `check_service_status` stays available if `statusQueryablePages` holds anything. |
-| `statusQueryablePages` | empty | global | Same `Name=url` grammar as `statusPageUrls`, for pages the bot only answers about when asked — never polled, never announced, no incident lifecycle. Fetched on-demand and cached for 5 minutes, with a failure backoff on an unreachable page. At most 20. Names must be unique, case-insensitively, across both keys; a name already used by `statusPageUrls` is dropped with a warning. Same rule for the page itself: an entry pointing at a URL already covered by `statusPageUrls` is dropped, regardless of its name, since that page is already reachable — and fresher — as the polled entry. |
-| `statusAnnounce` | `False` | channel | Announce incidents from every configured `statusPageUrls` page in this channel as they open and again as they resolve — all-or-nothing per channel, not selectable per source. `statusQueryablePages` pages never announce. Both draw on one budget of six LLM rewrites an hour; over budget the deterministic template still sends. |
+| `statusPageUrls` | `Claude=https://status.claude.com GitHub=https://www.githubstatus.com OpenAI=https://status.openai.com` | global | Space-separated status pages to poll and announce, each `Name=url` or a bare `scheme://host` that takes its host as its name. Entries that don't parse are dropped with a warning; duplicate names and same-page duplicates (trailing slash, case, default port) collapse to one; at most 5 are polled. The bot polls each `{url}/api/v2/summary.json` to answer status questions and to announce new incidents. Empty stops polling and announcing and removes `check_service_status` from the tool surface. |
+| `statusAnnounce` | `False` | channel | Announce incidents from every configured `statusPageUrls` page in this channel as they open and again as they resolve — all-or-nothing per channel, not selectable per source. Openings and resolutions draw on one budget of six LLM rewrites an hour; over budget the deterministic template still sends. |
 
 Sources are polled in rotation inside a single 45-second-per-pass budget on a
 2-minute schedule, with a cursor so one slow or failing source can't starve
 the others — with several sources configured, a given one might wait more than
 one 2-minute cycle for its turn. A reading older than 10 minutes is reported
-to the model as stale. `statusQueryablePages` pages take no part in that
-rotation and carry no staleness state of their own — each is fetched fresh,
-subject only to its own 5-minute cache, at the moment a question needs it.
+to the model as stale.
 
 !!! warning "Turn off the RSS feed first"
 
@@ -201,29 +176,21 @@ Three structured lines record what a call cost, what the history guards removed,
 | `prompt_rewrite_fidelity` | `WARNING` | Only when a safety rewording came back padded | `orig_chars`, `new_chars`. Needs both 20% growth and 40 absolute characters, so an ordinary rewording that runs a little long stays silent |
 | `llm_executor submit` and `llm_executor done` | `INFO` | Once each per background submission | `submit`: `label`, `running`, `queued`, `max`. `done`: `label`, `elapsed_ms`, `queued_ms` |
 
-`completion_timing` and `history_strip` sit at `WARNING`, so they are present at the default log level; the `llm_executor` pair needs `logLevel` at `INFO`. Three `completion_timing` variants carry a reduced field set: `op=image_generation` logs `prompt_chars` and `elapsed_ms` only, since an image response carries no message or token shape; `op=xai_responses_<kind>` omits `prefix_hash` and `gap_s`; `op=compaction:<op>` logs `elapsed_ms` and the two token counts plus a `cost` field found on no other line.
+`completion_timing` and `history_strip` sit at `WARNING`, so they are present in the log; the `llm_executor` pair is `INFO`, below the plugin's fixed `WARNING` level, so it is not emitted. Three `completion_timing` variants carry a reduced field set: `op=image_generation` logs `prompt_chars` and `elapsed_ms` only, since an image response carries no message or token shape; `op=xai_responses_<kind>` omits `prefix_hash` and `gap_s`; `op=compaction:<op>` logs `elapsed_ms` and the two token counts plus a `cost` field found on no other line.
 
-A refused draw that recovered is three `completion_timing` lines under one request id, in order: `op=image_generation` ending `result=error`, then `op=prompt_rewrite`, then a second `op=image_generation` with no `result=error`. Counting those is how to tell whether the rewrite loop is working. Do not grep for `Image generation blocked, attempting auto-rewrite` or `Rewrite attempt N`: both are `INFO`, so they are absent at the default log level, and their absence reads as a loop that never fired.
+A refused draw that recovered is three `completion_timing` lines under one request id, in order: `op=image_generation` ending `result=error`, then `op=prompt_rewrite`, then a second `op=image_generation` with no `result=error`. Counting those is how to tell whether the rewrite loop is working. Do not grep for `Image generation blocked, attempting auto-rewrite` or `Rewrite attempt N`: both are `INFO`, so they never reach the log, and their absence reads as a loop that never fired.
 
 On `completion_timing`, read `gap_s` next to `prefix_hash` when `cached_tokens` is 0: `gap_s` is the seconds since the last call on the same model and cache lane (`-1` on the first call) and is the dominant predictor of a cache hit, so a large gap means a cold cache while a changed `prefix_hash` means the cacheable head of the request moved.
 
 ### Log level
 
-| Level | Use case |
-|-------|----------|
-| `WARNING` (default) | Normal operation: warnings and errors only |
-| `INFO` | Request flow and timing |
-| `DEBUG` | Verbose tracing, including provider response detail |
-
-```
-@config plugins.LLM.logLevel DEBUG
-```
+The plugin logs at `WARNING`: warnings and errors only. Its `INFO` request-flow lines and `DEBUG` tracing are not emitted.
 
 ### Usage statistics
 
 `@usage` shows API usage for yourself and the channel; the global overview by PM is admin-only. One caveat: verse turns are recorded under the `ask` label, so verse traffic is displayed as `ask` rows in the report.
 
-A `@draw` request with subject research enabled writes a `dossier` row alongside the command's own row. That is the research call in front of the planner, and it is booked separately because it usually runs on a different model — see [Subject research](configuration.md#subject-research). A request that named nobody real still writes the row: asking and being told there is nothing to look up costs the same tokens as asking and getting an answer.
+A `@draw` request writes a `dossier` row alongside the command's own row. That is the research call in front of the planner, and it is booked separately because it usually runs on a different model — see [Subject research](configuration.md#subject-research). A request that named nobody real still writes the row: asking and being told there is nothing to look up costs the same tokens as asking and getting an answer.
 
 One draw can write more than one `draw:image` row. Each row is one call to the image provider, so a prompt the filter refused and a rewording of it that succeeded are two rows: the refusal carries `status='content_blocked'` and the exact prompt the filter rejected, the delivered image carries `status='success'`. Counting rows therefore counts calls, not pictures. The bill is split rather than duplicated, so `SUM(cost)` is still the true total.
 
@@ -233,7 +200,7 @@ The dollar figures come from LiteLLM's built-in price table, not from any provid
 
 ### Storage
 
-Reminders, usage statistics, and memories live in one SQLite database: `data/LLM.db` by default, or the path in `databasePath`. Each verse-enabled channel adds its own database under `data/verse/`.
+Reminders, usage statistics, and memories live in one SQLite database, `data/LLM.db` in Limnoria's data directory. Each verse-enabled channel adds its own database under `data/verse/`.
 
 ### Common issues
 
@@ -248,7 +215,6 @@ Reminders, usage statistics, and memories live in one SQLite database: `data/LLM
 
   A length of `0` means the variable is unset or empty. Compare the hash against a known-good value computed the same way, rather than eyeballing the key itself.
 - Check the key matches the model's provider; a Gemini key does not work with an `anthropic/` model.
-- Set `logLevel` to `DEBUG` and retry to see the full provider error.
 
 **A reply arrived with a 🔁 in front of it.**
 
@@ -265,7 +231,6 @@ Reminders, usage statistics, and memories live in one SQLite database: `data/LLM
 
 **Bot does not remember previous messages.**
 
-- Confirm context is on: `@config channel #yourchannel plugins.LLM.contextEnabled`.
 - Check `contextTimeoutMinutes`; a short timeout expires context between messages.
 - Users clear their own context with `@forget`.
 
@@ -273,7 +238,7 @@ Reminders, usage statistics, and memories live in one SQLite database: `data/LLM
 
 - Built-in server: confirm Limnoria's HTTP server is enabled and its public URL is set.
 - External server: confirm the bot can write to `httpRoot` and that `httpUrlBase` matches what your web server serves.
-- Check `DEBUG` logs for file-save errors.
+- Check the logs for file-save errors.
 
 **A drawn image link 404s, or shows the wrong picture.**
 

@@ -103,7 +103,7 @@ Keep those boundaries intact:
 ### Changing LLM behaviour
 
 - Framework prompts live in `prompts.py` (see Architecture); verse prompt assembly is `build_verse_system_prompt` in `verse/avatar.py`. Only `assistantSystemPrompt` is a channel-overridable registry setting.
-- Model selection is per-purpose: `assistantModel`, `imageModel`, `searchModel`, `verseModel`, and `verseCompactionModel`. Bumping the chat model does not move verse; update both when that is the intent.
+- Model selection is per-purpose. The registry holds `assistantModel`, `memoryModel`, and `verseModel`; image, search, meme, refusal-fallback and verse-compaction models are fixed constants (`IMAGE_MODEL`, `SEARCH_MODEL`, `MEME_MODEL`, `MEME_EDIT_MODEL`, `REFUSAL_FALLBACK_MODEL` in `service.py`; `_VERSE_COMPACTION_MODEL` in `plugin.py`). Bumping the chat model does not move verse; update both when that is the intent.
 - API keys are resolved from the environment at call time, keyed on the provider of the model being called (`apikeys.api_key_for`). Providers outside the four this deployment pays for directly — vertex_ai, openrouter, azure, bedrock — use their own native credentials (ADC, IAM, their own variables).
 
 ## Important files
@@ -114,7 +114,7 @@ Keep those boundaries intact:
 - `plugins/llm/src/llm/limnoria_bridge.py`: Limnoria-to-LLM tool bridge
 - `plugins/llm/src/llm/agenda.py`: the single source of reminder and scheduled-task timing; change cadence, cap, or restart rules here, not in `plugin.py` or `service.py`
 - `plugins/llm/src/llm/{service,plugin,assistant,persistence}.py`: native `schedule_llm_task` plus the unified `list_pending_tasks` / `cancel_pending_task` / `cancel_all_pending_tasks` tool surface
-- `plugins/llm/src/llm/executor.py`: global LLM concurrency gate; tune via `supybot.plugins.LLM.maxConcurrentLLMCalls`
+- `plugins/llm/src/llm/executor.py`: global LLM concurrency gate; the cap is `_MAX_CONCURRENT_LLM_CALLS` in `plugin.py`
 - `plugins/nickinmiddle/src/nickinmiddle/`: nick-in-middle `inFilter` plugin
 - `mkdocs.yml` and `docs/guide/`: published guide source
 - `docs/plans/`: design and implementation plans; shipped plans move to `docs/plans/archive/`. Check the active list in [`docs/plans/README.md`](docs/plans/README.md) before starting work on a subsystem — it is where open follow-ups that are waiting on production traffic are parked, and the measurement they are waiting for is easy to do accidentally and then lose.
