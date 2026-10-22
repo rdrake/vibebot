@@ -94,6 +94,20 @@ class TestConfigValues:
         # SpaceSeparatedListOfStrings() returns a list-like; coerce for comparison.
         assert list(conf.supybot.plugins.LLM.bridgeAllowedPlugins()) == []
 
+    def test_privacy_opt_in_only_defaults_on(self) -> None:
+        """A fresh install sends only lines addressed to the bot to the provider.
+
+        The docs promise privacyOptInOnly is on by default and that operators
+        turn it off only where users consent. conftest's mocked registryValue
+        hardcodes True, so only the real registry can catch a flipped default.
+        """
+        import llm.config  # noqa: F401 — import side effect registers the values
+        import supybot.conf as conf
+
+        assert conf.supybot.plugins.LLM.privacyOptInOnly() is True
+        # A channel with no override inherits the default.
+        assert conf.supybot.plugins.LLM.privacyOptInOnly.get("#fresh-channel")() is True
+
     def test_status_page_urls_default_is_three_urls(self) -> None:
         """A string default would become a list of single characters:
         registry.Value.__init__ passes the default to setValue, and
