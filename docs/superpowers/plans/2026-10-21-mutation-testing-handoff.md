@@ -38,6 +38,18 @@ The sweep skips modules that already have a result, so an interrupted module sim
 - **Exit codes.** Exit 1 or 2 means `killed`, and `error4` (the mutant broke an import) counts as killed too. A run past 300 s is recorded as `timeout`.
 - **Output.** Each record has `{idx, line, desc, scope, src, status, tier, secs}`. `idx` indexes `enumerate_mutants(ast.parse(source))`. To reproduce a mutant, run `mutant_source(src, idx)` from `scripts/mutate.py` against the worktree source at `48b2f5e`.
 
+## Sweeps moved to the OTU cluster (2026-10-22 05:13)
+
+The local sweep is stopped. The jobs run with `scripts/mutation_slurm.sh` on gpu05, scavenge partition, `--requeue`.
+- **Access:** connect the WireGuard VPN "Work", then `ssh fs01`.
+- **Work dir:** `~/vibebot-mut/` holds the source tarballs, `mutate.py`, `runs/<RUN>/mut/` and `logs/`.
+
+Jobs:
+- **Job 2062 (A):** finishes `plugin.py` at `48b2f5e`. It resumed from the local checkpoint with 2,600 done, leaving 1,083 to run on 88 workers.
+- **Job 2063 (B):** re-sweeps every module on main at `7f8412e`, the code with the 213 new tests, to measure how far the kill rates moved.
+
+A job that dies resumes when resubmitted with the same arguments. The `plugin.py` part-A evaluation (`wf_48ed1eba-06a`) covers the 448 survivors from the first 2,500 mutants. Part B gets the rest.
+
 ## Evaluation results: 33 modules DONE and on main (2026-10-22)
 
 - **Report:** `~/.cache/vibebot-mutation/eval/report.md`. The full result JSON is in `eval/result.json`.
