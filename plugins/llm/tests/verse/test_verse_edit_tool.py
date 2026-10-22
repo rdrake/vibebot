@@ -365,3 +365,36 @@ def test_verse_edit_integrity_error_is_reported(tmp_path, monkeypatch):
         account="gm!acct",
     )
     assert result == {"status": "error", "detail": "CHECK constraint failed: kind"}
+
+
+def test_verse_edit_add_event_applies(tmp_path):
+    """An authorized verse_edit add_event records the event with its actors."""
+    store = VerseStore(tmp_path, "#chan")
+    eid = store.add_entity("npc", "Archie")
+    result = dispatch_verse_edit(
+        store,
+        op="add_event",
+        payload={"summary": "Archie opens the gate", "entity_ids": [eid]},
+        authorized=True,
+        account="gm!acct",
+    )
+    assert result["status"] == "ok"
+    assert [(e.id, e.summary, e.entity_ids) for e in store.recent_events()] == [
+        (result["id"], "Archie opens the gate", (eid,))
+    ]
+
+
+@pytest.mark.parametrize("entity_ids", [["Archie"], [True], ""])
+def test_verse_edit_add_event_bad_entity_ids_writes_nothing(tmp_path, entity_ids):
+    """Non-int actor ids are rejected before the store is touched, so no
+    event with a corrupt entity_ids blob is written."""
+    store = VerseStore(tmp_path, "#chan")
+    result = dispatch_verse_edit(
+        store,
+        op="add_event",
+        payload={"summary": "something happens", "entity_ids": entity_ids},
+        authorized=True,
+        account="gm!acct",
+    )
+    assert result == {"status": "error", "detail": "entity_ids not list[int]"}
+    assert store.recent_events() == []
