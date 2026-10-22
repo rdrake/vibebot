@@ -769,6 +769,30 @@ class TestDescriptionInjection:
         assert len(patched) == len(tools)
         names = {t["function"]["name"] for t in patched}
         assert names == {t["function"]["name"] for t in tools}
+        # Whole schemas, not just names: another tool given the status-page
+        # description or a `service` enum would mislead the model on it.
+        for before, after in zip(tools, patched, strict=True):
+            if before["function"]["name"] != "check_service_status":
+                assert after == before
+
+    def test_the_enum_is_added_without_dropping_the_base_schema(self):
+        """The patch adds a `service` enum; it must not replace the schema
+        it copies. include_history is how the model asks for past incidents."""
+        from llm.assistant import get_tools_for_profile
+        from llm.service import _with_status_context
+
+        patched = _with_status_context(
+            get_tools_for_profile("chat"), {"Claude": "https://status.claude.com"}
+        )
+        params = next(
+            t["function"]["parameters"]
+            for t in patched
+            if t["function"]["name"] == "check_service_status"
+        )
+        assert params["type"] == "object"
+        assert params["properties"]["include_history"]["type"] == "boolean"
+        assert params["properties"]["service"]["type"] == "string"
+        assert params["properties"]["service"]["enum"] == ["Claude"]
 
 
 class TestServiceSelection:

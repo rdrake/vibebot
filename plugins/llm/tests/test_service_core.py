@@ -9,9 +9,15 @@ from hypothesis import given
 from hypothesis.strategies import characters, ip_addresses, lists, sampled_from, text, tuples
 from llm import provider
 from llm.service import (
+    _TASK_EXPIRY,
     LLMService,
+    _has_tool,
+    _is_job_marker_reply,
+    _msg_stash_context,
+    _strip_job_markers,
     validate_external_url,
 )
+from supybot.ircmsgs import IrcMsg
 
 from .conftest import FAKE_PROVIDER_KEYS, make_completion_response
 
@@ -244,6 +250,22 @@ class TestTypingIndicators:
         sent = self.mock_plugin._safe_queue.call_args[0][1]
         assert sent.command == "TAGMSG"
         assert sent.server_tags["+draft/reply"] == "msgid-1"
+
+    def test_send_reaction_defaults_to_react(self) -> None:
+        irc = self._make_mock_irc(capabilities={"message-tags"})
+
+        assert self.service.send_reaction(irc, "#test", "msgid-1", "👍")
+
+        sent = self.mock_plugin._safe_queue.call_args[0][1]
+        assert sent.server_tags == {"+draft/react": "👍", "+draft/reply": "msgid-1"}
+
+    def test_send_reaction_without_message_tags_reports_failure(self) -> None:
+        """No message-tags cap: send nothing and say so, so the caller answers
+        in text instead of leaving the user with no acknowledgement."""
+        irc = self._make_mock_irc(capabilities=set())
+
+        assert self.service.send_reaction(irc, "#test", "msgid-1", "👍") is False
+        self.mock_plugin._safe_queue.assert_not_called()
 
     def test_send_reaction_remove_sends_unreact(self) -> None:
         irc = self._make_mock_irc(capabilities={"message-tags"})
@@ -503,6 +525,13 @@ class TestSanitizeOutput:
         assert self.service.sanitize_output("") == ""
         assert self.service.sanitize_output(None) == ""
 
+    def test_sanitize_output_unwraps_exactly_the_wrapping_quotes(self) -> None:
+        """Some models answer repr-style; only the matching outer pair goes (157b9f9)."""
+        assert self.service.sanitize_output('"hello"') == "hello"
+        assert self.service.sanitize_output("'hello'") == "hello"
+        # Opens with a quote but is not wrapped in one: untouched.
+        assert self.service.sanitize_output("'tis the season") == "'tis the season"
+
     # NOTE: prefix-neutralization across single-line, multi-line, mixed-prefix,
     # and "internal-dot/slash passthrough" cases is now covered by
     # test_sanitize_output_prefix_invariant below.
@@ -706,6 +735,20 @@ class TestBuildContextMessage:
         assert topic_msg is not None
         assert topic_msg["role"] == "user"
         assert "Test topic" in topic_msg["content"]
+
+    def test_build_topic_message_cuts_a_long_topic_at_300(self) -> None:
+        """rate-limiting-security.md: the topic is cut at 300 characters."""
+        topic = "t" * 400
+        mock_irc = self.mocker.Mock()
+        ch_state = self.mocker.Mock(topic=topic, ops=set(), halfops=set(), voices=set())
+        mock_irc.state.channels = {"#test": ch_state}
+        mock_msg = self.mocker.Mock()
+        mock_msg.args = ("#test",)
+        mock_msg.prefix = "user!user@host"
+
+        topic_msg = self.service._build_topic_message(mock_irc, mock_msg)
+
+        assert topic_msg == {"role": "user", "content": "Channel topic: " + "t" * 300 + "..."}
 
     def test_build_topic_message_neutralizes_newline_injection(self) -> None:
         """A topic with embedded line breaks must not be able to start a new
@@ -1510,6 +1553,31 @@ class TestCheckPendingTasksDispatch:
         assert payload["status"] == "failed_terminal"
         assert "Unknown task type" in payload["reason"]
 
+    def test_a_timed_out_draw_is_redrawn_and_stored_for_delivery(self) -> None:
+        """A stashed @draw is retried and its image handed to delivery."""
+        import json
+
+        url = "https://example.com/llm/img_recovered.jpg"
+        task = self._make_task(
+            task_type="draw", model="xai/grok-imagine-image", request_data='{"prompt": "a cat"}'
+        )
+        self.mock_db.delete_expired_pending_tasks.return_value = []
+        self.mock_db.claim_due_pending_tasks.side_effect = [[task], []]
+        self.mocker.patch(
+            "llm.service.provider.draw",
+            return_value=provider.Picture(data=b"\x89PNG\r\n\x1a\nimage", cost=0.07),
+        )
+        self.mocker.patch.object(self.service, "_save_image_bytes", return_value=url)
+
+        self.service.check_pending_tasks({"#test"})
+
+        self.mock_db.update_task_for_delivery.assert_called_once()
+        task_id, state, payload_json = self.mock_db.update_task_for_delivery.call_args.args
+        payload = json.loads(payload_json)
+        assert (task_id, state) == (task.id, "ready")
+        assert payload["status"] == "completed"
+        assert payload["content"] == url
+
     def test_malformed_json_request_data_stored_for_delivery(self) -> None:
         """GIVEN task with unparseable request_data WHEN check_pending_tasks runs THEN update_task_for_delivery called."""
         import json
@@ -1601,6 +1669,24 @@ class TestBuildMessages:
         # later in the message list.
         assert any("Speaking with: alice" in str(m.get("content", "")) for m in msgs_a)
         assert any("Speaking with: bob" in str(m.get("content", "")) for m in msgs_b)
+
+    def test_context_and_ack_follow_the_system_prompt(self) -> None:
+        """The model learns the date, channel and help URL from the Context
+        message, which rides as user data right after the system prompt."""
+        ch_state = self.mocker.Mock(topic="t", ops=set(), halfops=set(), voices=set())
+        irc = self.mocker.Mock()
+        irc.state.channels = {"#test": ch_state}
+        m = self.mocker.Mock()
+        m.args = ("#test",)
+        m.prefix = "alice!alice@host"
+
+        msgs = self.service._build_messages("hi", None, system_prompt="sys", irc=irc, msg=m)
+
+        assert msgs[0] == {"role": "system", "content": "sys"}
+        assert msgs[1]["role"] == "user"
+        assert msgs[1]["content"].startswith("Context:")
+        assert "Channel: #test" in msgs[1]["content"]
+        assert msgs[2] == {"role": "assistant", "content": "Got it."}
 
     def test_context_blocks_are_stability_sorted(self) -> None:
         """Per-user-stable blocks (instruction, memories) precede per-turn
@@ -1731,7 +1817,7 @@ class TestStashTimeoutCapturesAccount:
         wakeup = mocker.MagicMock()
         mock_plugin._schedule_queue_wakeup = wakeup
 
-        service._stash_timeout(
+        stashed = service._stash_timeout(
             task_type="ask",
             nick="alice",
             reply_target="#chan",
@@ -1742,6 +1828,63 @@ class TestStashTimeoutCapturesAccount:
             submitted_at=1000.0,
         )
 
+        # True is what makes the caller promise "I'll keep trying".
+        assert stashed is True
         expected = 1000.0 + PENDING_INITIAL_BACKOFF_SECONDS
         assert save.call_args.kwargs["next_attempt_at"] == expected
         wakeup.assert_called_once_with(at_time=expected)
+        # The retry gets its whole window: a row born expired would be swept
+        # with "your request expired" right after that promise.
+        assert save.call_args.kwargs["expires_at"] == 1000.0 + _TASK_EXPIRY["ask"]
+
+
+class TestHasTool:
+    """Forced tool_choice is gated on tool presence, so presence must be exact."""
+
+    def test_true_only_for_the_named_tool(self) -> None:
+        tools = [{"type": "function", "function": {"name": "search_web"}}]
+        assert _has_tool(tools, "search_web") is True
+        assert _has_tool(tools, "verse_storybook") is False
+
+
+class TestJobMarkerReply:
+    """A reply made only of a copied bookkeeping marker tells the user nothing."""
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "[Video job: abc123]",
+            "[Generated image: https://example.com/llm/img_a.png]",
+            "  [Video job: a] [Generated image: b]  ",
+        ],
+    )
+    def test_marker_only_reply_is_caught(self, content: str) -> None:
+        assert _is_job_marker_reply(content) is True
+
+    @pytest.mark.parametrize("content", ["", "here you go [Generated image: x]"])
+    def test_a_reply_that_says_something_is_left_alone(self, content: str) -> None:
+        assert _is_job_marker_reply(content) is False
+
+    def test_marker_only_turns_leave_history(self) -> None:
+        history = [
+            {"role": "user", "content": "draw a cat"},
+            {"role": "assistant", "content": "[Video job: abc123]"},
+            {"role": "assistant", "content": "a real reply"},
+        ]
+        assert _strip_job_markers(history) == [
+            {"role": "user", "content": "draw a cat"},
+            {"role": "assistant", "content": "a real reply"},
+        ]
+
+
+class TestMsgStashContext:
+    """Where a timed-out request's result is delivered later."""
+
+    def test_channel_request_is_delivered_to_the_channel(self) -> None:
+        msg = IrcMsg(prefix="alice!u@h", command="PRIVMSG", args=("#chan", "hello"))
+        assert _msg_stash_context(msg) == ("alice", "#chan", True, None)
+
+    def test_pm_is_delivered_to_the_sender_not_the_bot(self) -> None:
+        """In a PM args[0] is the bot's own nick (incident fixed in 9b61e48)."""
+        msg = IrcMsg(prefix="alice!u@h", command="PRIVMSG", args=("vibebot", "hello"))
+        assert _msg_stash_context(msg) == ("alice", "alice", False, None)

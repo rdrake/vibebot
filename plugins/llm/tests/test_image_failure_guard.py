@@ -70,6 +70,10 @@ class TestIsImageFailure:
         stay in history, or the thread loses the image it actually produced.
         """
         assert not _is_image_failure(f"First attempt failed, here you go: {MINTED_URL}")
+        # Worded exactly like a failure report, and still a delivery.
+        assert not _is_image_failure(
+            f"Image generation failed at first, but here it is: {MINTED_URL}"
+        )
 
     def test_keeps_ordinary_prose_mentioning_a_picture(self) -> None:
         """A reply about a picture is not a report that one failed."""

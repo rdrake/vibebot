@@ -14,7 +14,7 @@ import urllib.error
 from typing import TYPE_CHECKING
 
 import pytest
-from llm import meme
+from llm import meme, provider
 from llm.service import ImageResult, LLMService
 
 from .conftest import make_registry_side_effect
@@ -91,6 +91,43 @@ class TestImageEdit:
         result = service.image_edit(CAPTIONED, "x")
 
         assert result.error == "The image model failed." and result.cost == 0.0
+
+    # The picture is an extra, not the meme: every way of not getting one comes
+    # back as an ImageResult carrying the error, so the captioned meme still
+    # goes out with a note.
+
+    def test_no_picture_back_is_an_error_and_still_billed(self, service, mocker) -> None:
+        mocker.patch("llm.provider.draw", return_value=provider.Picture(data=None, cost=0.02))
+
+        result = service.image_edit(CAPTIONED, "x")
+
+        assert result.url is None
+        assert result.error == "The image model returned no picture."
+        assert result.cost == pytest.approx(0.02)
+
+    def test_an_unexpected_failure_is_contained(self, service, mocker) -> None:
+        """Not a ProviderError (a parsing bug, say): still no raise."""
+        mocker.patch("llm.provider.draw", side_effect=ValueError("x"))
+
+        result = service.image_edit(CAPTIONED, "x")
+
+        assert result.url is None
+        assert result.error == "The image model failed."
+        assert result.cost == 0.0
+
+    def test_a_hosting_failure_is_an_error_and_keeps_the_cost(self, service, mocker) -> None:
+        mocker.patch("llm.provider.draw", return_value=provider.Picture(data=PNG, cost=0.02))
+
+        def _fail(data: bytes, ext: str = "png") -> str:
+            raise OSError("disk full")
+
+        service._save_image_bytes = _fail
+
+        result = service.image_edit(CAPTIONED, "x")
+
+        assert result.url is None
+        assert result.error == "Could not host the edited image."
+        assert result.cost == pytest.approx(0.02)
 
 
 def _boxes(count: int) -> list[dict[str, float]]:

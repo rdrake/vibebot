@@ -113,6 +113,12 @@ def test_byte_truncate_keeps_text_that_fits(s: str) -> None:
     assert truncate_to_byte_budget(s, _nbytes(s)) == s
 
 
+def test_byte_truncate_keeps_the_longest_word_prefix_that_fits() -> None:
+    """Over budget is cut at a word boundary, not emptied: the long-reply
+    teaser is built from this, and an empty one drops to the bare link."""
+    assert truncate_to_byte_budget("hello world foo", 13) == "hello world"
+
+
 # --- LLM._finish_irc_line: the pastebin link line fits the wire budget ----------
 #
 # Mirrors ``finishFixed_fits`` in docs/formal/IrcLine.lean: for ANY teaser

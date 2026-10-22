@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import pytest
+from llm.service import MergeOp
 
 from .conftest import make_completion_response
 
@@ -102,6 +103,34 @@ class TestMemoryExtraction:
         mock_chat.return_value = make_completion_response('{"add": []}')
         service.extract_memories("user1", "#test", "hello", "hi", [])
         assert mock_chat.call_args.kwargs["model"] == "xai/grok-4.3"
+
+    def test_extract_memories_sends_a_strict_mode_schema(
+        self, make_service, mocker: MockerFixture
+    ) -> None:
+        """Anthropic structured outputs and xAI strict json_schema both refuse an
+        object that is not ``additionalProperties: false``. A schema they refuse
+        fails every extraction, so no memory is ever saved."""
+        service, _ = make_service()
+        mock_chat = mocker.patch("llm.service.provider.chat")
+        mock_chat.return_value = make_completion_response('{"add": [], "reinforce": []}')
+        service.extract_memories("user1", "#test", "hello", "hi", [])
+
+        schema = mock_chat.call_args.kwargs["json_reply"]
+        objects = []
+
+        def walk(node: object) -> None:
+            if isinstance(node, dict):
+                if node.get("type") == "object":
+                    objects.append(node)
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+
+        walk(schema)
+        assert objects
+        assert all(obj.get("additionalProperties") is False for obj in objects)
 
     def test_extract_memories_logs_and_records_error_on_exception(
         self, make_service, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
@@ -377,6 +406,21 @@ class TestCleanupMemoriesValidation:
             MemoryRow(id=i, nick="u", fact=f"fact{i}", source_channel="#c", created_at=0.0)
             for i in range(count)
         ]
+
+    def test_merging_the_only_two_memories_leaves_one(self) -> None:
+        """A merge replaces its sources with one fact, so merging two duplicates
+        out of two memories leaves one memory and is allowed."""
+        self._mock_cleanup_response({"drop": [], "merge": [{"indices": [0, 1], "text": "x"}]})
+        result = self.service.cleanup_memories("u", "#c", self._make_rows(2))
+        assert result.error is None
+        assert result.merge == [MergeOp([0, 1], "x")]
+
+    def test_a_cleanup_that_leaves_exactly_one_memory_is_allowed(self) -> None:
+        """Only a cleanup that would leave zero memories is refused."""
+        self._mock_cleanup_response({"drop": [0, 1], "merge": []})
+        result = self.service.cleanup_memories("u", "#c", self._make_rows(3))
+        assert result.error is None
+        assert result.drop == [0, 1]
 
     def test_not_a_dict(self) -> None:
         """GIVEN LLM returns a JSON string WHEN cleanup validates THEN error contains 'not a JSON object'."""

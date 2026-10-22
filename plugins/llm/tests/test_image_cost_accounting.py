@@ -97,6 +97,14 @@ class TestBilledRefusals:
         error = provider.ContentPolicyViolationError("blocked by safety filter")
         assert service._billed_failure_cost(error, IMAGE_MODEL) == 0.0
 
+    @pytest.mark.parametrize("error", [TimeoutError(), ConnectionError("reset"), ValueError("x")])
+    def test_a_failure_that_is_not_a_billed_provider_error_is_free(
+        self, make_service, error: Exception
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Only a provider error that says it was billed books the price."""
+        service, _ = make_service()
+        assert service._billed_failure_cost(error, IMAGE_MODEL) == 0.0
+
     def test_refused_generation_bills_through_image_generation(
         self, make_service, mocker: MockerFixture
     ) -> None:

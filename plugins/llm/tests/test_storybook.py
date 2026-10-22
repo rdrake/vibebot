@@ -65,6 +65,8 @@ def test_extract_json_object():
     assert ex('prose {"a": {"b": 3}} more prose') == {"a": {"b": 3}}
     assert ex("not json at all") is None
     assert ex("") is None
+    # A failed or timed-out completion hands over None: a miss, not a crash.
+    assert ex(None) is None
 
 
 def test_embed_illustrations_basic():
@@ -567,3 +569,67 @@ def test_generate_storybook_books_a_refused_draw_that_billed(make_service, mocke
     assert result.image_count == 1
     assert abs(result.cost - 0.12) < 1e-9
     assert isinstance(billed.call_args.args[0], RuntimeError)
+
+
+def test_generate_story_struct_sends_the_brief_as_the_request(make_service, mocker):
+    """The user's brief is what the model is asked for; the generic request is
+    only for an empty brief."""
+    service, _plugin = make_service(verseStorybookMaxImages=3)
+    ask = mocker.patch.object(service, "_ask_completion", return_value="not json")
+
+    service._generate_story_struct("spin a tale of the tin fox", channel="#c", persona="v")
+    assert ask.call_args.args[1].startswith("spin a tale of the tin fox")
+
+    service._generate_story_struct("", channel="#c", persona="v")
+    assert ask.call_args.args[1] == "Tell an illustrated story drawn from the recent scene."
+
+
+def test_a_story_with_no_illustrations_still_ships(make_service, mocker, tmp_path):
+    """Failed or dropped pictures drop their markers; the story still ships."""
+    service, _plugin = make_service(httpRoot=str(tmp_path), httpUrlBase="http://h/llm")
+    mocker.patch.object(
+        service,
+        "_generate_story_struct",
+        return_value={"title": "Plain", "story_markdown": "Once upon a time.", "illustrations": []},
+    )
+    gen = mocker.patch.object(service, "_attempt_image_generation")
+
+    res = service.generate_storybook("brief", channel="#c", persona="v")
+
+    assert res is not None
+    assert res.url
+    assert res.image_count == 0
+    gen.assert_not_called()
+
+
+def test_a_page_that_cannot_be_saved_is_no_story(make_service, mocker, tmp_path):
+    """None tells the caller to post the failure line, not a dead link."""
+    service, _plugin = make_service(httpRoot=str(tmp_path), httpUrlBase="http://h/llm")
+    mocker.patch.object(
+        service,
+        "_generate_story_struct",
+        return_value={"title": "T", "story_markdown": "Once.", "illustrations": []},
+    )
+    mocker.patch.object(service, "save_markdown_to_http", return_value=None)
+
+    assert service.generate_storybook("brief", channel="#c", persona="v") is None
+
+
+def test_a_zero_image_cap_draws_nothing(make_service, mocker, tmp_path):
+    """verseStorybookMaxImages=0 is a legal setting that stops storybook image
+    spend: the tale is written prose-only and no picture is drawn."""
+    service, _plugin = make_service(
+        httpRoot=str(tmp_path), httpUrlBase="http://h/llm", verseStorybookMaxImages=0
+    )
+    illos = [{"id": 1, "caption": "c", "image_prompt": "p"}]
+    struct = mocker.patch.object(
+        service,
+        "_generate_story_struct",
+        return_value={"title": "T", "story_markdown": "[[illustration:1]]", "illustrations": illos},
+    )
+    gen = mocker.patch.object(service, "_attempt_image_generation")
+
+    service.generate_storybook("b", channel="#c", persona="v")
+
+    assert struct.call_args.kwargs["max_images"] == 0
+    gen.assert_not_called()

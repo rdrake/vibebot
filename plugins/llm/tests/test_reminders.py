@@ -1147,6 +1147,54 @@ class TestParseReminderService:
         assert result.recurrence_rrule == "FREQ=DAILY;BYHOUR=8"
         assert result.recurrence_seconds is None
 
+    def test_parse_reminder_blank_rrule_keeps_the_numeric_cadence(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """A blank rrule is null: the hourly cadence stands rather than the
+        reminder quietly turning into a one-shot."""
+        mock_completion = mocker.patch("llm.service.provider.chat")
+        mock_completion.return_value = make_completion_response(
+            json.dumps(
+                {
+                    "action": "schedule",
+                    "seconds": 3600,
+                    "message": "x",
+                    "confirmation": "ok",
+                    "action_prompt": "x",
+                    "recurrence_seconds": 3600,
+                    "recurrence_rrule": "",
+                    "watch_mode": False,
+                }
+            )
+        )
+
+        result = service.parse_reminder("every hour do x")
+
+        assert result.recurrence_seconds == 3600
+        assert result.recurrence_rrule is None
+
+    def test_parse_reminder_watch_mode_defaults_off(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """A watch is only a watch when phrased as one (reminders.md); a reply
+        that omits the field must not silence the reminder's fires."""
+        mock_completion = mocker.patch("llm.service.provider.chat")
+        mock_completion.return_value = make_completion_response(
+            json.dumps(
+                {
+                    "action": "schedule",
+                    "seconds": 60,
+                    "message": "x",
+                    "confirmation": "ok",
+                    "action_prompt": "check the build",
+                }
+            )
+        )
+
+        result = service.parse_reminder("in 1m check the build")
+
+        assert result.watch_mode is False
+
 
 class TestReminderDeliveryClosure:
     """Tests for _make_reminder_delivery_closure (Fix 6)."""

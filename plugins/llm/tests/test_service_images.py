@@ -322,6 +322,7 @@ class TestHTTPFileManagement:
     def setup(self, make_service, mocker: MockerFixture) -> None:
         """Set up test fixtures."""
         self.mocker = mocker
+        self.make_service = make_service
         self.service, self.mock_plugin = make_service()
 
     def test_get_http_paths_localhost_fallback(self) -> None:
@@ -338,6 +339,54 @@ class TestHTTPFileManagement:
 
         assert http_root == "/tmp/web"
         assert "localhost:8080" in url_base
+
+    def test_get_http_paths_uses_limnoria_public_url(self) -> None:
+        """Empty httpUrlBase falls back to Limnoria's publicUrl plus /llm, so
+        posted links are ones people can open (configuration.md)."""
+        self.mock_plugin.registryValue = self.mocker.Mock(
+            side_effect=lambda key, *a, **kw: {"httpRoot": "/srv/web", "httpUrlBase": ""}.get(
+                key, ""
+            )
+        )
+        mock_conf = self.mocker.patch("llm.service.conf")
+        mock_conf.supybot.servers.http.publicUrl.return_value = "https://bot.example/"
+        mock_conf.supybot.servers.http.port.return_value = 8080
+
+        assert self.service.get_http_paths() == ("/srv/web", "https://bot.example/llm")
+
+    def test_scheduled_cleanup_uses_the_configured_age(self, tmp_path: object) -> None:
+        """The scheduler passes no arguments: fileCleanupAge decides what goes."""
+        import os
+        import time
+        from pathlib import Path
+
+        dir_path = Path(str(tmp_path))
+        self.mock_plugin.registryValue = self.mocker.Mock(
+            side_effect=lambda key, *a, **kw: {
+                "httpRoot": str(dir_path),
+                "httpUrlBase": "https://example.com/llm",
+                "fileCleanupAge": 24,
+            }.get(key, "")
+        )
+        old_file = dir_path / "old.html"
+        new_file = dir_path / "new.html"
+        old_file.write_text("old")
+        new_file.write_text("new")
+        old_mtime = time.time() - 25 * 3600
+        os.utime(str(old_file), (old_mtime, old_mtime))
+
+        self.service.run_scheduled_cleanup()
+
+        assert not old_file.exists()
+        assert new_file.exists()
+
+    def test_own_image_hosts_include_the_upload_host(self) -> None:
+        """An image URL on the upload host that the turn did not mint is
+        rejected, so that host must count as ours (tuning-monitoring.md)."""
+        service, _plugin = self.make_service(
+            imageUploadUrl="https://paste.example/img/", httpUrlBase="https://bot.example/"
+        )
+        assert service.own_image_hosts() == {"paste.example", "bot.example"}
 
     def test_save_markdown_to_http_oserror_returns_none(self) -> None:
         """GIVEN mkdir raises OSError WHEN save_markdown_to_http called THEN returns None."""
@@ -438,6 +487,72 @@ class TestImageUrlSsrfProtection:
             )
             is False
         )
+
+
+class TestDownloadImageBytes:
+    """@meme fetches a custom template from a user's image URL."""
+
+    URL = "https://images.example.com/cat"
+    DATA = PNG + b"x" * 1024
+
+    @pytest.fixture(autouse=True)
+    def setup(self, make_service, mocker: MockerFixture) -> None:
+        self.mocker = mocker
+        self.service, self.mock_plugin = make_service()
+
+    def _serve(self, content_type: str) -> Mock:
+        """An opener whose response honours read's size, as a socket does."""
+        data = self.DATA
+        resp = self.mocker.MagicMock()
+        resp.headers = {"Content-Type": content_type}
+        resp.read.side_effect = lambda n=-1: data[:n] if n >= 0 else data
+        resp.__enter__.return_value = resp
+        opener = self.mocker.Mock()
+        opener.open.return_value = resp
+        self.mocker.patch("llm.service._no_redirect_opener", return_value=opener)
+        return opener
+
+    def test_a_public_image_downloads(self) -> None:
+        """A bare Content-Type with no parameters names the extension."""
+        self.mocker.patch.object(self.service, "_resolves_to_public", return_value=True)
+        self._serve("image/png")
+
+        assert self.service._download_image_bytes(self.URL) == (self.DATA, "png")
+
+    def test_an_unsafe_url_is_never_fetched(self) -> None:
+        self.mocker.patch.object(self.service, "_resolves_to_public", return_value=True)
+        opener = self._serve("image/png")
+
+        assert self.service._download_image_bytes("http://127.0.0.1/cat.png") is None
+        opener.open.assert_not_called()
+
+    def test_a_host_resolving_to_a_private_address_is_never_fetched(self) -> None:
+        """DNS-rebinding guard (e09a4dd): the hostname passes the static check
+        but resolves privately, so the fetch must not happen."""
+        self.mocker.patch.object(self.service, "_resolves_to_public", return_value=False)
+        opener = self._serve("image/png")
+
+        assert self.service._download_image_bytes(self.URL) is None
+        opener.open.assert_not_called()
+
+
+class TestFilterImages:
+    """Image URLs pasted into @ask reach the vision model once validated."""
+
+    def test_valid_urls_pass_and_invalid_ones_drop(self, make_service, mocker) -> None:  # type: ignore[no-untyped-def]
+        service, _plugin = make_service()
+        mocker.patch.object(service, "_resolves_to_public", return_value=True)
+
+        kept = service._filter_images(
+            ["https://x.example/a.png", "javascript:alert(1).png", "https://x.example/b.jpg"]
+        )
+
+        assert kept == ["https://x.example/a.png", "https://x.example/b.jpg"]
+
+    def test_nothing_valid_is_none(self, make_service) -> None:  # type: ignore[no-untyped-def]
+        service, _plugin = make_service()
+        assert service._filter_images(["javascript:alert(1).png"]) is None
+        assert service._filter_images([]) is None
 
 
 class TestDrawAutoRewrite:
@@ -715,6 +830,19 @@ class TestImageGenerationValidation:
         assert result.error is not None
         assert "Error" in result.content
 
+    def test_an_invalid_prompt_never_reaches_the_billed_call(self) -> None:
+        """The user sees the validator's own message, and nothing is drawn."""
+        from llm.service import MAX_PROMPT_LENGTH
+
+        draw = self.mocker.patch("llm.service.provider.draw")
+
+        empty = self.service.image_generation("")
+        too_long = self.service.image_generation("x" * (MAX_PROMPT_LENGTH + 1))
+
+        assert empty.content == "Error: Prompt cannot be empty"
+        assert too_long.content == f"Error: Prompt too long (max {MAX_PROMPT_LENGTH} characters)"
+        draw.assert_not_called()
+
     def test_image_generation_missing_draw_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """GIVEN no key for the image model's provider THEN returns an error.
 
@@ -757,6 +885,22 @@ class TestImageGenerationPaths:
         result = self.service._rewrite_prompt_for_safety("bad prompt", "blocked", [], "#chan")
 
         assert result == (None, 10, 5, 0.002)
+
+    def test_an_empty_rewrite_is_booked_on_the_blocked_draw(self) -> None:
+        """The draw that gave up still books the rewriter spend it paid for."""
+        self.mocker.patch("llm.service.provider.draw", return_value=_blocked())
+        self.mocker.patch(
+            "llm.service.provider.chat",
+            return_value=make_completion_response(
+                "", prompt_tokens=10, completion_tokens=5, cost=0.002
+            ),
+        )
+
+        result = self.service.image_generation("a cat")
+
+        assert result.error is not None
+        assert result.cost == pytest.approx(0.002)
+        assert (result.prompt_tokens, result.completion_tokens) == (10, 5)
 
     def test_xai_model_kwargs(self) -> None:
         """GIVEN xai model WHEN _attempt_image_generation called THEN asks for high quality."""
@@ -821,6 +965,62 @@ class TestImageGenerationPaths:
         result = self.service.image_generation("a cat")
 
         assert result.error is not None
+        # Nothing will arrive later, so nothing is promised.
+        assert "keep trying" not in result.content
+        assert result.content == (
+            "Error: Image generation timed out. Try again or simplify your request."
+        )
+
+    def test_a_stashed_timeout_promises_the_image(self) -> None:
+        """The background retry will deliver it, so the user is told to expect it."""
+        self.mocker.patch(
+            "llm.service.provider.draw",
+            side_effect=provider.RequestTimeoutError("Request timed out"),
+        )
+        self.mocker.patch.object(self.service, "_stash_timeout", return_value=True)
+
+        result = self.service.image_generation("a cat")
+
+        assert result.content == (
+            "Timed out, but I'll keep trying and deliver the image when ready."
+        )
+
+    def test_the_channel_rewrite_cap_applies(self) -> None:
+        """drawAutoRewriteMax is per channel, and each rewrite buys a billed draw.
+        The channel is the PRIVMSG target, msg.args[0]."""
+        values = {"drawAutoRewriteMax": 1, "assistantModel": "xai/grok-4.3", "timeout": 30}
+        self.mock_plugin.registryValue = self.mocker.Mock(
+            side_effect=lambda key, channel=None: (
+                0 if (key, channel) == ("drawAutoRewriteMax", "#c") else values.get(key, "")
+            )
+        )
+        self.mocker.patch("llm.service.provider.draw", return_value=_blocked())
+        rewrite = self.mocker.patch.object(self.service, "_rewrite_prompt_for_safety")
+        msg = self.mocker.Mock(args=("#c", "a cat"))
+
+        result = self.service.image_generation("a cat", None, msg)
+
+        assert result.error is not None
+        rewrite.assert_not_called()
+
+    def test_a_billed_failure_mid_loop_is_booked(self) -> None:
+        """Earlier refusal + rewrite + the billed failure that ended the loop."""
+        price = provider.image_price(service_module.IMAGE_MODEL)
+        self.mocker.patch(
+            "llm.service.provider.draw",
+            side_effect=[
+                provider.ContentPolicyViolationError("moderated", billed=True),
+                provider.ProviderError("upstream 500", billed=True),
+            ],
+        )
+        self.mocker.patch.object(
+            self.service, "_rewrite_prompt_for_safety", return_value=("a calm cat", 10, 5, 0.001)
+        )
+
+        result = self.service.image_generation("a cat")
+
+        assert result.error is not None
+        assert result.cost == pytest.approx(2 * price + 0.001)
 
     def test_non_content_error_in_rewrite_loop(self) -> None:
         """GIVEN first attempt blocked and retry raises non-content error WHEN generating THEN returns error."""
@@ -928,6 +1128,25 @@ class TestRetryImage:
 
         assert attempt.call_args.kwargs["aspect"] == "portrait"
 
+    def test_a_recovered_draw_is_delivered(self) -> None:
+        """A paid, recovered draw completes and carries the image for delivery."""
+        from llm.service import ImageResult
+
+        task = self._make_task()
+        url = "https://example.com/llm/img_recovered.jpg"
+        self.mocker.patch.object(
+            self.service,
+            "_attempt_image_generation",
+            return_value=ImageResult(content=url, cost=0.07, model=task.model, url=url),
+        )
+
+        result = self.service._retry_image(task, {"prompt": "cat"})
+
+        assert result.status == "completed"
+        assert result.content == url
+        assert result.reply_target == "#chan"
+        assert result.cost == pytest.approx(0.07)
+
     def test_retry_image_content_blocked(self) -> None:
         """GIVEN _attempt_image_generation returns None WHEN _retry_image called THEN returns failed_terminal with blocked reason."""
         task = self._make_task()
@@ -958,8 +1177,10 @@ class TestExternalImageUpload:
 
     def _mock_upload_reply(self, payload: str) -> Mock:
         """Patch the opener so an upload POST returns ``payload``."""
+        data = payload.encode()
         mock_resp = self.mocker.Mock()
-        mock_resp.read.return_value = payload.encode()
+        # Honour read's size limit, as a real response does.
+        mock_resp.read.side_effect = lambda n=-1: data[:n] if n >= 0 else data
         mock_resp.__enter__ = self.mocker.Mock(return_value=mock_resp)
         mock_resp.__exit__ = self.mocker.Mock(return_value=False)
 
@@ -1007,6 +1228,27 @@ class TestExternalImageUpload:
         assert result is not None
         assert result.startswith("https://example.com/llm/img_")
         assert len(self._local_files()) == 1
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            # success:false wins even when a filePath rides along.
+            '{"results": [{"success": false, "error": "quota", "filePath": "/img/x.png"}]}',
+            '{"results": ["x"]}',
+            '{"results": []}',
+            '{"results": {"success": true, "filePath": "/img/x.png"}}',
+            '{"ok": true}',
+        ],
+    )
+    def test_upload_reply_without_a_successful_result_falls_back_to_local(self, reply: str) -> None:
+        """The reply is untrusted: anything but a successful first result is
+        refused, and the image is stored locally instead of raising."""
+        self._mock_upload_reply(reply)
+
+        result = self.service._save_image_bytes(b"\x89PNG\r\n\x1a\nfake image data")
+
+        assert result is not None
+        assert result.startswith("https://example.com/llm/img_")
 
     def test_upload_network_error_falls_back_to_local(self) -> None:
         """GIVEN the host is unreachable WHEN saving THEN falls back to local storage."""
@@ -1278,6 +1520,39 @@ class TestRewriteFidelity:
             self._rewrite(reworded, original=original)
 
         assert "prompt_rewrite_fidelity" not in caplog.text
+
+
+class TestHandleLlmErrorMessages:
+    """Each failure class tells the user what to do next."""
+
+    def test_timeout(self, make_service) -> None:  # type: ignore[no-untyped-def]
+        service, _plugin = make_service()
+        message = service._handle_llm_error(provider.RequestTimeoutError("t"), "image generation")
+        assert message == "Error: Image generation timed out. Try again or simplify your request."
+
+    def test_rate_limit_says_wait(self, make_service) -> None:  # type: ignore[no-untyped-def]
+        service, _plugin = make_service()
+        message = service._handle_llm_error(provider.RateLimitError("x"), "chat")
+        assert message == (
+            "Error: API rate limit reached. Please wait a few minutes and try again."
+        )
+
+    def test_moderation_block_says_rephrase(self, make_service) -> None:  # type: ignore[no-untyped-def]
+        """A reworded prompt often gets through (ContentPolicyViolationError)."""
+        service, _plugin = make_service()
+        message = service._handle_llm_error(
+            provider.ContentPolicyViolationError("x"), "image generation"
+        )
+        assert message == (
+            "Error: Content violates AI safety policies. Please rephrase your request."
+        )
+
+    def test_unknown_exception(self, make_service) -> None:  # type: ignore[no-untyped-def]
+        service, _plugin = make_service()
+        message = service._handle_llm_error(ValueError("boom"), "chat")
+        assert message == (
+            "Error: Unable to complete chat. Check your configuration or try again later."
+        )
 
 
 class TestRefusalMessagesSayWhatHappened:

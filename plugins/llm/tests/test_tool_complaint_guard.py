@@ -253,3 +253,50 @@ class TestRetryWhenNoToolRan:
         assert len(seen) == 2, "the invented complaint was not retried"
         assert "Here's your bacon, Jordan." in str(result)
         assert OBSERVED_FINAL not in str(result)
+
+
+class TestHonestReportAfterARealFailure:
+    """Once a tool has run, a report that it failed may well be true."""
+
+    @pytest.fixture
+    def service(self, make_service) -> LLMService:  # type: ignore[no-untyped-def]
+        svc, _plugin = make_service(assistantModel="gpt-4")
+        return svc
+
+    def test_a_failed_search_reported_honestly_is_delivered(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        from llm.assistant import ToolResult
+
+        from .conftest import make_tool_call
+
+        report = "The search tool failed, try again in a minute."
+        assert _is_tool_complaint(report)
+        replies = iter(
+            [
+                make_completion_response(
+                    None, tool_calls=[make_tool_call("search_web", {"query": "bacon"})]
+                ),
+                make_completion_response(report),
+            ]
+        )
+        seen: list[object] = []
+
+        def fake_completion(**kwargs: object) -> object:
+            seen.append(kwargs)
+            return next(replies)
+
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
+
+        result = service.assistant_completion(
+            prompt="search for bacon news",
+            nick="rdrake",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            search_fn=lambda _q: ToolResult(content='{"error": "upstream 503"}'),
+        )
+
+        assert len(seen) == 2, "an honest report was retried as if invented"
+        assert result.content == report

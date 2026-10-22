@@ -404,6 +404,13 @@ def test_cancel_scheduled_llm_task_unknown_returns_error(llm_service):
     assert out.status == "error"
 
 
+def test_cancel_of_an_unknown_id_says_so_to_an_identified_caller(llm_service):
+    """Real cancels always carry an account; the id simply does not exist."""
+    out = llm_service.cancel_scheduled_llm_task(event_name="nope", creator_nick="x", account="acct")
+    assert out.status == "error"
+    assert out.message == "No scheduled task with id nope."
+
+
 # =============================================================================
 # Phase 2 Task 3 / D4 — depth-cap end-to-end on fired schedule
 # =============================================================================
@@ -646,6 +653,30 @@ def test_reply_target_channel_bridge_disabled_refused(llm_service, mocker: Mocke
     assert "bridge is not enabled" in res.message
 
 
+def test_reply_target_naming_the_origin_channel_is_always_allowed(
+    llm_service, db, mocker: MockerFixture
+):
+    """The origin is the default target anyway: naming it (in any case) needs
+    neither the bridge nor a presence check (scheduled-tasks.md)."""
+    irc = _irc_with_channels(mocker, {})
+    msg = _msg_mock(mocker)
+    _patch_parser(llm_service, mocker)
+    llm_service.plugin.registryValue.side_effect = _registry({})
+
+    res = llm_service.schedule_llm_task(
+        irc=irc,
+        msg=msg,
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#dev",
+        when_natural="in 60s",
+        prompt="x",
+        reply_target="#DEV",
+    )
+
+    assert res.status == "ok"
+
+
 def test_reply_target_pm_self_ok(llm_service, db, mocker: MockerFixture):
     irc = _irc_with_channels(mocker, {"#t": ["rdrake", "bot"]})
     msg = _msg_mock(mocker)
@@ -764,11 +795,20 @@ def _bind_real_delivery(plugin) -> None:
     plugin._format_pending_completed_reply = LLM._format_pending_completed_reply.__get__(plugin)
 
 
-def _fire_with_answer(llm_service, mocker: MockerFixture, content: str):
+def _fire_with_answer(
+    llm_service,
+    mocker: MockerFixture,
+    content: str,
+    *,
+    instruction: str | None = "",
+    overlay: str | None = None,
+):
     """Schedule a one-shot task in #deliver, fire it with ``content``, return the irc."""
     irc = _irc_with_channels(mocker, {"#deliver": ["rdrake", "bot"]})
     _patch_parser(llm_service, mocker)
-    llm_service.plugin.registryValue.side_effect = _registry({("bridgeEnabled", "#deliver"): True})
+    llm_service.plugin.registryValue.side_effect = _registry(
+        {("bridgeEnabled", "#deliver"): True, "assistantSystemPrompt": overlay}
+    )
     res = llm_service.schedule_llm_task(
         irc=irc,
         msg=_msg_mock(mocker),
@@ -787,7 +827,7 @@ def _fire_with_answer(llm_service, mocker: MockerFixture, content: str):
     plugin._check_rate_limit.return_value = False
     plugin._gather_history.return_value = ([], [])
     plugin._get_user_memories.return_value = []
-    mocker.patch.object(plugin.db, "get_instruction", return_value="")
+    mocker.patch.object(plugin.db, "get_instruction", return_value=instruction)
     plugin._pending_task_fns.return_value = {}
     plugin.llm_service = llm_service
     from llm.plugin import LLM
@@ -819,6 +859,20 @@ def test_long_fired_answer_is_pastebinned_not_truncated(llm_service, db, mocker:
     assert body.startswith("rdrake: ")
     assert "http://h/task.html" in body
     assert "word149" not in body
+
+
+@pytest.mark.parametrize("instruction", ["always answer in French", None])
+def test_fired_task_sends_the_instruction_as_user_data(
+    llm_service, db, mocker: MockerFixture, instruction: str | None
+):
+    """@instruct rides as fenced user-role data on every path, never inside
+    the system prompt, and the channel overlay is always the system prompt
+    (rate-limiting-security.md)."""
+    _fire_with_answer(llm_service, mocker, "ok", instruction=instruction, overlay="OVERLAY")
+
+    kwargs = llm_service.assistant_completion.call_args.kwargs
+    assert kwargs["user_instruction"] == instruction
+    assert kwargs["system_prompt"] == "OVERLAY"
 
 
 def test_fired_answer_neutralizes_irc_injection(llm_service, db, mocker: MockerFixture):
@@ -1059,3 +1113,141 @@ def test_scheduled_fire_books_usage_while_closing(llm_service, mocker: MockerFix
 
     plugin._log_unattended_usage.assert_called_once()
     assert plugin._log_unattended_usage.call_args.kwargs["result"].cost == 0.01
+
+
+def _task_row(*, watch_mode: bool = False):
+    from llm.persistence import ScheduledLlmTaskRow
+
+    return ScheduledLlmTaskRow(
+        id=1,
+        event_name="llm_task_watch",
+        creator_nick="rdrake",
+        account="rdrake_a",
+        channel="#t",
+        network="afternet",
+        wire_msg=":rdrake!u@h PRIVMSG #t :@ask check",
+        prompt="check whether Ubuntu 24.04 is patched",
+        fire_at=0.0,
+        created_at=0.0,
+        recurrence_seconds=300,
+        recurrence_rrule=None,
+        chain_position=1,
+        watch_mode=watch_mode,
+        reply_target=None,
+    )
+
+
+def _dispatch_with_reply(llm_service, mocker: MockerFixture, row, reply: str):
+    """Fire ``row`` with the model answering ``reply``; return the irc."""
+    from llm.service import AssistantResult, Spend
+
+    plugin = llm_service.plugin
+    plugin._unattended_ask_rate_limited.return_value = False
+    plugin._run_unattended_assistant.return_value = AssistantResult(
+        content=reply, spend=Spend.ZERO, model="m"
+    )
+    mocker.patch("llm.service.ircdb.checkCapability", return_value=True)
+    _bind_real_delivery(plugin)
+    irc = _irc_mock(mocker)
+    llm_service._dispatch_scheduled_task(irc, _msg_mock(mocker), row)
+    return irc
+
+
+@pytest.mark.parametrize(
+    ("watch_mode", "reply"),
+    [(True, "[silent]"), (False, ""), (True, "")],
+)
+def test_a_fire_with_nothing_to_report_posts_nothing(
+    llm_service, mocker: MockerFixture, watch_mode: bool, reply: str
+) -> None:
+    """Only positive results reach the user: a watch's [silent], or an empty
+    reply on any task, sends no line at all."""
+    irc = _dispatch_with_reply(llm_service, mocker, _task_row(watch_mode=watch_mode), reply)
+
+    irc.queueMsg.assert_not_called()
+
+
+def test_a_watch_delivers_its_positive_result(llm_service, mocker: MockerFixture) -> None:
+    """ "Let me know when X is available": the news itself must be posted."""
+    irc = _dispatch_with_reply(
+        llm_service, mocker, _task_row(watch_mode=True), "Ubuntu 24.04 is now patched."
+    )
+
+    [call] = irc.queueMsg.call_args_list
+    assert call.args[0].args == ("#t", "rdrake: Ubuntu 24.04 is now patched.")
+
+
+def test_fire_uses_the_connection_for_the_stored_network(
+    llm_service, db, mocker: MockerFixture
+) -> None:
+    irc_a, irc_b = _irc_mock(mocker), _irc_mock(mocker)
+    fake_world = mocker.patch("llm.service.world")
+    fake_world.getIrc.return_value = irc_a
+    fake_world.ircs = [irc_b]
+    dispatch = mocker.patch.object(llm_service, "_dispatch_scheduled_task")
+
+    llm_service.fire_scheduled_llm_task(_stored_task(db), 123.0)
+
+    fake_world.getIrc.assert_called_once_with("afternet")
+    assert dispatch.call_args.args[0] is irc_a
+
+
+def test_fire_falls_back_to_the_first_connection(llm_service, db, mocker: MockerFixture) -> None:
+    irc_b = _irc_mock(mocker)
+    fake_world = mocker.patch("llm.service.world")
+    fake_world.getIrc.return_value = None
+    fake_world.ircs = [irc_b]
+    dispatch = mocker.patch.object(llm_service, "_dispatch_scheduled_task")
+
+    llm_service.fire_scheduled_llm_task(_stored_task(db), 123.0)
+
+    assert dispatch.call_args.args[0] is irc_b
+
+
+def test_a_recurring_task_fires_exactly_five_times(llm_service, db, mocker: MockerFixture) -> None:
+    """scheduled-tasks.md: a recurring task fires at most five times and is
+    then deleted. Counted from the task as schedule_llm_task stores it."""
+    from llm.agenda import Agenda, Kind, Outcome
+
+    mocker.patch.object(
+        llm_service,
+        "parse_reminder",
+        return_value=ReminderParseResult(
+            action="schedule",
+            seconds=60,
+            message="x",
+            confirmation="ok",
+            note=None,
+            action_prompt="x",
+            recurrence_seconds=300,
+            recurrence_rrule=None,
+            watch_mode=False,
+        ),
+    )
+    llm_service.plugin.registryValue.side_effect = lambda k, ch=None: None
+    res = llm_service.schedule_llm_task(
+        irc=_irc_mock(mocker),
+        msg=_msg_mock(mocker),
+        creator_nick="n",
+        account="acct",
+        channel="#t",
+        when_natural="every 5 minutes",
+        prompt="ping me",
+    )
+    assert res.status == "ok"
+
+    now = [0.0]
+    schedule = Agenda(db, clock=lambda: now[0])
+    fires = 0
+    while True:
+        row = db.get_scheduled_llm_task(res.event_name)
+        now[0] = row.fire_at + 1
+        assert res.event_name in [d.row.event_name for d in schedule.claim_due().due]
+        fires += 1
+        done = schedule.finish(Kind.TASK, res.event_name, fired_at=now[0])
+        if done.outcome is not Outcome.RESCHEDULED:
+            break
+
+    assert done.outcome is Outcome.CAPPED
+    assert fires == 5
+    assert db.get_scheduled_llm_task(res.event_name) is None

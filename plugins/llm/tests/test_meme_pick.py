@@ -40,6 +40,19 @@ class TestWithoutSearch:
         assert "tools" not in kwargs
         assert MEME_SEARCH_NOTE not in kwargs["messages"][0]["content"]
 
+    def test_the_shared_grounding_rides_under_the_request(self, service, mocker) -> None:
+        """The canon block and subject dossier reach the picker."""
+        completion = mocker.patch.object(
+            service, "_timed_completion", return_value=make_completion_response(_ANSWER)
+        )
+
+        service.meme_pick(
+            "bob at work", catalog_brief="drake | ...", channel="#t", context="CANON: Bob is a cat"
+        )
+
+        user_turn = completion.call_args.kwargs["messages"][1]["content"]
+        assert user_turn == "bob at work\n\nCANON: Bob is a cat"
+
 
 class TestSearchLoop:
     def test_a_search_feeds_its_rows_back_and_usage_is_summed(self, service, mocker) -> None:
@@ -68,6 +81,8 @@ class TestSearchLoop:
         assert MEME_SEARCH_NOTE in first.kwargs["messages"][0]["content"]
         assert first.kwargs["tools"][0]["function"]["name"] == "search_templates"
         assert "json_reply" not in first.kwargs
+        # Searching is allowed until the cap: the first step does not switch it off.
+        assert "tool_choice" not in first.kwargs
         tool_turn = second.kwargs["messages"][-1]
         assert tool_turn == {
             "role": "tool",

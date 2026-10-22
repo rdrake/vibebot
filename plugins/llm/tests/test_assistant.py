@@ -1155,6 +1155,186 @@ class TestMetaCompletion:
         assert REACT_GUIDANCE in captured[0]
         assert REACT_GUIDANCE not in captured[1]
 
+    @staticmethod
+    def _system_prompt_with(
+        service: LLMService, mocker: MockerFixture, *tool_names: str
+    ) -> tuple[str, str]:
+        """(system prompt, reply) for a chat turn carrying ``tool_names``."""
+        captured: list[str] = []
+
+        def capture_completion(**kwargs: object) -> object:
+            captured.append(kwargs.get("messages", [])[0]["content"])  # type: ignore[index]
+            return make_completion_response("Done.")
+
+        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
+        tools = [
+            {"type": "function", "function": {"name": name, "parameters": {}}}
+            for name in tool_names
+        ]
+        result = service.assistant_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            extra_tools=tools,
+            extra_handlers={},
+        )
+        return captured[0], result.content
+
+    @pytest.mark.parametrize("bridge_tool", ["run_limnoria_command", "search_bridge_commands"])
+    def test_bridge_guidance_rides_only_with_a_bridge_tool(
+        self, service: LLMService, mocker: MockerFixture, bridge_tool: str
+    ) -> None:
+        """The framework must not describe tools the model can't see."""
+        from llm.prompts import BRIDGE_TOOLS_GUIDANCE
+
+        with_bridge, _ = self._system_prompt_with(service, mocker, bridge_tool)
+        other_tool, _ = self._system_prompt_with(service, mocker, "irc_lookup")
+
+        assert BRIDGE_TOOLS_GUIDANCE in with_bridge
+        assert BRIDGE_TOOLS_GUIDANCE not in other_tool
+
+    def test_meme_guidance_rides_only_with_make_meme(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        from llm.prompts import MEME_GUIDANCE
+
+        with_meme, _ = self._system_prompt_with(service, mocker, "make_meme")
+        other_tool, _ = self._system_prompt_with(service, mocker, "react")
+
+        assert MEME_GUIDANCE in with_meme
+        assert MEME_GUIDANCE not in other_tool
+
+    def test_redact_and_notify_guidance_each_ride_with_their_tool(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        from llm.prompts import NOTIFY_GUIDANCE, REDACT_GUIDANCE
+
+        redact, redact_reply = self._system_prompt_with(service, mocker, "delete_last_reply")
+        notify, notify_reply = self._system_prompt_with(service, mocker, "notify_when_online")
+
+        # The turn completes as usual.
+        assert redact_reply == notify_reply == "Done."
+        assert REDACT_GUIDANCE in redact and NOTIFY_GUIDANCE not in redact
+        assert NOTIFY_GUIDANCE in notify and REDACT_GUIDANCE not in notify
+
+    def test_chat_overlay_footer_keeps_the_length_cap(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """Only verse lifts the length cap; a chat overlay changes voice, not structure."""
+        captured: list[str] = []
+
+        def capture_completion(**kwargs: object) -> object:
+            captured.append(kwargs.get("messages", [])[0]["content"])  # type: ignore[index]
+            return make_completion_response("Done.")
+
+        mocker.patch("llm.service.provider.chat", side_effect=capture_completion)
+
+        service.assistant_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            system_prompt="You are a grumpy pirate.",
+        )
+
+        assert "grumpy pirate" in captured[0]
+        assert "length cap" in captured[0]
+        assert "multi-paragraph" not in captured[0]
+
+    @pytest.mark.parametrize(("route", "cap"), [("chat", 4096), ("verse", 3000)])
+    def test_output_is_capped_per_profile(
+        self, service: LLMService, mocker: MockerFixture, route: str, cap: int
+    ) -> None:
+        """Haiku's thinking shares the chat cap; an unbounded verse generation
+        collapses into gibberish in its tail (profile.py)."""
+        chat = mocker.patch(
+            "llm.service.provider.chat", return_value=make_completion_response("Done.")
+        )
+
+        service.assistant_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=route,
+        )
+
+        assert chat.call_args.kwargs["max_tokens"] == cap
+
+    @staticmethod
+    def _history(count: int) -> list[dict[str, str]]:
+        """``count`` alternating turns with nothing in common between them."""
+        return [
+            {
+                "role": "user" if i % 2 == 0 else "assistant",
+                "content": f"alpha{i} bravo{i} charlie{i} delta{i}",
+            }
+            for i in range(count)
+        ]
+
+    def test_verse_sends_only_the_recent_history_window(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """A shorter window means fewer past replies to imitate."""
+        from llm.service import _VERSE_HISTORY_MAX_MESSAGES, PROFILE_VERSE
+
+        chat = mocker.patch(
+            "llm.service.provider.chat", return_value=make_completion_response("Done.")
+        )
+
+        service.assistant_completion(
+            prompt="go on",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=PROFILE_VERSE,
+            history=self._history(20),
+        )
+
+        blob = "\n".join(str(m.get("content", "")) for m in chat.call_args.kwargs["messages"])
+        kept = [i for i in range(20) if f"alpha{i} " in blob]
+        assert kept == list(range(20 - _VERSE_HISTORY_MAX_MESSAGES, 20))
+
+    def test_chat_keeps_its_history_and_strips_channel_repeats(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """Chat is not trimmed to the verse window, and a stuck-record cluster
+        in the channel window never reaches the model."""
+        chat = mocker.patch(
+            "llm.service.provider.chat", return_value=make_completion_response("Done.")
+        )
+        stuck = "The lads did it again, bacon everywhere, nobody saw it coming."
+        channel_history = [
+            {"nick": "VibeBot", "role": "assistant", "content": stuck},
+            {"nick": "bob", "role": "user", "content": "what happened"},
+            {"nick": "VibeBot", "role": "assistant", "content": stuck},
+        ]
+
+        service.assistant_completion(
+            prompt="go on",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            history=self._history(15),
+            channel_history=channel_history,
+        )
+
+        blob = "\n".join(str(m.get("content", "")) for m in chat.call_args.kwargs["messages"])
+        assert [i for i in range(15) if f"alpha{i} " in blob] == list(range(15))
+        assert "what happened" in blob
+        assert "bacon everywhere" not in blob
+
     def test_assistant_completion_excluding_pending_tools_drops_guidance(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
@@ -1468,6 +1648,55 @@ class TestMetaCompletion:
 
         assert result.error is not None
         assert "timed out" in result.content.lower()
+        # Nothing will be delivered later, so nothing is promised.
+        assert "keep trying" not in result.content
+
+    def test_timeout_on_a_profile_that_never_stashes_promises_nothing(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """A reminder fire's timeout is not stashed, so it gets the plain error."""
+        mocker.patch(
+            "llm.service.provider.chat",
+            side_effect=provider.RequestTimeoutError("timed out"),
+        )
+
+        result = service.assistant_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            route_profile=PROFILE_REMIND_ACTION,
+        )
+
+        assert result.timed_out is True
+        assert result.content == "Error: Chat timed out. Try again or simplify your request."
+
+    def test_a_failure_before_the_executor_exists_still_answers(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """Every failure becomes a channel-visible error with the spend so far,
+        even one raised before the tool executor is built."""
+        from llm.service import AssistantResult, Spend
+
+        mocker.patch.object(
+            service.plugin, "_status_named_pages", side_effect=RuntimeError("bad config")
+        )
+
+        result = service.assistant_completion(
+            prompt="hello",
+            nick="testuser",
+            channel="#test",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+        )
+
+        assert isinstance(result, AssistantResult)
+        assert result.error is not None
+        assert result.content.startswith("Error: Unable to complete chat.")
+        assert result.spend == Spend.ZERO
 
     def test_timeout_stash_messages_unaffected_by_tool_loop(
         self, service: LLMService, mocker: MockerFixture
@@ -2072,6 +2301,8 @@ class TestVerseDegradedGuard:
             # Short replies are never judged — too small a sample.
             "and then and then and then the lads ran and ran and ran off.",
             "Stinky Dan kicked the door wide, unleashing a volley of guff.",
+            # Low word variety, but far too short to judge.
+            "ha ha ha ha ha",
             "",
         ],
     )

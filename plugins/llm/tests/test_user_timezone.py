@@ -363,6 +363,11 @@ class TestParseReminderPrompt:
         assert "America/Toronto (UTC-0" in prompt
         assert "user's local time" in prompt
         assert "set note to null" in prompt
+        # A zone the user set needs no disclaimer (reminders.md): only the
+        # client-clock and UTC fallbacks say which one was used.
+        assert "the user set this zone themselves" in prompt
+        assert "Assuming UTC" not in prompt
+        assert "client's clock" not in prompt
 
     def test_ctcp_offset_asks_for_tz_in_note(self, service, mocker: MockerFixture) -> None:
         offset = UserTz(tz=timezone(timedelta(hours=-4)), source=SOURCE_CTCP)

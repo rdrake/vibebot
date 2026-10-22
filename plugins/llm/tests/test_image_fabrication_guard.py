@@ -141,6 +141,51 @@ class TestFabricationForcesTheTool:
             "function": {"name": "generate_image"},
         }
 
+    def test_the_tool_is_forced_for_one_step_only(
+        self, service: LLMService, mocker: MockerFixture
+    ) -> None:
+        """A forced draw that fails must not be forced again on every later
+        step: each one is another billed image attempt."""
+        responses = [
+            make_completion_response(FABRICATED),
+            make_completion_response(
+                None, tool_calls=[make_tool_call("generate_image", {"prompt": "rdrake"})]
+            ),
+            make_completion_response("The filter blocked that one, sorry."),
+        ]
+        captured_kwargs: list[dict] = []
+
+        def fake_completion(**kwargs: object) -> object:
+            captured_kwargs.append(kwargs)
+            return responses[len(captured_kwargs) - 1]
+
+        mocker.patch("llm.service.provider.chat", side_effect=fake_completion)
+        draws: list[str] = []
+
+        def draw_fn(prompt: str, **_kw: object) -> ToolCallbackResult:
+            draws.append(prompt)
+            return ToolCallbackResult(False, "Content blocked by safety filters")
+
+        service.assistant_completion(
+            prompt="draw rdrake dismantling you",
+            nick="ibutsu",
+            channel="#afternet",
+            db=mocker.MagicMock(),
+            context=mocker.MagicMock(),
+            bot_nick="VibeBot",
+            capabilities=frozenset({"llm.ask", "llm.draw"}),
+            account="ibutsu",
+            draw_fn=draw_fn,
+        )
+
+        assert len(captured_kwargs) == 3
+        assert captured_kwargs[1].get("tool_choice") == {
+            "type": "function",
+            "function": {"name": "generate_image"},
+        }
+        assert "tool_choice" not in captured_kwargs[2]
+        assert draws == ["rdrake"]
+
     def test_unrecovered_fabrication_becomes_an_honest_failure(
         self, service: LLMService, mocker: MockerFixture
     ) -> None:
