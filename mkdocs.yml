@@ -58,6 +58,7 @@ plugins:
       full_output: llms-full.txt
       sections:
         Operator guide:
+          - operator/limnoria.md
           - operator/installation.md
           - operator/operations.md
           - operator/configuration.md
@@ -96,6 +97,7 @@ nav:
     - Installation and deployment: operator/installation.md
     - Operations and auto-updates: operator/operations.md
     - Configuration: operator/configuration.md
+    - Limnoria crash course: operator/limnoria.md
     - The verse: operator/verse.md
     - Memory promotion: operator/memory-promotion.md
     - Rate limiting and security: operator/rate-limiting-security.md

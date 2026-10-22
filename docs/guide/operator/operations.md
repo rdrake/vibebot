@@ -65,7 +65,7 @@ systemctl --user start vibebot
 systemctl --user start vibebot-updater.timer
 ```
 
-For single settings, prefer the `@config` command from IRC instead; it changes the live registry and survives restarts. Reserve direct file edits for bulk changes and values that are awkward to type in IRC.
+For single settings, prefer the `@config` command from IRC instead; it changes the live registry. Follow it with `@flush`, which writes the registry to `bot.conf` at once: on this deployment a restart has more than once come without a shutdown flush, and an unflushed `@config` change was lost. See the [Limnoria crash course](limnoria.md). Reserve direct file edits for bulk changes and values that are awkward to type in IRC.
 
 ## Log locations
 

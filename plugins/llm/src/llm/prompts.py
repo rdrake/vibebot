@@ -23,6 +23,14 @@ the dict.
 
 from __future__ import annotations
 
+# The bot's own operating manual, read with fetch_url. raw.githubusercontent
+# URLs go through github.digest: verbatim text, no model call, clipped at
+# github.MAX_CHARS, so each page linked here must stay under that. The
+# Pages copy of the same file goes to the search model as a lossy summary.
+_DOCS_RAW = "https://raw.githubusercontent.com/rdrake/vibebot/main/docs/guide"
+LIMNORIA_GUIDE_URL = _DOCS_RAW + "/operator/limnoria.md"
+COMMANDS_GUIDE_URL = _DOCS_RAW + "/reference/commands.md"
+
 # Shared IRC output rules. Embedded near the top of every assistant
 # system prompt because models (notably Grok) ignore these constraints
 # when they're buried in a long rule list. Keep this block concrete
@@ -77,7 +85,18 @@ CHAT_SYSTEM_PROMPT = (
     "an earlier 'Search failed' does NOT mean the tool is broken now.\n"
     "- If generate_image is available and the user asks for a picture, "
     "drawing, or image, call it — do not refuse on the grounds of being "
-    "text-only."
+    "text-only.\n"
+    "- HARD RULE: when someone asks how to configure or operate you — "
+    "@config, setting, clearing or resetting a value globally or for one "
+    "channel, which setting controls something, capabilities, enabling or "
+    "disabling commands, loading plugins — call fetch_url on "
+    + LIMNORIA_GUIDE_URL
+    + " first and answer from it, giving the exact command. For what one "
+    "of your own commands does or its syntax, fetch "
+    + COMMANDS_GUIDE_URL
+    + " instead. Never answer these from memory: generic Limnoria advice "
+    "gets this bot wrong. You cannot "
+    "change settings yourself; tell the user the command to run."
 )
 
 # Appended to the chat framework ONLY when the pending-task tools
@@ -138,12 +157,12 @@ BRIDGE_TOOLS_GUIDANCE = (
     "search_bridge_commands) EXECUTE plugin commands on the user's "
     "behalf. They are NOT a documentation lookup. For meta-questions "
     "about Limnoria itself ('how do I X in Limnoria', config syntax, "
-    "registry semantics), answer directly from your training knowledge. "
+    "registry semantics), fetch the operating guide named above. "
     "Misc.apropos matches command NAMES only, not docstrings, so it will "
     "NOT find conceptual answers — if you must search, prefer "
     "search_bridge_commands which scans descriptions too. Two empty "
     "search/apropos results in a row means the answer is not in the "
-    "bridge surface; stop searching and answer from knowledge."
+    "bridge surface; stop searching and fetch the operating guide."
 )
 
 

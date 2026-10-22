@@ -6,8 +6,12 @@ silently drop a profile key or break the shared IRC output rules.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
-from llm import prompts
+from llm import github, prompts
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class TestProfilePromptInvariants:
@@ -88,6 +92,38 @@ class TestBridgeGuidanceSplit:
     def test_chat_prompt_does_not_mention_bridge_tools(self):
         assert "run_limnoria_command" not in prompts.CHAT_SYSTEM_PROMPT
         assert "run_limnoria_command" in prompts.BRIDGE_TOOLS_GUIDANCE
+
+
+class TestOperatingGuide:
+    """The chat prompt sends how-do-I-configure-you questions to the docs.
+
+    Without it the model answered @config questions from generic Limnoria
+    memory and got this bot's settings wrong.
+    """
+
+    _URLS = (prompts.LIMNORIA_GUIDE_URL, prompts.COMMANDS_GUIDE_URL)
+
+    @pytest.mark.parametrize("url", _URLS)
+    def test_chat_prompt_names_the_guide(self, url):
+        assert url in prompts.CHAT_SYSTEM_PROMPT
+
+    @pytest.mark.parametrize("url", _URLS)
+    def test_guide_url_reads_verbatim_through_github(self, url):
+        """A raw GitHub URL skips the search model's lossy, billed summary."""
+        target = github.parse(url)
+        assert target is not None
+        assert target[0] == "raw"
+
+    @pytest.mark.parametrize("url", _URLS)
+    def test_guide_page_fits_the_github_clip(self, url):
+        """github.digest clips at MAX_CHARS; a longer page loses its tail unseen."""
+        page = _REPO_ROOT / "docs" / "guide" / url.removeprefix(prompts._DOCS_RAW + "/")
+        assert page.is_file()
+        header = len(f"Source: {url}\n")
+        assert header + len(page.read_text(encoding="utf-8")) < github.MAX_CHARS
+
+    def test_bridge_guidance_no_longer_says_answer_from_training(self):
+        assert "training knowledge" not in prompts.BRIDGE_TOOLS_GUIDANCE
 
 
 class TestIrcLookupGuidanceSplit:
