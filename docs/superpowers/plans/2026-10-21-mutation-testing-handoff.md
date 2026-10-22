@@ -38,7 +38,18 @@ The sweep skips modules that already have a result, so an interrupted module sim
 - **Exit codes.** Exit 1 or 2 means `killed`, and `error4` (the mutant broke an import) counts as killed too. A run past 300 s is recorded as `timeout`.
 - **Output.** Each record has `{idx, line, desc, scope, src, status, tier, secs}`. `idx` indexes `enumerate_mutants(ast.parse(source))`. To reproduce a mutant, run `mutant_source(src, idx)` from `scripts/mutate.py` against the worktree source at `48b2f5e`.
 
-## Next: the evaluation workflow (owner asked for a dynamic workflow)
+## Evaluation workflow: RUNNING (2026-10-22)
+
+- **Launched** on the 33 finished modules, everything except `plugin.py`, whose sweep is still running.
+  - Run ID: `wf_49fc9b59-7da`.
+  - Script: `~/.claude/projects/-Users-rdrake-workspace-afternet-vibebot-v8/caabfa35-39ea-4a12-94e5-1a4d95165c67/workflows/scripts/mutation-evaluate-wf_109520a7-a7a.js`.
+  - Input: `~/.cache/vibebot-mutation/eval/chunks.json`, 74 chunks of 2,135 records.
+- **Resume in the same session:** call Workflow with `{scriptPath, resumeFromRunId: "wf_49fc9b59-7da", args: {chunks: <contents of chunks.json>}}`.
+- **New session:** re-run the script with the same args. Completed fix worktrees under `.claude/worktrees/` keep their commits.
+- **The report** lands in `~/.cache/vibebot-mutation/eval/report.md`.
+- **When `plugin.py` finishes:** chunk `mut/llm__plugin.json` the same way, with survived and uncovered grouped by scope and at most 40 per chunk. Run the same script on just those chunks.
+
+## The evaluation workflow, as designed
 
 Once `SWEEPDONE` appears:
 
