@@ -98,6 +98,9 @@ hide:
 <dt>@rp pushes open the tavern door</dt>
 <dd markdown>A shared world per channel, with avatars and a cast that carries between sessions. [The verse](user/verse.md)</dd>
 
+<dt>Error: You must be identified to use this command.</dt>
+<dd markdown>What the bot's refusals and limits mean, and what to do about each. [When the bot says no](user/getting-started.md#rate-limits)</dd>
+
 <dt>@config channel #lounge plugins.LLM.verseEnabled True</dt>
 <dd markdown>Settings, changed from IRC by whoever holds the capability for it. [Configure a running bot](operator/limnoria.md)</dd>
 

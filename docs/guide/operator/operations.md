@@ -10,7 +10,7 @@ Two independent paths keep the running bot current. Both end in the same place: 
 
 <div class="vb-flow__row"><span class="vb-flow__node">git push to <code>main</code></span><span class="vb-flow__arrow">→</span><span class="vb-flow__node">CI<small>lint · tests on 3.14, 3.15</small></span><span class="vb-flow__arrow">→</span><span class="vb-flow__node">Docker build<small>pushed to GHCR as <code>:latest</code> and <code>sha-…</code></small></span></div>
 <div class="vb-flow__down">↓</div>
-<div class="vb-flow__lanes"><div class="vb-flow__lane"><span class="vb-flow__label">Path 1 · push deploy</span><span class="vb-flow__node">SSH forced command<small>immediately after the build</small></span></div><div class="vb-flow__lane"><span class="vb-flow__label">Path 2 · updater timer</span><span class="vb-flow__node">digest check<small>every 15 minutes</small></span></div></div>
+<div class="vb-flow__lanes"><div class="vb-flow__lane"><span class="vb-flow__label">Path 1 · push deploy</span><span class="vb-flow__node">SSH forced command<small>immediately after the build</small></span></div><div class="vb-flow__lane"><span class="vb-flow__label">Path 2 · updater timer</span><span class="vb-flow__node">digest check<small>every 15 minutes, running bot only</small></span></div></div>
 <div class="vb-flow__down">↓</div>
 <div class="vb-flow__row"><span class="vb-flow__node vb-flow__node--end">systemctl --user restart vibebot<small>ExecStartPre pulls :latest</small></span></div>
 
@@ -49,7 +49,7 @@ The forced command ignores whatever the workflow sends, and `restrict` turns off
 | File | Purpose |
 |------|---------|
 | `vibebot.service` | Runs the Docker container; pulls the latest image on start |
-| `vibebot-updater.service` | Compares image digests; restarts the bot when they differ |
+| `vibebot-updater.service` | Compares image digests; restarts a running bot when they differ |
 | `vibebot-updater.timer` | Triggers the update check every 15 minutes |
 
 Install all three with `make install-deploy`. See [Installation](installation.md) for the full setup walkthrough.
@@ -228,7 +228,7 @@ Repeat for each file in `data/verse/`.
 
 </div>
 
-To restore, stop the timer and the bot, put the files back under `~/.config/vibebot/` owned by the account that runs the bot, and delete any `-wal` and `-shm` files left beside a database you replaced. Then start the bot and the timer.
+To restore, stop the bot, put the files back under `~/.config/vibebot/` owned by the account that runs the bot, and delete any `-wal` and `-shm` files left beside a database you replaced. Then start the bot.
 
 ## Uninstalling
 

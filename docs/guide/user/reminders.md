@@ -3,7 +3,7 @@
 Set reminders in natural language. When the time comes, the bot either echoes your text back or, if you asked it to *do* something, runs the task at fire time.
 
 !!! tip "Natural language"
-    Where an operator has enabled it, you can set, list and cancel reminders and scheduled tasks by talking to the bot: "VibeBot, remind me in 2 hours to check the build". It is off by default; the setting to ask your operator for is `supybot.plugins.LLM.pendingTasksEnabled`. `@remind` always works.
+    Where an operator has enabled it, you can set, list and cancel reminders and scheduled tasks by talking to the bot: "VibeBot, remind me in 2 hours to check the build". It is off by default; the setting to ask your operator for is plain-language scheduling (`pendingTasksEnabled`). `@remind` always works.
 
 ## Four kinds
 
@@ -15,7 +15,7 @@ What you get depends on how you ask. The bot picks the kind; `@remind list` show
 | **Needs** | Nothing | Nothing | Nothing | Natural language on in the channel, and a logged-in account |
 | **Fires** | Once | Once, or up to 50 times if it repeats | Up to 50 times | Up to 5 times |
 | **At fire time** | Your text, echoed | A fresh AI query with tools | Your text, echoed | A fresh AI query with tools |
-| **Over your `@ask` limit** | Unaffected | Your text arrives as a plain reminder, marked `(action skipped — daily ask limit reached)` | Unaffected | Skipped, with `Scheduled task skipped — daily ask limit reached.` |
+| **Over your `@ask` limit** | Unaffected | Your text arrives as a plain reminder, marked `(action skipped — ask rate limit reached)` | Unaffected | Skipped, with `Scheduled task skipped — ask rate limit reached.` |
 | **Can set a reminder when it fires** | — | No | — | Yes, but not another task |
 | **In `@remind list`** | No marker | `[auto]` | No marker | `[task]` |
 | **How many you can hold** | 25 reminders, all three kinds together, across every channel | same 25 | same 25 | 5 tasks in each channel |

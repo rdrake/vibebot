@@ -120,9 +120,10 @@ tasks — marked `[task]` — alongside your reminders.
 ```
 
 Limits: 25 pending reminders each, 10 seconds to 7 days out, 500
-characters of text; 5 active scheduled tasks per channel. A fire is
-skipped while you are over your `@ask` rate limit but never uses it up,
-and runs with no elevated capabilities. Recurring reminders cap at 50
+characters of text; 5 active scheduled tasks per channel. While you are
+over your `@ask` rate limit, an action reminder delivers its text without
+running the action and a scheduled task is skipped; neither uses up the
+limit, and both run with no elevated capabilities. Recurring reminders cap at 50
 fires, recurring tasks at 5. See [reminders](../user/reminders.md).
 
 ## Accounting

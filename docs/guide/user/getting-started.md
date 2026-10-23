@@ -12,12 +12,12 @@ Mention the bot by name in a channel, or send it a private message:
           Kilimanjaro (Africa), Elbrus (Europe), Vinson (Antarctica),
           Puncak Jaya (Oceania).
 
-<you>     ok but which of those, VibeBot, can you climb without a guide?
+<you>     VibeBot, which of those can you climb without a guide?
 <VibeBot> Kilimanjaro is the most accessible: no technical climbing, just
           a multi-day trek.
 ```
 
-Starting the line with the bot's nick always works, and so does ending with it: `what's the tallest mountain, VibeBot?` gets an answer, as does the `/me` form `* you prods VibeBot`. A trailing nick needs a space or comma in front of it, so `reboot` is still just a word. Naming the bot mid-sentence, as in the second question above, needs the [NickInMiddle plugin](../reference/nickinmiddle.md) loaded and enabled for the channel, with a space or comma on each side of the nick. Inside a `/me` line the bot handles mid-sentence naming itself, and that one is not switchable per channel.
+Starting the line with the bot's nick always works, and so does ending with it: `what's the tallest mountain, VibeBot?` gets an answer, as does the `/me` form `* you prods VibeBot`. A trailing nick needs a space or comma in front of it, so `reboot` is still just a word. Naming the bot mid-sentence, as in `which of those, VibeBot, has no glacier?`, needs the [NickInMiddle plugin](../reference/nickinmiddle.md) loaded and enabled for the channel, with a space or comma on each side of the nick. Inside a `/me` line the bot handles mid-sentence naming itself, and that one is not switchable per channel.
 
 For a follow-up, reply to one of the bot's lines with your client's reply feature and skip the nick. The bot answers any reply to something it said in the last 2,000 lines. Your client needs IRCv3 replies (`+draft/reply`), and the bot has to be running since it sent that line, because it forgets which lines are its own when it restarts. Replies from other bots are ignored.
 
@@ -30,7 +30,7 @@ In plain language the bot answers questions, draws images, writes code, looks th
 <VibeBot> Noted, metric from here on.
 ```
 
-Reminders and scheduled tasks work this way only where your operator has turned on `supybot.plugins.LLM.pendingTasksEnabled`, which is off by default. The `@remind` command always works.
+Reminders and scheduled tasks work this way only where your operator has turned on plain-language scheduling (`pendingTasksEnabled`), which is off by default. The `@remind` command always works.
 
 ```irc
 <you>     VibeBot, remind me in 2 hours to check the build
@@ -59,16 +59,29 @@ The two paths do not overlap completely. Chat handles questions, images, code, w
 
 ## Accounts and permissions
 
-Some commands, such as `@draw` and `@story`, need you to be authenticated with your network account. The bot tells you when a command needs authentication.
+`@draw`, `@meme`, `@story`, `@memories`, `@instruct`, `@avatar`, `@tz` and scheduled tasks need you logged in to your AfterNET network account, because the bot files your data under that account, not your nick. Log in the way your client normally does, such as SASL, before using them. Plain chat and `@ask` work without an account.
 
-!!! note
-    AfterNet uses network account authentication. Log in to your account through your usual method (for example, SASL) before using account-gated commands.
+## When the bot says no { #rate-limits }
 
-Your bot operator controls access to each command through Limnoria's capability system. If the bot says you lack permission, ask your operator for access. See the [Limnoria capabilities documentation](https://docs.limnoria.net/use/capabilities.html) for background.
+| The bot says | What it means | What to do |
+|--------------|---------------|------------|
+| `You must be identified to use this command.` | You aren't logged in to your network account | Log in, then try again |
+| `Rate limit exceeded for draw. Try again in 300s.` | You hit that command's limit. The number is the length of the window, not the time left | Wait up to that long |
+| `Storybook cooldown is active — try again in a bit.` | One `@story` page per person every five minutes, for everyone | Wait five minutes |
+| `You don't have the llm.draw capability…` | Your operator hasn't given you that command | Ask your operator |
+| `Blocked by the image filter. Try a different subject.` (or similar) | The image provider refused the picture, and the bot already tried rewording it | Pick a different subject; rewording it yourself rarely helps |
+| `The model refused that one outright. Try rewording it.` (or similar) | The chat model declined the request | Rephrase it, or ask something else |
 
-## Rate limits
+The limits, per person:
 
-Each command family carries its own rate limit, and your allowance depends on your status: unregistered, registered, or trusted, the last being a capability your operator grants. `@ask` allows 15 requests a minute at every tier. The image commands are tighter: `@draw` needs an authenticated account and allows two per five minutes, or five a minute at the trusted tier. `@meme` allows six a minute, or twelve at the trusted tier. The bot replies with the length of the window when you hit a limit. Bot admins and owners are exempt. `@story` also needs an account and allows one page per account every five minutes at every tier, admins and owners included. See [Default limits](../operator/rate-limiting-security.md#default-limits).
+| Command | Limit | Trusted users |
+|---------|-------|---------------|
+| `@ask` and chat | 15 a minute | the same |
+| `@draw` | 2 per 5 minutes | 5 a minute |
+| `@meme` | 6 a minute | 12 a minute |
+| `@story` | 1 per 5 minutes | the same |
+
+Trusted is a status your operator can give you. Bot admins and owners skip every limit except `@story`'s. Scheduled reminders and tasks check your `@ask` limit when they fire but never use it up.
 
 ## The verse
 

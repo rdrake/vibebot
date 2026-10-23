@@ -11,7 +11,7 @@ Every `@ask` adds to a short-term conversation history, so you can ask follow-up
 
 - Context is per user, per channel: your conversation in `#general` stays separate from `#dev`.
 - Context expires after a few minutes of inactivity (default: 5 minutes).
-- The bot can also weave in recent channel messages, so it can follow group conversations. By default that shared window holds only lines addressed to the bot and its own replies — the last 10. An operator can turn off `privacyOptInOnly` to feed it every message in the channel and let the bot read the channel's server history for "what did I miss" questions. Both send that chatter to the LLM provider.
+- The bot can also weave in recent channel messages, so it can follow group conversations. By default that shared window holds only lines addressed to the bot and its own replies — the last 10. An operator can switch the channel to feed it every message in the channel and let the bot read the channel's server history for "what did I miss" questions. Both send that chatter to the LLM provider.
 
 Clear your context and start fresh with:
 
@@ -26,7 +26,7 @@ The two forms are not symmetric. `@forget` typed in a channel clears your own th
 
 The bot picks up durable facts from your conversations, such as your preferred programming language, and recalls them later to give more relevant answers. Unlike conversation context, memories are per user and not per channel: a fact learned in `#dev` is in front of the bot when you talk to it in `#general` or in a private message.
 
-A fact isn't saved the first time it comes up. It becomes a candidate, and the bot promotes it to a saved memory when it recurs in a later conversation. Candidates that never recur expire after about two weeks. This keeps one-off remarks out of your memory list.
+A fact isn't saved the first time it comes up. It becomes a candidate, and the bot promotes it to a saved memory when it recurs in a later conversation. Candidates that never recur expire after about two weeks. This keeps one-off remarks out of your memory list. You can hold up to 50 saved memories; at 50 the bot stops picking them up on its own until you delete some or run `@memories cleanup`, though "remember that…" still saves one.
 
 ### Viewing your memories
 
@@ -66,7 +66,7 @@ Your memories are filed under your authenticated account, and only there. The bo
 
 ## Custom instructions
 
-Set a persistent instruction that shapes how the bot answers you. It rides along as a user-role message fenced in `<user_instruction>` markers rather than as part of the system prompt, so it steers the reply but cannot override the bot's identity or its safety rules.
+Set a persistent instruction that shapes how the bot answers you. It steers every reply to you but cannot override the bot's own rules.
 
 ```
 @instruct Always respond in French

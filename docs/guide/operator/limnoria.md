@@ -129,7 +129,7 @@ On this deployment the bot is restarted on every deploy, and changes made with `
 
 Then read the value back with `@config` to confirm it. A quiet log does not prove a setting took effect.
 
-Editing `bot.conf` by hand is for when the bot is down. Stop the bot and the updater timer first, or the running bot overwrites the file. See [Editing bot.conf safely](operations.md#editing-botconf-safely).
+Editing `bot.conf` by hand is for when the bot is down. Stop the bot first, or the running bot overwrites the file. See [Editing bot.conf safely](operations.md#editing-botconf-safely).
 
 ## Settings people ask about most
 
@@ -137,7 +137,7 @@ Editing `bot.conf` by hand is for when the bot is down. Stop the bot and the upd
 |---------|-------|--------------|
 | `assistantModel` | channel | The chat model, for example `anthropic/claude-haiku-5-5` or `xai/grok-4.3`. Only `anthropic/` and `xai/` models work |
 | `assistantSystemPrompt` | channel | The bot's personality and house rules for a channel |
-| `bridgeEnabled` | channel | Lets the bot run allowlisted Limnoria commands as a tool |
+| `bridgeEnabled` | channel | Lets the bot run allowlisted Limnoria commands as a tool. `@load` the plugins first; see [Bridge tools](../reference/bridge-tools.md#loading-the-plugins) |
 | `pendingTasksEnabled` | channel | Lets the bot set reminders and scheduled tasks from plain language |
 | `privacyOptInOnly` | channel | `True` sends only lines addressed to the bot to the provider |
 | `contextTimeoutMinutes` | channel | Minutes of quiet before the bot forgets the conversation |

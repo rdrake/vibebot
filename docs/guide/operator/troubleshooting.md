@@ -47,7 +47,7 @@ journalctl --user -u vibebot-updater -n 20 --no-pager
 docker pull ghcr.io/rdrake/vibebot:latest
 ```
 
-The updater prints `Update found: restarting vibebot...` or `No update available`. If the pull fails, the host cannot reach `ghcr.io`. If no new image exists, check that the `Build and Push Docker Image` run for your commit succeeded; a docs-only push builds nothing (see [How updates reach production](operations.md#how-updates-reach-production)). A rollback drop-in left in `~/.config/systemd/user/vibebot.service.d/` also pins the bot to an old image; see [Rolling back a deploy](operations.md#rolling-back-a-deploy).
+The updater prints `Update found: restarting vibebot...`, `No update available`, or `vibebot is not running; nothing to update`: it never updates or starts a stopped bot, which pulls the new image itself when you start it. If the pull fails, the host cannot reach `ghcr.io`. If no new image exists, check that the `Build and Push Docker Image` run for your commit succeeded; a docs-only push builds nothing (see [How updates reach production](operations.md#how-updates-reach-production)). A rollback drop-in left in `~/.config/systemd/user/vibebot.service.d/` also pins the bot to an old image; see [Rolling back a deploy](operations.md#rolling-back-a-deploy).
 
 ### Timer is not running { #timer-not-running }
 
