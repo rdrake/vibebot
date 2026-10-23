@@ -2,11 +2,13 @@ site_name: VibeBot
 site_url: https://rdrake.github.io/vibebot/
 repo_url: https://github.com/rdrake/vibebot
 repo_name: rdrake/vibebot
+copyright: Press ? for keyboard shortcuts
 docs_dir: docs/guide
 strict: true
 
 theme:
   name: material
+  custom_dir: docs/overrides
   palette:
     - media: "(prefers-color-scheme)"
       toggle:
@@ -47,6 +49,10 @@ theme:
 
 extra_css:
   - stylesheets/extra.css
+  - stylesheets/keeki.css
+
+extra_javascript:
+  - javascripts/keys.js
 
 hooks:
   - docs/hooks/irc.py

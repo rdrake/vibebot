@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+
+{% block extrahead %}
+  {#- Apply a remembered alternate theme before first paint, so a reload
+      doesn't flash the default palette. javascripts/keys.js toggles it. -#}
+  <script>
+    try {
+      if (localStorage.getItem("vb-theme") === "keeki") {
+        document.documentElement.dataset.vbTheme = "keeki";
+      }
+    } catch (e) {}
+  </script>
+{% endblock %}

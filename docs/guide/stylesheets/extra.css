@@ -1179,6 +1179,52 @@ body {
 
 /* ---------- Narrow screens ---------- */
 
+/* ---------- Keyboard help (javascripts/keys.js) ---------- */
+
+.vb-keys {
+  max-width: min(30rem, calc(100vw - 2rem));
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--vb-term-rule);
+  background: var(--vb-term);
+  color: var(--vb-term-fg);
+  font-family: var(--md-code-font-family);
+  font-size: 0.7rem;
+  line-height: 1.7;
+  outline: none;
+}
+
+.vb-keys::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+
+.vb-keys__head {
+  margin: 0 0 0.4rem;
+  color: var(--vb-n-bot);
+  font-weight: 700;
+}
+
+.vb-keys dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.15rem 1.2rem;
+  margin: 0;
+}
+
+.vb-keys dt,
+.vb-keys dd {
+  margin: 0;
+}
+
+.vb-keys kbd {
+  font: inherit;
+  color: var(--vb-n-alice);
+}
+
+.vb-keys__end {
+  margin: 0.5rem 0 0;
+  color: var(--vb-term-dim);
+}
+
 @media screen and (max-width: 59.9375em) {
   .md-typeset .vb-mast {
     grid-template-columns: minmax(0, 1fr);
