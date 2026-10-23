@@ -2,8 +2,8 @@
    client/themes/keeki.css and keekiblush.css). Pink, purple, rose gold and
    lavender on a deep purple-black, with glittering bars; by day, pink paper
    in plum ink under a dusky lavender. Everything here waits behind
-   html[data-vb-theme="keeki"], which typing "keeki" toggles
-   (javascripts/keys.js). It rides the light/dark toggle: slate is Keeki,
+   html[data-vb-theme="keeki"], which the header's coffee cup or typing
+   "keeki" toggles (javascripts/keys.js). It rides the light/dark toggle: slate is Keeki,
    default is Keeki Blush. Code stays dark in both, as in the main theme.
 
    The landing page's client window gets the rail's whole treatment: glitter
@@ -131,6 +131,11 @@
 
 [data-vb-theme="keeki"] .md-tabs__item--active .md-tabs__link::before {
   color: inherit;
+}
+
+/* The cup that turned it on, lit rose gold. */
+[data-vb-theme="keeki"] .vb-keeki-btn {
+  color: var(--vb-bar-mark);
 }
 
 /* 🐾 after the site's name, as after every network's in Seance. */

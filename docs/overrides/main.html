@@ -11,3 +11,14 @@
     } catch (e) {}
   </script>
 {% endblock %}
+
+{% block scripts %}
+  {#- The coffee cup that toggles Keeki; keys.js puts it in the header beside
+      the palette toggle. -#}
+  <template id="vb-keeki-button">
+    <button type="button" class="md-header__button md-icon vb-keeki-btn" title="Keeki theme" aria-label="Keeki theme" aria-pressed="false">
+      {% include ".icons/material/coffee.svg" %}
+    </button>
+  </template>
+  {{ super() }}
+{% endblock %}

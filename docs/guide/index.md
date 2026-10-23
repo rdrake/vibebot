@@ -41,11 +41,11 @@ hide:
     </nav>
     <ol class="vb-wc__log">
       <li class="is-evt"><time>21:01</time><b>--&gt;</b><span><em class="c-carol">carol</em> (~carol@example.net) has joined #lounge</span></li>
-      <li><time>21:02</time><b class="c-alice">alice</b><span>VibeBot, have you seen bob today?</span></li>
-      <li><time>21:02</time><b class="c-bot">VibeBot</b><span>bob was last here 3 hours ago, saying "back after dinner".</span></li>
+      <li><time>21:02</time><b class="c-alice">alice</b><span><em class="c-bot">VibeBot</em>, have you seen <em class="c-bob">bob</em> today?</span></li>
+      <li><time>21:02</time><b class="c-bot">VibeBot</b><span><em class="c-bob">bob</em> was last here 3 hours ago, saying "back after dinner".</span></li>
       <li><time>21:04</time><b class="c-carol">carol</b><span><span class="k">@ask</span> why does my SSH session freeze when I close the laptop?</span></li>
       <li><time>21:04</time><b class="c-bot">VibeBot</b><span>The TCP connection dies while the machine sleeps, and your client keeps waiting on a server that stopped answering. Put <span class="s">ServerAliveInterval 30</span> in <span class="s">~/.ssh/config</span>, or use mosh.</span></li>
-      <li><time>21:05</time><b class="c-dave">dave</b><span>VibeBot, what time is it in Tokyo?</span></li>
+      <li><time>21:05</time><b class="c-dave">dave</b><span><em class="c-bot">VibeBot</em>, what time is it in Tokyo?</span></li>
       <li><time>21:05</time><b class="c-bot">VibeBot</b><span>10:05 Saturday morning in Tokyo.</span></li>
       <li><time>21:06</time><b class="c-alice">alice</b><span><span class="k">@remind</span> in 20 minutes take the bread out</span></li>
     </ol>

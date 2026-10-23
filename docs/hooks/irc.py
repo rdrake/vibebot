@@ -10,7 +10,9 @@ A fence body is IRC as a client shows it:
 
 An indented line continues the message above it; a blank line leaves a gap.
 Nick colours match the landing page: the bot is cyan, `you` orange, and
-anyone else gets a stable colour hashed from the nick.
+anyone else gets a stable colour hashed from the nick. A nick named inside
+a line (the bot's, or anyone who speaks in the fence) takes its colour too,
+as a client colours mentions; `you` doesn't, since it's also just a word.
 """
 
 from __future__ import annotations
@@ -36,8 +38,17 @@ def _colour(nick: str) -> str:
     return _OTHER_COLOURS[zlib.crc32(low.encode()) % len(_OTHER_COLOURS)]
 
 
-def _text(raw: str) -> str:
-    return _COMMAND.sub(r'<span class="k">\1</span>', escape(raw.strip()))
+def _mentions(entries: list[list[str]]) -> re.Pattern[str]:
+    """Match the bot's nick and each speaker's where a line names them."""
+    nicks = {_BOT} | {nick.lower() for kind, nick, _ in entries if kind in ("msg", "act")}
+    nicks.discard("you")
+    names = "|".join(re.escape(n) for n in sorted(nicks, key=len, reverse=True))
+    return re.compile(rf"(?<![\w@])({names})(?!\w)", re.IGNORECASE)
+
+
+def _text(raw: str, mentions: re.Pattern[str]) -> str:
+    html = _COMMAND.sub(r'<span class="k">\1</span>', escape(raw.strip()))
+    return mentions.sub(lambda m: f'<em class="{_colour(m[1])}">{m[1]}</em>', html)
 
 
 def _lines(source: str) -> list[list[str]]:
@@ -64,24 +75,26 @@ def _lines(source: str) -> list[list[str]]:
 
 def format_irc(source, language, css_class, options, md, **kwargs):
     items = []
-    for kind, nick, text in _lines(source):
+    entries = _lines(source)
+    mentions = _mentions(entries)
+    for kind, nick, text in entries:
         if kind == "gap":
             items.append('<li class="is-gap" aria-hidden="true"></li>')
         elif kind == "msg":
             items.append(
-                f'<li><b class="{_colour(nick)}">{escape(nick)}</b> <span>{_text(text)}</span></li>'
+                f'<li><b class="{_colour(nick)}">{escape(nick)}</b> <span>{_text(text, mentions)}</span></li>'
             )
         elif kind == "act":
             items.append(
                 f'<li class="is-act"><b>*</b> <span><em class="{_colour(nick)}">'
-                f"{escape(nick)}</em> {_text(text)}</span></li>"
+                f"{escape(nick)}</em> {_text(text, mentions)}</span></li>"
             )
         elif kind == "evt":
             items.append(
-                f'<li class="is-evt"><b>{escape(nick)}</b> <span>{_text(text)}</span></li>'
+                f'<li class="is-evt"><b>{escape(nick)}</b> <span>{_text(text, mentions)}</span></li>'
             )
         else:
-            items.append(f'<li class="is-raw"><b></b> <span>{_text(text)}</span></li>')
+            items.append(f'<li class="is-raw"><b></b> <span>{_text(text, mentions)}</span></li>')
     return f'<div class="{css_class}" role="log"><ol>{"".join(items)}</ol></div>'
 
 

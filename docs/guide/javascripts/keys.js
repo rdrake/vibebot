@@ -4,13 +4,15 @@
    Alt+Shift+Up/Down step through pages and sections as Seance and The Lounge
    step through windows and networks. Material already binds / s f (search)
    and n p (next and previous page); ? and Alt+/ list everything.
+   Keeki, Seance's theme, is the coffee cup in the header or typing "keeki".
    Keys are matched on e.code, since Option on a Mac turns Alt+1 into "¡".
    The script runs once: instant navigation swaps the body but keeps
-   document and <html>, so the listener and the theme attribute both survive. */
+   document and <html>, so the listener and the theme attribute both survive;
+   the cup is re-placed on every page in case the header is swapped. */
 
 (() => {
   const root = document.documentElement;
-  const SECRET = "keeki";
+  const KEEKI = "keeki";
   let typed = "";
 
   const KEYS = [
@@ -21,6 +23,7 @@
     ["/  s  f", "search"],
     ["Esc", "close search or this help"],
     ["?  Alt+/", "this help"],
+    ["keeki", "Keeki theme on / off (or the coffee cup)"],
   ];
 
   function typing(e) {
@@ -68,14 +71,29 @@
   }
 
   function toggleTheme() {
-    const on = root.dataset.vbTheme !== SECRET;
-    if (on) root.dataset.vbTheme = SECRET;
+    const on = root.dataset.vbTheme !== KEEKI;
+    if (on) root.dataset.vbTheme = KEEKI;
     else delete root.dataset.vbTheme;
     try {
-      if (on) localStorage.setItem("vb-theme", SECRET);
+      if (on) localStorage.setItem("vb-theme", KEEKI);
       else localStorage.removeItem("vb-theme");
     } catch (e) {}
+    const cup = document.querySelector(".vb-keeki-btn");
+    if (cup) cup.setAttribute("aria-pressed", String(on));
   }
+
+  function placeCup() {
+    const palette = document.querySelector(".md-header__option");
+    const template = document.getElementById("vb-keeki-button");
+    if (!palette || !template || document.querySelector(".vb-keeki-btn")) return;
+    const cup = template.content.firstElementChild.cloneNode(true);
+    cup.setAttribute("aria-pressed", String(root.dataset.vbTheme === KEEKI));
+    cup.addEventListener("click", toggleTheme);
+    palette.before(cup);
+  }
+
+  if (typeof document$ !== "undefined") document$.subscribe(placeCup);
+  else placeCup();
 
   document.addEventListener("keydown", (e) => {
     if (e.ctrlKey || e.metaKey || typing(e)) return;
@@ -100,8 +118,8 @@
     }
 
     if (e.key.length === 1) {
-      typed = (typed + e.key.toLowerCase()).slice(-SECRET.length);
-      if (typed === SECRET) {
+      typed = (typed + e.key.toLowerCase()).slice(-KEEKI.length);
+      if (typed === KEEKI) {
         typed = "";
         toggleTheme();
       }
