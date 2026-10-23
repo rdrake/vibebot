@@ -3584,7 +3584,7 @@ class LLM(callbacks.Plugin):
         self._arm_agenda()
 
     def _unattended_ask_rate_limited(self, *, account: str | None, nick: str, now: float) -> bool:
-        """Silent daily-ask limit PEEK for fires that bypass command preflight.
+        """Silent ask rate-limit PEEK for fires that bypass command preflight.
 
         ``silent=True`` suppresses the user-facing error and the
         ``rate_limited`` usage row — callers deliver their own skip notice.
@@ -3873,7 +3873,7 @@ class LLM(callbacks.Plugin):
                     active_irc,
                     target,
                     nick,
-                    f"{message} (action skipped — daily ask limit reached)",
+                    f"{message} (action skipped — ask rate limit reached)",
                     reply_msgid=reply_msgid,
                 )
                 return
@@ -8882,8 +8882,10 @@ class LLM(callbacks.Plugin):
     ) -> None:
         """[<instruction> | clear]
 
-        Set persistent instructions that shape how @ask responds to you.
-        Your instruction is prepended to the system prompt for every @ask call.
+        Set a standing instruction that shapes how the bot answers you: @ask,
+        messages addressed to it, @rp and verse turns, and tasks it runs for
+        you from a reminder or schedule. It steers replies but cannot override
+        the bot's own rules. @draw ignores it.
 
         Examples:
           @instruct You are Captain Picard. Respond in character.

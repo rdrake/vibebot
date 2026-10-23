@@ -7217,7 +7217,7 @@ Examples (echo → action_prompt: ""):
                 irc,
                 self.plugin._safe_privmsg(
                     target,
-                    f"{row.creator_nick}: Scheduled task skipped — daily ask limit reached.",
+                    f"{row.creator_nick}: Scheduled task skipped — ask rate limit reached.",
                 ),
             )
             return

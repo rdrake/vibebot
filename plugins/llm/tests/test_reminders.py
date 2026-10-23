@@ -1633,8 +1633,7 @@ class TestReminderActionDelivery:
         plugin.llm_service.assistant_completion.assert_not_called()
         sent = active_irc.queueMsg.call_args[0][0]
         assert (
-            sent.args[1]
-            == "alice: Reminder: check build (action skipped — daily ask limit reached)"
+            sent.args[1] == "alice: Reminder: check build (action skipped — ask rate limit reached)"
         )
 
     def test_action_delivery_falls_back_on_exception(
