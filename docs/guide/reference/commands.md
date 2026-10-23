@@ -54,7 +54,9 @@ See [AI commands](../user/ai-commands.md) for full details.
 ### draw
 
 Generate an image from a text description. Requires an authenticated
-account.
+account: log in to your network account (SASL) first. Two images per
+five minutes, five a minute for trusted users. If the operator has no
+xAI key set, `@draw` refuses.
 
 ```
 @draw A sunset over mountains in watercolour style
@@ -103,11 +105,11 @@ See [memory and instructions](../user/memory.md) for full details.
 
 Reminders that ask the bot to *do* something (look up, check, fetch,
 summarise) run as an LLM query at fire time and appear as `[auto]` in
-`list`. Recurring action work, such as "every weekday at 9 a.m. check
-the build", becomes a scheduled task. Setting one in plain language
-needs `pendingTasksEnabled`; listing and cancelling is command-only,
-and `@remind list`, `del` and `clear` cover your tasks — marked
-`[task]` — alongside your reminders.
+`list`. `@remind every …` with an action recurs as an action reminder;
+asked for in plain language, recurring work becomes a scheduled task,
+which needs `pendingTasksEnabled`, which also lets you list and cancel by
+asking; `@remind list`, `del` and `clear` always work and cover your
+tasks — marked `[task]` — alongside your reminders.
 
 ```
 @remind in 30 minutes check the build
@@ -117,10 +119,11 @@ and `@remind list`, `del` and `clear` cover your tasks — marked
 @remind admin list someone        # owner only
 ```
 
-See [reminders](../user/reminders.md) for caveats:
-reminders count against the `@ask` rate limit, run with no elevated
-capabilities at fire time, and recurring reminder chains cap at 50
-fires (recurring scheduled tasks at 5).
+Limits: 25 pending reminders each, 10 seconds to 7 days out, 500
+characters of text; 5 active scheduled tasks per channel. A fire is
+skipped while you are over your `@ask` rate limit but never uses it up,
+and runs with no elevated capabilities. Recurring reminders cap at 50
+fires, recurring tasks at 5. See [reminders](../user/reminders.md).
 
 ## Accounting
 

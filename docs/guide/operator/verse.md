@@ -1,4 +1,4 @@
-# The verse
+# Running the verse
 
 The verse is a per-channel, persistent world model: a SQLite graph of avatars, places, factions, items, and events that grows out of roleplay in the channel. Opted-in users act through avatars; the bot narrates scenes, records events, and carries canon forward between sessions.
 
@@ -98,15 +98,7 @@ The message takes the normal chat path and never enters roleplay. On verse-enabl
 
 ## User commands
 
-| Command | Effect |
-|---------|--------|
-| `@verseopt in` / `@verseopt out` | Join the verse with a fresh avatar, or retire it. History is preserved; opting back in creates a new avatar |
-| `@rp <text>` | One in-character roleplay turn |
-| `@rp on` / `@rp off` | Enter or leave sticky roleplay mode |
-| `@verse` | Where your avatar is: the place name and its description. Needs an avatar; use `@who` for the roster |
-| `@look [target]` | Describe the current location, or a named entity |
-| `@who` | Roster of active avatars and their locations |
-| `@avatar [persona\|clear]` | Set the persona that shapes your avatar. Independent of `@instruct`; affects the verse and your storybook pages |
+Players join with `@verseopt in` and play with `@rp`, `@avatar`, `@verse`, `@look` and `@who`; [The verse](../user/verse.md) in the user guide is their page, and the [command reference](../reference/commands.md#verse-commands-user) has the syntax. Opting out retires the avatar but keeps its history, and opting back in creates a new one.
 
 `@avatar` stores the persona in the plugin's own database (the `user_avatar_personas` table in `LLM.db`), not in the Limnoria registry, so it never lands in `bot.conf`. One persona per user, shared by every verse channel. When the caller has an active avatar in the channel, the persona is mirrored onto that avatar's summary, so `@look` reflects the change immediately.
 
@@ -123,12 +115,26 @@ Each channel's verse lives in its own SQLite database under `data/verse/`. The s
 
 ### Canon, pinning, and aging
 
-Entities the model creates during play are tagged auto-created. The daily sweep retires auto-created NPCs that go unmentioned for 14 days. Retirement is a soft status flip and is reversible.
+An NPC the model invents during play lives and fades like this:
 
-Two marks exempt an entity from aging and pull it into every verse prompt:
+<div class="vb-tl" markdown>
 
-- **Pinned** (`@versedit pin`): part of the always-on canon roster.
-- **Author-locked** (`@canon lock`): durable canon claimed by an editor.
+1. <span class="vb-at">Named in play</span>
+   **Auto-created.** A `verse_record` call names someone canon doesn't know, and the store creates an NPC tagged auto-created.
+
+2. <span class="vb-at">Every mention</span>
+   **Kept fresh.** Each event that involves it restarts its 14-day clock.
+
+    - <span class="vb-at vb-at--ok">Pinned or locked · never ages</span>
+      `@versedit pin` puts it in the always-on canon roster; `@canon lock` marks it durable canon claimed by an editor. Either one exempts it from the sweep and pulls it into every verse prompt.
+
+3. <span class="vb-at vb-at--drop">14 days unmentioned · retired</span>
+   **Retired.** The daily 03:00 sweep flips its status to retired. Nothing is deleted.
+
+4. <span class="vb-at vb-at--ok">Named again · reactivated</span>
+   **Back.** A later `verse_record` naming it reactivates the same entity, with its id, attributes and history, rather than spawning a duplicate.
+
+</div>
 
 The canon roster block in the verse system prompt is capped at `verseRosterMaxChars` characters (default 4000). Pinning is what makes a character appear in every turn; unpinned entities surface contextually through events and relations that mention them.
 

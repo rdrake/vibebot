@@ -70,6 +70,7 @@ Keep those boundaries intact:
 - Registry options belong in `config.py`.
 - Shared mutable state must remain thread-safe because `Plugin.threaded = True`.
 - All blocking LLM calls must go through `LLMExecutor` (no direct `provider.*` call from the IRC main thread).
+- Use `%i`, never `%d`, in log format strings. Supybot installs its own logger class process-wide, and its formatter has no `%d`: the literal stays in the line and the remaining arguments shift into the wrong slots, with no error. `test_log_format_specifiers.py` fails on any `%d` in a logging call.
 
 ## Security invariants
 

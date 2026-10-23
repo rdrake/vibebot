@@ -2,7 +2,7 @@
 
 You don't need commands to ask the bot questions. Mention it by name in a channel or send a PM:
 
-```
+```irc
 <you>     VibeBot, what causes the northern lights?
 <VibeBot> The northern lights happen when charged particles from the sun
           collide with gases in Earth's atmosphere...
@@ -20,8 +20,6 @@ something about how the answer was produced, and both can show at once.
 | 🌐 | The answer used a live web lookup rather than the model's own knowledge |
 | 🔁 | A content filter refused the image, so the bot reworded the prompt and tried again. You got a picture, but the wording behind it moved, so it may read a little differently from what you asked for |
 
----
-
 ## `ask`
 
 Ask the AI a question. The bot remembers your recent conversation, so follow-up questions work naturally.
@@ -38,11 +36,11 @@ Ask the AI a question. The bot remembers your recent conversation, so follow-up 
 
 The bot keeps conversation context per user, per channel. Your next `@ask` in the same channel carries the history forward:
 
-```
-@ask What's the fastest land animal?
-  → The cheetah, reaching speeds of 113 km/h.
-@ask How does it compare to the fastest bird?
-  → The peregrine falcon dives at over 380 km/h...
+```irc
+<you>     @ask What's the fastest land animal?
+<VibeBot> The cheetah, reaching speeds of 113 km/h.
+<you>     @ask How does it compare to the fastest bird?
+<VibeBot> The peregrine falcon dives at over 380 km/h...
 ```
 
 Context expires after a few minutes of inactivity. Use `@forget` to clear it sooner.
@@ -62,8 +60,6 @@ More than one image URL in a question works too. The bot detects HTTP and HTTPS 
 
 Use `@instruct` to set persistent instructions that shape how `@ask` responds to you. See [Custom instructions](memory.md#custom-instructions).
 
----
-
 ## `draw`
 
 Generate an image from a text description.
@@ -81,9 +77,7 @@ The shape follows the request: a poster, a book cover or a standing figure comes
 
 Name a real person, place or event and the bot looks up what they actually look like before it draws, because the image model knows nobody by name — "Churchill" on its own is a word, not a face. It keeps the name you wrote and adds the appearance beside it, so you get the man rather than a generic figure. This costs a few seconds on every `@draw`. In a channel with the verse enabled, characters the channel invented are described from canon instead, and canon wins where the two overlap.
 
-Image generation applies content safety filters. If a filter blocks your prompt, the bot rewords it and tries again — once by default (`drawAutoRewriteMax`). The reworded version keeps your subject, what it is doing, the setting and the style you asked for, and changes only what the filter is likely to have objected to, so you should still recognise the picture you asked for. A reply carrying a reworded image is marked 🔁. If the reworded version is blocked too, the bot says so and tells you it already tried rewording, because rewording it again yourself is not the move — pick a different subject instead.
-
----
+Image generation applies content safety filters. If a filter blocks your prompt, the bot rewords it and tries again — once by default. The reworded version keeps your subject, what it is doing, the setting and the style you asked for, and changes only what the filter is likely to have objected to, so you should still recognise the picture you asked for. A reply carrying a reworded image is marked 🔁. If the reworded version is blocked too, the bot says so and tells you it already tried rewording, because rewording it again yourself is not the move — pick a different subject instead.
 
 ## `meme`
 
@@ -96,39 +90,43 @@ Caption a meme template. Name the template and write the captions, or just say w
 @meme distracted boyfriend | me | a new side project | my actual job
 @meme this is fine | | when the build is green on the third retry
 @meme waiting for claude to finish
+@meme spirit halloween costume of my dad
 @meme list cat
 ```
 
-When the first part names no template the bot knows, a model reads the whole request against the catalog (names, example captions, topics), picks a template and writes the captions — any captions you gave after a `|` are kept verbatim. Real people and places named in the request get the same look-up `@draw` does (their appearance goes into the picture edit), and on a verse channel the canon block too. The reply is the image followed by `template | caption | caption`, so you can see what it chose and redo it by hand. If nothing in the catalog fits it says so, with the closest names. This costs about a cent per pick; naming a template costs nothing.
+It can go three ways, and they cost different amounts:
 
-Separate the captions with `|`, in the order the template reads (top to bottom, left to right). An empty caption leaves that box blank; fewer captions than boxes is fine, more is an error that tells you how many the template takes. `@meme <template>` alone shows the template's caption count and an example, and `@meme list <word>` finds templates by name, keyword, topic, or example caption — there are over a thousand, drawn by the bot itself, with names like `drake`, `db` (Distracted Boyfriend), `fry`, `doge`, `buzz`, `fine`, `trade-offer`, and `absolute-cinema`.
+| You give it | What happens | Cost |
+|-------------|--------------|------|
+| A template name and the captions | The bot renders it itself. No model is called | Free |
+| Just what the meme is about | A model picks a template from the catalog and writes the captions. Any captions you gave are kept as written | About a cent |
+| Who or what should be *in* the picture | The bot also generates that picture, on top of the pick | About $0.02 per picture |
 
-Many templates are named by the quote, so the bot also matches on the words you share with a name: `willy wonka` finds Condescending Wonka, `elmo fire` finds Elmo. When two templates tie it lists both rather than guessing. Every template also carries topic tags — the characters people name it by and the situations it fits — so `monday` reaches the Will Smith slap and `harry potter` reaches Hagrid; a topic shared by several templates (`cat`, `star wars`) lists them instead. A topic nothing matches says so — paste an image URL instead. Your operator can add names the catalog lacks — Tyrone Biggums is filed under the quote, `yallgot`, and `tyrone` is aliased to it out of the box.
+Every pick and picture shows up in `@usage` as a `meme` row at what it cost; a named template books a $0 row.
 
-Any image works as a template: paste its URL in place of the name and give a top and a bottom caption.
+**Picking.** The picker reads names, example captions and topics, and real people and places in the request get the same look-up `@draw` does; on a verse channel, canon characters too. The reply is the image followed by `template | caption | caption`, so you can see what it chose and redo it by hand. If nothing fits it says so, with the closest names.
 
-Flags go before the template. `--font <name>` changes the typeface (`thick`, the default; `thin`; `comic`). `--top` ignores the template's boxes and puts the captions in a white band above the picture, one row each.
+**Captions.** Separate them with `|`, in the order the template reads (top to bottom, left to right). An empty caption leaves that box blank; fewer captions than boxes is fine, more is an error that tells you how many the template takes.
 
-```
-@meme --font comic --top rollsafe | can't fail tests if you don't run them
-```
+**Finding a template.** `@meme <template>` alone shows its caption count and an example. `@meme list <word>` searches over a thousand templates by name, keyword, topic or example caption: `drake`, `db` (Distracted Boyfriend), `fry`, `doge`, `buzz`, `fine`, `trade-offer`, `absolute-cinema`. Words you share with a name match too, so `willy wonka` finds Condescending Wonka, and topics reach templates by situation: `monday` finds the Will Smith slap. When several match, the bot lists them rather than guessing. Your operator can add names the catalog lacks.
 
-Say who or what should be in the picture and the bot draws it too. Templates with a blank picture area — `spirit` (the Spirit Halloween costume), `same` (Pam's two sheets), `who-would-win`, `milk-carton`, `wanted-poster`, `blank-t-shirt`, `youtube-video-template`, `blank-starter-pack`, `i-m-in-danger-blank`, `blank-wild-pokemon` — get a freshly generated picture per area, cut to the blank's exact outline (and warped onto Pam's tilted sheets) before the captions go on; for two areas the picker writes two pictures, so `who would win, a goose or a sysadmin` gets one of each. On any other template the captioned meme goes through an image-edit model that changes who is in the picture. About $0.02 per picture, booked in `@usage` beside the meme; a refused picture leaves its area blank and the reply says so. No flags to type: the `|` form with a template you name is the only path that never calls a model.
-
-```
-@meme spirit halloween costume of my dad
-@meme distracted boyfriend where the boyfriend is a sysadmin and the girl in red is a glowing kubernetes logo
-```
+**Any image.** Paste an image URL in place of the name and give a top and a bottom caption:
 
 ```
 @meme https://i.imgflip.com/1c1uej.jpg | y'all got any more of them | templates?
 ```
 
-`@meme` needs an authenticated account. Rendering a template you name costs nothing, so the rate limit is looser than `@draw`'s; it still shows in `@usage` as a $0 `meme` row. A pick or a generated picture books its own `meme` row at what it cost.
+**Generated pictures.** Templates with a blank area, such as `spirit` (the Spirit Halloween costume), `same` (Pam's two sheets), `who-would-win`, `milk-carton` or `wanted-poster`, get a fresh picture cut to each blank, so `who would win, a goose or a sysadmin` gets one of each. On any other template an image-edit model changes who is in the picture. A refused picture leaves its area blank and the reply says so.
 
-The same thing works in conversation: "vibebot make a drake meme: left on unread / left on read" calls the `make_meme` tool with the name and captions you gave, and "vibebot make a meme about waiting for CI" hands the request to the same picker. If a name matches nothing and the picker declines, the bot lists the closest templates and asks which one you meant.
+**Flags** go before the template. `--font <name>` changes the typeface (`thick`, the default; `thin`; `comic`). `--top` puts the captions in a white band above the picture, one row each.
 
----
+```
+@meme --font comic --top rollsafe | can't fail tests if you don't run them
+```
+
+`@meme` needs an authenticated account. Its rate limit is looser than `@draw`'s.
+
+The same works in conversation: "vibebot make a drake meme: left on unread / left on read" uses the name and captions you gave, and "vibebot make a meme about waiting for CI" goes to the picker. If a name matches nothing and the picker declines, the bot lists the closest templates and asks which one you meant.
 
 ## `story`
 
@@ -144,9 +142,7 @@ Generate an illustrated page from a short brief and post a link when it's ready.
 @story explain how photosynthesis works, with diagrams
 ```
 
-The page renders in the background; the bot posts the link when it finishes. `@story` needs an authenticated account, uses the same permission as `@draw`, and allows one page per account every five minutes by default (`verseStorybookCooldownSeconds`).
-
----
+The page renders in the background; the bot posts the link when it finishes. `@story` needs an authenticated account, uses the same permission as `@draw`, and allows one page per account every five minutes. That limit covers everyone, admins and owners included, and it is shared with illustrated pages in [the verse](verse.md).
 
 ## `forget`
 
@@ -159,23 +155,26 @@ Clear your conversation context for the current channel, or a named one:
 
 Run in a channel, `@forget` also clears that channel's shared recent history, so stale bot answers stop feeding everyone's follow-ups. Naming a different channel clears only your own thread there — you cannot wipe another channel's shared history from outside it.
 
----
-
 ## `usage`
 
-View API usage statistics for yourself, another user, or a channel.
+See what the bot has spent on API calls this month, for you, another user, or a channel. Anyone can look up anyone.
 
 **Usage:** `@usage [nick | #channel]`
 
+```irc
+<you>     @usage
+<VibeBot> #lounge this month: $0.4210 (183 requests, rank 2/9 channels) |
+          You: $0.0312 (14 requests, rank 5/31 users) | Context: 6/20 msgs,
+          expires in 4m
+<you>     @usage carol
+<VibeBot> carol in #lounge this month: $0.1180 (40 requests, rank 1/31 users)
+<you>     @usage #linux
+<VibeBot> #linux this month: $1.0920 (512 requests, rank 1/9 channels)
 ```
-@usage              → your stats plus the channel's, this month
-@usage someone      → another user's stats, scoped to this channel (account-wide by PM)
-@usage #somechannel → a channel's stats
-```
+
+In a channel, a nick shows that user's spending in that channel; by private message it covers every channel. A bare `@usage` by private message is the bot-wide overview, and only admins can run it. The month is a calendar month: the figures start over at midnight UTC on the 1st.
 
 The bot carries no usage tool and no usage figures in its prompt, so asking in conversation can get you a made-up number.
-
----
 
 ## `model`
 
@@ -183,14 +182,15 @@ Show which model answered the bot's last reply in a channel, and which chat mode
 
 **Usage:** `@model [<channel>]`
 
+```irc
+<you>     @model
+<VibeBot> Last reply in #linux: anthropic/claude-haiku-5-5, 2m ago. Set to:
+          anthropic/claude-haiku-5-5.
 ```
-@model          → Last reply in #linux: anthropic/claude-haiku-5-5, 2m ago. Set to: anthropic/claude-haiku-5-5.
-@model #tv      → another channel
-```
+
+`@model #tv` asks about another channel.
 
 The two can differ: a runtime `@config` change is lost when the bot restarts, and the reply after that runs on whatever `bot.conf` holds. The bot forgets the last reply on restart too, and says so.
-
----
 
 ## `channels`
 
@@ -206,8 +206,6 @@ List the busiest public channels on the network, with user counts and topics.
 
 You can also just ask: "vibebot, is `#help` active?" or "vibebot, who is eck?" The bot looks it up (`LIST`, `NAMES`, or `WHOIS`) rather than guessing.
 
----
-
 ## `names`
 
 List who is in a channel at this moment — including channels the bot is not in.
@@ -221,30 +219,10 @@ List who is in a channel at this moment — including channels the bot is not in
 
 Secret and private channels come back empty, exactly as they would for `/names`.
 
----
-
 ## Rate limits
 
-Each command family carries its own rate limit. Your tier is unregistered or registered depending on whether you are authenticated, or trusted if your operator has granted you the `trusted` capability. Media commands have the tightest limits: `@draw` and `@story` for images. If you reach a limit, the bot tells you; wait and retry. Admins and owners are exempt.
-
----
+Each command family carries its own rate limit. Your tier is unregistered or registered depending on whether you are authenticated, or trusted if your operator has granted you the `trusted` capability. Media commands have the tightest limits: `@draw` and `@story` for images. If you reach a limit, the bot tells you; wait and retry. Admins and owners are exempt from these limits, but not from `@story`'s one page every five minutes. The numbers are in [Getting started](getting-started.md#rate-limits).
 
 ## The verse
 
-In channels with the verse enabled, you can join a persistent shared fiction as an avatar:
-
-| Command | Description |
-|---------|-------------|
-| `@verseopt in` / `@verseopt out` | Opt your avatar in or out of the channel's verse |
-| `@rp <text>` | Speak or act as your avatar for one turn |
-| `@rp on` / `@rp off` | Stay in character without prefixing every line |
-| `@avatar <persona>` | Set the persona that shapes your avatar's voice |
-| `@verse` | Show where your avatar currently is |
-| `@look [<target>]` | Show your scene, same as `@verse`, or describe any named person, place, faction, or item in the world |
-| `@who` | List active avatars and their locations |
-
-Once opted in, address the bot and mention someone or something in the world, or the channel's trigger word, and you get a tale: six or more paragraphs in your avatar's voice. The channel sees a one-line teaser and a link, because anything longer than a few IRC lines is saved to the bot's web server rather than flooded into the channel. Where the operator has enabled `verseStorybookEnabled`, ask it to "illustrate" and you get an illustrated page instead; ask it to "draw" and you get a single image.
-
-The bot stays in character for that turn only. `@rp` gives you a deliberate in-character turn without needing a mention, and `@rp on` holds character across a run of them. Without an avatar, a mention just keeps an ordinary answer true to the world.
-
-Start a message with `//` or wrap it in `((...))` to speak out of character. Questions with nothing to do with the world get a straight answer, not a tall tale.
+Channels with the verse enabled host a shared story world where you play an avatar. Joining, `@rp`, tales and the rest are on [The verse](verse.md).

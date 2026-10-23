@@ -48,25 +48,33 @@ theme:
 extra_css:
   - stylesheets/extra.css
 
+hooks:
+  - docs/hooks/irc.py
+
 plugins:
   - search
   - llmstxt:
       markdown_description: >-
         VibeBot is a Limnoria IRC bot whose LLM plugin answers chat, draws,
         searches, schedules reminders and runs a shared-fiction
-        "verse". These pages cover running and configuring it.
+        "verse". The user guide and command reference answer channel
+        users' "how do I" questions; the operator guide covers running
+        and configuring the bot.
       full_output: llms-full.txt
       sections:
+        User guide:
+          - user/getting-started.md
+          - user/*.md
+        Reference:
+          - reference/commands.md
+          - reference/*.md
         Operator guide:
           - operator/limnoria.md
           - operator/installation.md
           - operator/operations.md
           - operator/configuration.md
+          - operator/troubleshooting.md
           - operator/*.md
-        Reference:
-          - reference/*.md
-        User guide:
-          - user/*.md
 
 markdown_extensions:
   - admonition
@@ -93,15 +101,17 @@ nav:
     - Scheduled tasks: user/scheduled-tasks.md
     - Service status: user/service-status.md
     - Aurora: user/aurora.md
+    - The verse: user/verse.md
   - Operator guide:
     - Installation and deployment: operator/installation.md
     - Operations and auto-updates: operator/operations.md
     - Configuration: operator/configuration.md
     - Limnoria crash course: operator/limnoria.md
-    - The verse: operator/verse.md
+    - Running the verse: operator/verse.md
     - Memory promotion: operator/memory-promotion.md
     - Rate limiting and security: operator/rate-limiting-security.md
     - Tuning and monitoring: operator/tuning-monitoring.md
+    - Troubleshooting: operator/troubleshooting.md
     - Branch protection: operator/branch-protection.md
   - Reference:
     - Command reference: reference/commands.md

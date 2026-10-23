@@ -89,4 +89,4 @@ Your avatar has its own voice in the verse, separate from `@instruct`:
 @avatar clear     # remove it
 ```
 
-The persona shapes how the verse portrays your avatar, and it colours `@story` pages in any channel, verse-enabled or not. It never affects `@ask`. See [The verse](ai-commands.md#the-verse) for the other verse commands.
+The persona shapes how the verse portrays your avatar, and it colours `@story` pages in any channel, verse-enabled or not. It never affects `@ask`. See [The verse](verse.md) for the other verse commands.

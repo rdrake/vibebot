@@ -10,53 +10,44 @@ Single-stage extraction promotes every extracted fact directly to memory. That m
 
 ## How it works
 
-### Promotion
+One fact's life, from the first time a user says it:
 
-The extractor inserts new facts as candidates at one mention. A second mention reinforces the row and promotes the candidate to a durable memory.
+<div class="vb-tl" markdown>
 
-### Candidate expiry
+1. <span class="vb-at">Day 0 · first mention</span>
+   **Candidate.** After a delivered reply, the extractor pulls facts out of the exchange and inserts each new one into `memory_candidates` with `mentions = 1` and `first_seen` and `last_seen` set to now.
 
-An unreinforced candidate survives 14 days. Every extraction pass for a user deletes that user's candidates whose `last_seen` is older than that, so someone who goes quiet keeps their candidates until they speak again. Nothing else prunes the candidate table.
+2. <span class="vb-at">Any later pass · mentioned again</span>
+   **Reinforced.** The extractor matches the fact to the existing row, bumps `mentions` and moves `last_seen` forward. The candidate's text is never rewritten: a fact that comes back in different words still counts, under the wording first recorded.
 
-### Per-user ceiling
+    - <span class="vb-at vb-at--ok">mentions reach 2 · promoted</span>
+      The candidate becomes a durable memory, the one users see in `@memories`.
+    - <span class="vb-at vb-at--drop">14 days without a mention · expired</span>
+      Every extraction pass for a user deletes that user's candidates whose `last_seen` is older than 14 days. Nothing else prunes the table, so a user who goes quiet keeps their candidates until they speak again.
 
-Durable memories are capped at 50 per user. The cap is a hard stop, not a rolling window: once a user reaches it, promotion is skipped and the memories already stored stay put. Nothing is evicted to make room.
+3. <span class="vb-at">Every 3rd promoting pass · cleanup</span>
+   **Tidied.** Each pass that promotes at least one candidate bumps a per-user counter; the third resets it and asks the model to drop redundant memories and merge overlapping ones. Cleanup needs at least two memories, and it neither expires candidates nor trims a user to the cap. `@memories cleanup` runs one on demand.
 
-The cap applies only to the durable side. Candidates do not count against it.
+4. <span class="vb-at vb-at--drop">50 durable memories · ceiling</span>
+   **Extraction stops.** The cap is a hard stop, not a rolling window: nothing is evicted to make room, and the user is no longer extracted at all — no model call, no new candidates, no reinforcement, no candidate expiry, and no cleanup, because cleanup only follows a promotion. Candidates do not count against the cap.
 
-### Cleanup cadence
-
-Cleanup counts promotions, not extractions. Every pass that promotes at least one candidate to a durable memory bumps a per-user counter; every third such pass resets it and runs a cleanup pass. Cleanup asks the model to drop redundant memories and merge overlapping ones — it needs at least two memories to do anything, and it neither expires candidates nor trims a user down to the cap. `@memories cleanup` runs one on demand.
-
-## What users see
-
-Users interact only with durable memories. The candidate stage is invisible to them.
-
-- `@memories` lists their durable memories.
-- `@memories del <id>` deletes one.
-- `@memories edit <id> <text>` rewrites one.
-- `@memories clear` deletes every durable memory for the calling user.
-- `@memories cleanup` triggers a one-shot cleanup pass.
-
-Candidates have no user-facing surface. Operators with database access can inspect the `memory_candidates` table directly if a fact looks stuck.
+</div>
 
 ## What writes a memory
 
-The bot writes memories after these events:
+Two paths write memories, and only the first goes through the candidate stage:
 
-- Successful, delivered `@ask` responses from an authenticated user, on that user. Unauthenticated callers never extract. Nick-addressed chat and verse turns share the `@ask` path and count as `@ask`; `@draw` and `@story` never extract.
-- Explicit `save_memory` tool calls, when a user asks the bot to remember something.
+- **Automatic extraction** after a successful, delivered `@ask` reply to an authenticated user, on that user. Nick-addressed chat and verse turns share the `@ask` path and count; `@draw` and `@story` never extract, and unauthenticated callers never do.
+- **`save_memory`**, the tool the model calls when a user says "remember this". It writes straight to the durable table so an explicit preference sticks at once, and it does not check the cap, so it can carry a user past 50.
 
-The candidate path applies only to automatic extraction. Anything the assistant chooses to remember through its own tool skips the candidate stage, so the model can record explicit user preferences in one shot. `save_memory` writes straight to the durable table and does not check the per-user cap, so an explicit "remember this" can carry a user past the ceiling.
+## What users see
 
-## Interaction with other settings
+Only durable memories, through `@memories` (see [Memory and instructions](../user/memory.md#saved-memories)). Candidates have no user-facing surface; operators with database access can read the `memory_candidates` table if a fact looks stuck.
 
-| Setting | Interaction |
-|---------|-------------|
-| `memoryModel` | Memory extraction calls this model, or `assistantModel` when empty, so that model's provider needs its environment variable set (see [Configuration](configuration.md#api-keys)). Without it, extraction fails on every pass (logged as `extract_memories failed: no API key for <provider> (set <VAR>)`), users see nothing, and no candidates accumulate |
+## When it goes quiet
 
-## Operational notes
+!!! warning "No key, no memories"
 
-- Candidate rows carry `first_seen` and `last_seen` timestamps. A user who repeats a fact keeps moving `last_seen` forward, so the TTL fires only on truly stale candidates.
-- Reinforcement bumps `mentions` and `last_seen` only; the candidate text is never rewritten. A fact that reappears in different wording still promotes, but it promotes under the wording first recorded.
-- A user at the cap stops being extracted altogether — no model call, no new candidates, no reinforcement, no candidate expiry, and no cleanup pass, because cleanup only fires after a promotion. Recovery is `@memories del <id>` or `@memories cleanup`. Facts skipped while the user sat at the cap are not recovered; those have to be said again, and any candidate that aged past 14 days meanwhile is dropped on the next pass.
+    Extraction runs on `memoryModel`, or `assistantModel` when that is empty, so that model's provider needs its key (see [Configuration → API keys](configuration.md#api-keys)). Without it every pass fails, logged as `extract_memories failed: no API key for <provider> (set <VAR>)`; users see nothing and no candidates accumulate.
+
+A user at the cap recovers once `@memories del <id>`, or a `@memories cleanup` that merges some away, brings them under 50; extraction resumes on their next reply. Facts skipped meanwhile are not recovered and have to be said again, and any candidate that aged past 14 days is dropped on that first pass.

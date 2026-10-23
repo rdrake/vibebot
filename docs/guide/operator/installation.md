@@ -31,7 +31,7 @@ docker run --rm --name vibebot \
     ghcr.io/rdrake/vibebot:latest
 ```
 
-The `/config` volume holds your `bot.conf` and its `conf/`, `data/`, and `logs/` directories. The `/var/www/llm` mount is optional: add it only when you point `httpRoot` there for an external web server to serve. `httpRoot` is empty by default, which keeps the `@draw` and `@story` output inside `/config` under `data/web/llm/` — see [Configuration → Web and HTTP output](configuration.md#web-and-http-output).
+The `/config` volume holds your `bot.conf` and its `conf/`, `data/`, and `logs/` directories. In a hand-typed `docker run` the `/var/www/llm` mount is optional: add it only when you point `httpRoot` there for an external web server to serve. The shipped systemd unit always mounts it (see below). `httpRoot` is empty by default, which keeps the `@draw` and `@story` output inside `/config` under `data/web/llm/` — see [Configuration → Web and HTTP output](configuration.md#web-and-http-output).
 
 `--env-file` is not optional. Provider API keys are read from the environment at call time and have no `bot.conf` equivalent, so without it the bot connects to IRC and every LLM command answers `no API key configured for provider`. Start from `.env.example` in the repository — it lists the two provider keys (`ANTHROPIC_API_KEY` and `XAI_API_KEY`) and the format rules Docker's `--env-file` parser enforces. See [Configuration → API keys](configuration.md#api-keys).
 
@@ -52,18 +52,49 @@ This copies the unit file, creates `~/.config/vibebot/` and seeds its `env` file
 | `~/.config/systemd/user/vibebot.service` | systemd unit |
 | `~/.config/vibebot/` | `bot.conf`, the `env` file, and the bot's `conf/`, `data/`, `logs/` and `backup/` directories |
 
-The unit runs the Docker image with `~/.config/vibebot` mounted at `/config`, passes the same directory's `env` file to `docker run --env-file`, and pulls the latest image on every start.
+The unit runs the Docker image with `~/.config/vibebot` mounted at `/config`, passes the same directory's `env` file to `docker run --env-file`, and pulls the latest image on every start. It also always mounts `/var/www/llm`, even when `httpRoot` does not use it; if that directory does not exist on the host, Docker creates it, empty and owned by root. To drop the mount, override `ExecStart` in a drop-in or edit the copied unit.
+
 After installing, complete the setup:
 
-1. Copy your `bot.conf` to `~/.config/vibebot/bot.conf`.
-2. Edit `~/.config/vibebot/env`. `make install-service` seeds it from `.env.example`, so it arrives full of placeholders: enter the providers you use and delete the lines for the rest, since a leftover `your-xai-key-here` counts as a real key. Keep to the format rules noted in that file — `NAME=value`, no quotes, no trailing comments, no spaces around `=`, LF line endings. Docker's `--env-file` parser rejects a malformed line by exiting the container on start, and `Restart=always` turns that into a silent crashloop.
-3. Enable and start the service:
+<div class="vb-steps" markdown>
+
+1. **Copy your `bot.conf`** to `~/.config/vibebot/bot.conf`.
+
+2. **Fill in `~/.config/vibebot/env`.** `make install-service` seeds it from `.env.example`, so it arrives full of placeholders: enter the providers you use and delete the lines for the rest, since a leftover `your-xai-key-here` counts as a real key. Keep to the format rules noted in that file: `NAME=value`, no quotes, no trailing comments, no spaces around `=`, LF line endings. Docker's `--env-file` parser rejects a malformed line by exiting the container on start, and `Restart=always` turns that into a silent crashloop. The file holds secrets, so `chmod 600` it.
+
+3. **Enable and start the service**, and turn on lingering so it keeps running after you log out:
+
+    ```bash
+    systemctl --user enable vibebot
+    systemctl --user start vibebot
+    loginctl enable-linger $USER
+    ```
+
+4. **Install the update timer** once the bot runs; see [Auto-updates](#auto-updates).
+
+</div>
+
+### First start
+
+Read the log as the bot comes up, and check each of these:
 
 ```bash
-systemctl --user enable vibebot
-systemctl --user start vibebot
-loginctl enable-linger $USER   # keeps the service running after logout
+journalctl --user -u vibebot -f
 ```
+
+- The unit's `docker pull` finishes and Limnoria logs `Connecting to <server>:<port>.`
+- The LLM plugin logs one line naming the key variables it found, never their values:
+
+    ```
+    secret redaction: 4 handler(s) filtered, 2 variable(s) covered: ANTHROPIC_API_KEY, XAI_API_KEY
+    ```
+
+    It confirms the filter that scrubs key values out of every log line is installed. A key you set but that is missing from the list did not reach the container (or is shorter than 16 characters), and `none` means no key did. The list proves a variable is present, not that its key works: a leftover placeholder is listed too. The line is logged at `INFO` while the plugin loads, so it appears only when `supybot.log.level` and `supybot.log.stdout.level` are both `INFO` or lower, as they are by default, and not again on a `@reload`. Credentials also sit in the container's environment; see [Operations → Credentials in the environment](operations.md#credentials-in-the-environment).
+- `@list LLM` in a channel lists `ask`, `draw`, `story` and the rest.
+- `@ask hi` gets an answer. Chat runs on `anthropic/claude-haiku-5-5` by default, so this exercises `ANTHROPIC_API_KEY`.
+- `@draw a lighthouse` returns a link. Images run on xAI, so this exercises `XAI_API_KEY`. `@draw` needs a logged-in network account, and changing settings later needs the owner login described in [Who can change what](limnoria.md#who-can-change-what).
+
+If any of these fails, see [Troubleshooting](troubleshooting.md).
 
 ### Auto-updates
 
@@ -73,11 +104,9 @@ Install the update timer to pull new Docker images automatically (checks every 1
 make install-timer
 ```
 
-Or install both the service and the timer at once:
+!!! warning "The timer starts the bot"
 
-```bash
-make install-deploy
-```
+    `make install-timer` enables and starts the timer at once. On its next quarter-hour tick the updater finds no running `vibebot` container, treats that as an outdated image, and runs `systemctl --user restart vibebot`, which starts the bot even if you never enabled it. On a new host, install the timer only after `bot.conf` and `env` are filled in. `make install-deploy` installs the service and the timer together, so use it only on a host that already has both files.
 
 See [Operations](operations.md) for how the two update paths work together.
 
@@ -119,7 +148,7 @@ Useful development targets:
 
 ## Verifying the installation
 
-For systemd deployments, check the service status:
+For systemd deployments, check the service status and walk through [First start](#first-start):
 
 ```bash
 systemctl --user status vibebot
@@ -142,3 +171,5 @@ This lists the available commands (`ask`, `draw`, `story`, and so on). If the pl
 ```
 @load LLM
 ```
+
+Anything else that goes wrong is covered in [Troubleshooting](troubleshooting.md).

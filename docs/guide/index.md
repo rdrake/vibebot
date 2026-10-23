@@ -78,10 +78,10 @@ hide:
 <dl class="vb-help" markdown>
 
 <dt>VibeBot, hard link or symlink here?</dt>
-<dd markdown>Questions and follow-ups. It keeps the thread per person and channel, and reads images you link. [AI commands](user/ai-commands.md)</dd>
+<dd markdown>Questions and follow-ups. It keeps the thread per person and channel, and reads images you link. `@usage` shows what it has spent. [AI commands](user/ai-commands.md)</dd>
 
 <dt>@draw a lighthouse in a storm, woodcut</dt>
-<dd markdown>A picture from a description. `@story` builds a whole illustrated page. [Drawing](user/ai-commands.md#draw)</dd>
+<dd markdown>A picture from a description. `@meme` captions a template, and `@story` builds a whole illustrated page. [Drawing](user/ai-commands.md#draw)</dd>
 
 <dt>@remind tomorrow at 9am standup</dt>
 <dd markdown>One-off and recurring reminders in your own time zone, and scheduled tasks that run a query for you. [Reminders](user/reminders.md)</dd>
@@ -96,7 +96,10 @@ hide:
 <dd markdown>The status pages your operator watches, with a heads-up when an incident opens. [Service status](user/service-status.md)</dd>
 
 <dt>@rp pushes open the tavern door</dt>
-<dd markdown>A shared world per channel, with avatars and a cast that carries between sessions. [The verse](operator/verse.md)</dd>
+<dd markdown>A shared world per channel, with avatars and a cast that carries between sessions. [The verse](user/verse.md)</dd>
+
+<dt>@config channel #lounge plugins.LLM.verseEnabled True</dt>
+<dd markdown>Settings, changed from IRC by whoever holds the capability for it. [Configure a running bot](operator/limnoria.md)</dd>
 
 </dl>
 

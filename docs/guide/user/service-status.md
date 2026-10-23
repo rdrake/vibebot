@@ -3,21 +3,20 @@
 The bot watches one or more live status pages — Claude's, GitHub's, and
 OpenAI's by default — and can answer questions about any of them in
 conversation, announcing incidents on its own where a channel has opted in.
-Both Atlassian Statuspage pages and
-incident.io pages work; incident.io is read through its Atlassian-compatible
-endpoints, so it needs no separate setup. Which pages it watches
-(`statusPageUrls`, up to 5) and whether a channel gets
-announcements (`statusAnnounce`) are operator settings: see
-[Status pages](../operator/tuning-monitoring.md#status-pages). With no
-pages configured the bot has no status awareness at all and falls back to
+With no pages configured it has no status awareness at all and falls back to
 whatever the chat model already believes, which is usually months out of
 date.
+
+!!! note "For operators"
+    Which pages the bot watches (up to 5, Atlassian Statuspage or incident.io)
+    and which channels get announcements are your settings. See
+    [Status pages](../operator/configuration.md#status-pages).
 
 ## Asking
 
 Ask in plain language. There's no command.
 
-```
+```irc
 <you>     VibeBot, is Claude down?
 <VibeBot> Yeah, they're investigating elevated error rates on Opus 4.5.
           The API's showing degraded; everything else looks fine.
@@ -57,7 +56,7 @@ not just what's broken now. It comes back for every watched page at once,
 the same as a current-status question would, and the reply still focuses on
 whichever page was asked about:
 
-```
+```irc
 <you>     VibeBot, has Claude been flaky lately?
 <VibeBot> Three times this week: elevated API errors on Tuesday (about 40
           minutes), a Sonnet latency spike Thursday that ran two hours, and
@@ -78,13 +77,13 @@ status still answers.
 
 ## Announcements
 
-`statusAnnounce` is a per-channel, all-or-nothing switch: where an operator
-has enabled it, the channel hears incidents from every `statusPageUrls` page
+Announcements are a per-channel, all-or-nothing switch: where an operator
+has turned them on, the channel hears incidents from every watched page
 as they open, and again as they clear. There's no picking and choosing
 individual pages per channel. Asking, by contrast, always works regardless of this
 setting — a channel that never announces can still ask "is GitHub down?".
 
-```
+```irc
 <VibeBot> Claude status: Elevated error rates on the API (investigating) — https://status.claude.com/incidents/005ym4vzrq2w
 <VibeBot> Claude status: Elevated error rates on the API resolved after 1h 23m — https://status.claude.com/incidents/005ym4vzrq2w
 ```

@@ -19,6 +19,8 @@
   --vb-inline: #e3e6ef;
   --vb-notice: #e6eaf7;
   --vb-notice-code: #d5dbf0;
+  --vb-ok: #2c7322;
+  --vb-drop: #9a3d0b;
 
   --vb-bar: #233a8c;
   --vb-bar-deep: #1a2c6c;
@@ -70,6 +72,8 @@
   --vb-inline: #23252f;
   --vb-notice: #1b2242;
   --vb-notice-code: #27305a;
+  --vb-ok: #86de7a;
+  --vb-drop: #f0aa6a;
 
   --md-hue: 230;
   --md-default-bg-color: var(--vb-bg);
@@ -860,6 +864,323 @@ body {
   color: var(--vb-dim);
 }
 
+/* ---------- Reading components ----------
+   .vb-irc    transcript rendered from ```irc fences (docs/hooks/irc.py)
+   .vb-tl     timeline: a list whose items open with <span class="vb-at">
+   .vb-steps  numbered procedure on a rail
+   .vb-flow   pipeline of nodes, with a split into parallel lanes
+   .vb-vs     side-by-side comparison of two choices */
+
+.md-typeset .vb-irc {
+  margin: 1em 0;
+  padding: 0.65rem 0.9rem 0.7rem 0.4rem;
+  background: var(--vb-term);
+  color: var(--vb-term-fg);
+  border: 1px solid var(--vb-term-rule);
+  font-family: var(--md-code-font-family);
+  font-size: 0.68rem;
+  line-height: 1.6;
+}
+
+.md-typeset .vb-irc ol {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.md-typeset .vb-irc li {
+  display: grid;
+  grid-template-columns: 5.6rem minmax(0, 1fr);
+  margin: 0;
+}
+
+.md-typeset .vb-irc li.is-gap {
+  display: block;
+  height: 0.55rem;
+}
+
+.md-typeset .vb-irc b {
+  padding-right: 0.55rem;
+  margin-right: 0.55rem;
+  border-right: 1px solid var(--vb-term-rule);
+  text-align: right;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.md-typeset .vb-irc .is-act b,
+.md-typeset .vb-irc .is-evt b {
+  color: var(--vb-n-dave);
+}
+
+.md-typeset .vb-irc .is-evt span,
+.md-typeset .vb-irc .is-raw span {
+  color: var(--vb-n-bob);
+}
+
+.md-typeset .vb-irc em {
+  font-style: normal;
+}
+
+.md-typeset .vb-irc .k {
+  color: var(--vb-n-alice);
+}
+
+/* Timeline */
+
+.md-typeset .vb-tl > ol {
+  margin: 1.4em 0;
+  padding: 0 0 0 0.45rem;
+  list-style: none;
+}
+
+.md-typeset .vb-tl > ol > li {
+  position: relative;
+  margin: 0;
+  padding: 0 0 1.3rem 1.6rem;
+  border-left: 2px solid var(--vb-rule);
+}
+
+.md-typeset .vb-tl > ol > li:last-child {
+  padding-bottom: 0.2rem;
+  border-left-color: transparent;
+}
+
+.md-typeset .vb-tl > ol > li::before {
+  content: "";
+  position: absolute;
+  top: 0.3rem;
+  left: calc(-0.35rem - 1px);
+  width: 0.7rem;
+  height: 0.7rem;
+  background: var(--vb-bg);
+  border: 2px solid var(--vb-bar);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .vb-tl > ol > li::before {
+  border-color: var(--vb-link);
+}
+
+.md-typeset .vb-tl > ol > li:has(> p:first-child > .vb-at--ok)::before {
+  background: var(--vb-ok);
+  border-color: var(--vb-ok);
+}
+
+.md-typeset .vb-tl > ol > li:has(> p:first-child > .vb-at--drop)::before {
+  border-color: var(--vb-drop);
+  border-style: dashed;
+}
+
+.md-typeset .vb-tl > ol > li > p:first-child {
+  margin-top: 0;
+}
+
+.md-typeset .vb-tl > ol > li > :last-child {
+  margin-bottom: 0;
+}
+
+.md-typeset .vb-at {
+  display: block;
+  margin-bottom: 0.1rem;
+  font-family: var(--md-code-font-family);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--vb-faint);
+}
+
+.md-typeset .vb-at--ok { color: var(--vb-ok); }
+.md-typeset .vb-at--drop { color: var(--vb-drop); }
+
+/* Branches hang off a timeline item as an indented, dashed sub-list. */
+
+.md-typeset .vb-tl > ol > li > ul {
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.md-typeset .vb-tl > ol > li > ul > li {
+  margin: 0.35rem 0 0;
+  padding: 0.45rem 0.7rem;
+  border-left: 3px solid var(--vb-rule);
+  background: var(--vb-panel);
+}
+
+.md-typeset .vb-tl > ol > li > ul > li:has(> .vb-at--ok, > p > .vb-at--ok) { border-left-color: var(--vb-ok); }
+.md-typeset .vb-tl > ol > li > ul > li:has(> .vb-at--drop, > p > .vb-at--drop) { border-left-color: var(--vb-drop); }
+
+/* Steps */
+
+.md-typeset .vb-steps > ol {
+  margin: 1.2em 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: vb-step;
+}
+
+.md-typeset .vb-steps > ol > li {
+  position: relative;
+  margin: 0;
+  padding: 0 0 1.2rem 2.4rem;
+  counter-increment: vb-step;
+}
+
+.md-typeset .vb-steps > ol > li::before {
+  content: counter(vb-step);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  display: grid;
+  place-items: center;
+  background: var(--vb-bar);
+  color: #ffffff;
+  font-family: var(--md-code-font-family);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.md-typeset .vb-steps > ol > li::after {
+  content: "";
+  position: absolute;
+  top: 1.6rem;
+  bottom: 0.15rem;
+  left: calc(0.75rem - 1px);
+  border-left: 2px solid var(--vb-rule);
+}
+
+.md-typeset .vb-steps > ol > li:last-child {
+  padding-bottom: 0;
+}
+
+.md-typeset .vb-steps > ol > li:last-child::after {
+  display: none;
+}
+
+.md-typeset .vb-steps > ol > li > p:first-child {
+  margin-top: 0.1rem;
+}
+
+.md-typeset .vb-steps > ol > li > :last-child {
+  margin-bottom: 0;
+}
+
+/* Flow */
+
+.md-typeset .vb-flow {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  margin: 1.4em 0;
+  font-family: var(--md-code-font-family);
+  font-size: 0.66rem;
+  line-height: 1.45;
+}
+
+.md-typeset .vb-flow__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+}
+
+.md-typeset .vb-flow__node {
+  padding: 0.4rem 0.65rem;
+  background: var(--vb-panel);
+  border: 1px solid var(--vb-rule);
+  color: var(--vb-fg);
+  text-align: center;
+}
+
+.md-typeset .vb-flow__node small {
+  display: block;
+  color: var(--vb-dim);
+  font-size: 0.58rem;
+}
+
+.md-typeset .vb-flow__node--end {
+  background: var(--vb-bar);
+  border-color: var(--vb-bar);
+  color: #ffffff;
+}
+
+.md-typeset .vb-flow__node--end small {
+  color: var(--vb-bar-dim);
+}
+
+.md-typeset .vb-flow__arrow {
+  color: var(--vb-faint);
+}
+
+.md-typeset .vb-flow__down {
+  text-align: center;
+  color: var(--vb-faint);
+  line-height: 1.6;
+}
+
+.md-typeset .vb-flow__lanes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.md-typeset .vb-flow__lane {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.6rem;
+  border: 1px dashed var(--vb-rule);
+}
+
+.md-typeset .vb-flow__label {
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--vb-faint);
+}
+
+/* Compare */
+
+.md-typeset .vb-vs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+  margin: 1.2em 0;
+}
+
+.md-typeset .vb-vs > div {
+  padding: 0.8rem 1rem 0.3rem;
+  background: var(--vb-panel);
+  border: 1px solid var(--vb-rule);
+  border-top: 3px solid var(--vb-bar);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .vb-vs > div {
+  border-top-color: var(--vb-link);
+}
+
+.md-typeset .vb-vs > div > :first-child {
+  margin-top: 0;
+  font-family: var(--md-code-font-family);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.md-typeset .vb-vs ul {
+  margin-left: 0.9rem;
+}
+
 /* ---------- Narrow screens ---------- */
 
 @media screen and (max-width: 59.9375em) {
@@ -912,8 +1233,22 @@ body {
     grid-template-columns: 4.4rem minmax(0, 1fr);
   }
 
-  .md-typeset .vb-join {
+  .md-typeset .vb-join,
+  .md-typeset .vb-vs,
+  .md-typeset .vb-flow__lanes {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .md-typeset .vb-irc li {
+    grid-template-columns: 4.4rem minmax(0, 1fr);
+  }
+
+  .md-typeset .vb-flow__row {
+    flex-direction: column;
+  }
+
+  .md-typeset .vb-flow__arrow {
+    transform: rotate(90deg);
   }
 
   .md-typeset .vb-join a {

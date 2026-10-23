@@ -6,7 +6,7 @@ Chat with AI models, create images, and set reminders, all from IRC.
 
 Mention the bot by name in a channel, or send it a private message:
 
-```
+```irc
 <you>     VibeBot, what's the tallest mountain on each continent?
 <VibeBot> Everest (Asia), Aconcagua (South America), Denali (North America),
           Kilimanjaro (Africa), Elbrus (Europe), Vinson (Antarctica),
@@ -25,14 +25,14 @@ Long answers never flood the channel. A reply of up to three lines goes out inli
 
 In plain language the bot answers questions, draws images, writes code, looks things up on the web, and stores what you ask it to remember:
 
-```
+```irc
 <you>     VibeBot, remember that I prefer metric units
 <VibeBot> Noted, metric from here on.
 ```
 
 Reminders and scheduled tasks work this way only where your operator has turned on `supybot.plugins.LLM.pendingTasksEnabled`, which is off by default. The `@remind` command always works.
 
-```
+```irc
 <you>     VibeBot, remind me in 2 hours to check the build
 <VibeBot> Reminder set: check the build (in 2 hours).
 ```
@@ -41,14 +41,14 @@ Reminders and scheduled tasks work this way only where your operator has turned 
 
 Every command starts with `@`. Commands give you direct, predictable behaviour:
 
-```
+```irc
 <you>     @ask What's the tallest mountain on each continent?
 <VibeBot> Everest (Asia), Aconcagua (South America), ...
 ```
 
 The bot remembers your recent conversation, so follow-ups work naturally:
 
-```
+```irc
 <you>     @ask Which of those can a beginner climb?
 <VibeBot> Kilimanjaro is the most accessible...
 ```
@@ -68,17 +68,11 @@ Your bot operator controls access to each command through Limnoria's capability 
 
 ## Rate limits
 
-Each command family carries its own rate limit, and your allowance depends on your status: unregistered, registered, or trusted, the last being a capability your operator grants. `@ask` allows 15 requests a minute at every tier. The image commands are tighter: `@draw` needs an authenticated account and allows two per five minutes, or five a minute at the trusted tier. The bot replies with the length of the window when you hit a limit. Bot admins and owners are exempt. `@story` also needs an account and allows one page per account every five minutes at every tier, admins and owners included (`verseStorybookCooldownSeconds`). See [Default limits](../operator/rate-limiting-security.md#default-limits).
+Each command family carries its own rate limit, and your allowance depends on your status: unregistered, registered, or trusted, the last being a capability your operator grants. `@ask` allows 15 requests a minute at every tier. The image commands are tighter: `@draw` needs an authenticated account and allows two per five minutes, or five a minute at the trusted tier. `@meme` allows six a minute, or twelve at the trusted tier. The bot replies with the length of the window when you hit a limit. Bot admins and owners are exempt. `@story` also needs an account and allows one page per account every five minutes at every tier, admins and owners included. See [Default limits](../operator/rate-limiting-security.md#default-limits).
 
 ## The verse
 
-Channels with the verse enabled host a persistent, collaborative fiction: a shared world where you play as an avatar. Join with `@verseopt in`, give your avatar a voice with `@avatar <persona>`, and check your surroundings with `@verse`, `@look`, and `@who`.
-
-Mention anyone or anything in the world and the bot answers with a tale. Use `@rp <text>` to act as your avatar for one turn, or `@rp on` to stay in character until `@rp off` — or until you go quiet for 15 minutes.
-
-To speak out of character in a verse channel, start your message with `//` or wrap it in `((...))`.
-
-See [AI commands](ai-commands.md#the-verse) for the verse command list.
+Some channels host a shared story world where you play an avatar: join with `@verseopt in`, then act with `@rp`. [The verse](verse.md) covers how to play.
 
 ## Common commands
 
@@ -86,15 +80,16 @@ See [AI commands](ai-commands.md#the-verse) for the verse command list.
 |---------|-------------|---------|
 | `@ask` | Ask the AI a question (supports vision and follow-ups) | [AI commands](ai-commands.md#ask) |
 | `@draw` | Generate an image from a text description | [AI commands](ai-commands.md#draw) |
+| `@meme` | Caption a meme template, or let the bot pick one | [AI commands](ai-commands.md#meme) |
 | `@story` | Generate an illustrated story or explainer page | [AI commands](ai-commands.md#story) |
 | `@forget` | Clear your conversation context, plus the channel's shared recent history when run in that channel | [Memory](memory.md#conversation-context) |
 | `@memories` | Manage stored facts about you | [Memory](memory.md#saved-memories) |
 | `@instruct` | Set persistent instructions for `@ask` and mentions | [Memory](memory.md#custom-instructions) |
-| `@avatar` | Set your verse avatar's persona | [Memory](memory.md#avatar-persona) |
+| `@avatar` | Set your verse avatar's persona | [The verse](verse.md#joining-and-leaving) |
 | `@remind` | Set reminders with natural language | [Reminders](reminders.md#remind) |
-| `@usage` | View API usage statistics | [AI commands](ai-commands.md#usage) |
-| `@verseopt` | Opt your avatar in or out of the verse | [AI commands](ai-commands.md#the-verse) |
-| `@rp` | Speak or act as your verse avatar | [AI commands](ai-commands.md#the-verse) |
+| `@usage` | What you, another user or a channel spent this month | [AI commands](ai-commands.md#usage) |
+| `@verseopt` | Opt your avatar in or out of the verse | [The verse](verse.md) |
+| `@rp` | Speak or act as your verse avatar | [The verse](verse.md#playing) |
 
 That is the everyday set. Verse channels add `@verse`, `@look`, and `@who`; editors get `@canon` and `@versedit`, and GMs get `@versedump`, `@versepurge`, and `@versecompact`. The [command reference](../reference/commands.md) lists every command.
 

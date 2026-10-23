@@ -28,18 +28,37 @@ turns — everything that reaches `_ask_impl`, which builds the pair
 unconditionally. `@draw`, reminder fires, and scheduled tasks
 never carry them.
 
-The bridge exposes a command when **all** of these hold:
+A command reaches the model only if it clears every gate, in this order.
+The same checks run again at dispatch, so a command the model invents
+anyway is still refused.
 
-1. `bridgeEnabled` is `True` for the channel (default `False`).
-2. The owning plugin is in the operator allowlist
-   (`bridgeAllowedPlugins`), or in the curated
-   `DEFAULT_ALLOWED_PLUGINS` set when the allowlist is empty.
-3. The command is **not** in `DENY_COMMANDS`. Examples: `misc more`
-   (interactive pagination) and the `web` fetch-style commands, which
-   the bridge denies as server-side request forgery risks.
-4. The command is read-only: it is **not** in `MUTATING_COMMANDS`.
-5. The caller holds the Limnoria capability for the command, the same
-   check Limnoria runs for IRC dispatch.
+<div class="vb-steps" markdown>
+
+1. **The channel has the bridge on.** `bridgeEnabled` is `True` there
+   (default `False`).
+2. **Its plugin is allowed.** The plugin is in `bridgeAllowedPlugins`,
+   or in the curated `DEFAULT_ALLOWED_PLUGINS` set when that is empty,
+   and is not one of the hard-denied management plugins in
+   `DENY_PLUGINS`: `LLM` (recursion), `Owner`, `Admin`, `Config`,
+   `Channel` and `User`. No setting overrides that list.
+3. **The command is not denied outright.** `DENY_COMMANDS` blocks
+   commands even inside an allowed plugin: `Misc.more` and
+   `clearmores` (interactive scrollback), every URL-fetching `Web`
+   read (`fetch`, `location`, `headers`, `doctype`, `size`, `title`)
+   because each lends the bot's network position to a caller-supplied
+   URL, `Utilities.apply` and `let` and `Network.command` and `cmdall`
+   (re-dispatch that would bypass these gates), and `Network.connect`,
+   `disconnect`, `reconnect` and `authenticate`.
+4. **The command is read-only.** It is not in `MUTATING_COMMANDS`; see
+   [Mutating commands](#mutating-commands).
+5. **The caller may run it.** They hold the Limnoria capability for the
+   command, the same check Limnoria runs for IRC dispatch.
+
+</div>
+
+Plugins that nest commands under a sub-group (notably `RSS`'s
+`announce add` and friends) are not surfaced at all. Manage those with
+the native IRC commands.
 
 ## Default allowlist
 
@@ -52,9 +71,8 @@ in `MUTATING_COMMANDS`, which the bridge never exposes.
 
 `Network` is in the set for `whois`, `whowas`, `latency` and `uptime` —
 the "who is alice?" and "are you lagging?" questions. Its connection
-management (`connect`, `disconnect`, `reconnect`, `authenticate`) and
-its re-dispatch commands (`command`, `cmdall`) are in `DENY_COMMANDS`,
-so the model never sees them whatever the caller's capabilities.
+management and re-dispatch commands are denied (gate 3), so the model
+never sees them whatever the caller's capabilities.
 
 For the canonical, current list see `DEFAULT_ALLOWED_PLUGINS` in
 `plugins/llm/src/llm/limnoria_bridge.py`.
@@ -252,33 +270,27 @@ set is `verse_act`, `verse_move`, `verse_look`, `verse_recall`,
 `verseStorybookEnabled` is on). See
 [verse operations](../operator/verse.md).
 
-## Scheduled LLM tasks
-
-`schedule_llm_task` lets the assistant create recurring agentic work
-("every weekday at 09:00, summarise the news"). A creator can hold at
-most 5 active schedules in a channel. Each fire still counts
-against the user's normal `@ask` rate-limit bucket; the cap limits the
-number of pending schedules, not their cumulative cost. A recurring task
-stops after 5 fires and must be set again, so the "every weekday" example
-runs for one week. Recurring reminders cap at 50 fires. Owners can
-list and cancel any user's tasks with `@remind admin`.
-
 ## Operator config
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `bridgeEnabled` | `False` | Primary switch, per channel. `False` removes every bridge tool. |
 | `bridgeAllowedPlugins` | empty (curated default applies) | Space-separated plugin names. A non-empty value replaces the curated set entirely. Names use camel case to match `cb.name()`. |
-| `pendingTasksEnabled` | `False` | Per channel. Advertises the five pending-task tools on the chat surface, so the model can create, list and cancel reminders and schedules from plain language. `@remind` works either way. |
 | `bridgeDebugInChannel` | `False` | Per channel. Appends a one-line footer listing every bridge call made during the turn, as `Plugin.command (N chars) [ok]`, or `[err:<reason>]` when the call was refused. Argument text is never echoed, only its length: bridge arguments are model-generated and can carry secrets. Full arguments are logged only at `DEBUG`, below the plugin's fixed `WARNING` level. |
 
 To add a plugin outside the curated default, list every plugin you want
 exposed, because the registry value replaces the default rather than
-extending it. For example, to add `Factoids` and `Dict`:
+extending it. For example, to add `Factoids` and `Dict` in one channel
+(a channel op can do this; drop `channel #yourchan` to set it everywhere,
+which needs `owner`):
 
 ```
-@config plugins.LLM.bridgeAllowedPlugins Misc Time Math Utilities Seen Web Later Note Karma QuoteGrabs RSS DDG Network Factoids Dict
+@config channel #yourchan plugins.LLM.bridgeAllowedPlugins Misc Time Math Utilities Seen Web Later Note Karma QuoteGrabs RSS DDG Network Factoids Dict
+@flush
 ```
+
+Names must match Limnoria's exact form (`Misc`, not `misc`); a name that
+matches no loaded plugin is ignored silently.
 
 Once a plugin is in `bridgeAllowedPlugins` and loaded into Limnoria,
 every read-only command it exports becomes available to the model on

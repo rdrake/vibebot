@@ -14,7 +14,7 @@ View a current value by omitting the value. Channel-overridable settings also ac
 @config channel #channel plugins.LLM.<settingName> <value>
 ```
 
-**Scope** in the tables below means: *channel* settings accept per-channel overrides; *global* settings apply everywhere.
+**Scope** in the tables below means: *channel* settings accept per-channel overrides, which a channel op can set; *global* settings apply everywhere and need `owner`. New to `@config`? The [Limnoria crash course](limnoria.md) covers reading, setting, resetting and who may change what.
 
 !!! warning "A new default in a release does not change a running bot"
 
@@ -22,9 +22,13 @@ View a current value by omitting the value. Channel-overridable settings also ac
 
     So when an upgrade changes a **Default** in the tables below, the new value applies to fresh installs only. An existing deployment keeps whatever was persisted, silently and with no error — the feature simply behaves as it did before.
 
-    To adopt a new default, set it explicitly with `@config` (which writes through the registry), or stop the bot, edit `bot.conf`, and start it again. Editing `bot.conf` while the bot runs does not work: the next shutdown flush overwrites it.
+    To adopt a new default, set it explicitly with `@config` and then `@flush`, or stop the bot, edit `bot.conf`, and start it again. Editing `bot.conf` while the bot runs does not work: the next shutdown flush overwrites it.
 
     Verify by reading back the value with `@config plugins.LLM.<settingName>` — a green deploy and a quiet log do not prove the new value took effect.
+
+!!! tip "Every `@config` change needs an `@flush`"
+
+    `@config` changes the running registry only. Restarts on this deployment have come without a shutdown flush, and unflushed changes were lost. Run `@flush` (owner) after any change you want to keep. See [Making a change stick](limnoria.md#making-a-change-stick).
 
 ## API keys
 
@@ -158,7 +162,11 @@ See [Memory promotion](memory-promotion.md) for how the two-stage pipeline works
 | `contextTimeoutMinutes` | channel | `5` | Clear context after this much inactivity |
 | `privacyOptInOnly` | channel | `True` | Send only lines addressed to the bot to the provider. Set `False` to track every channel message as context and let `irc_lookup` read the channel's server history (`kind=history`, up to 100 lines) for "what did I miss". Those lines go to Anthropic or xAI, whichever serves the channel's models |
 
-Per-user history keeps the last 20 messages; the shared channel context keeps 10.
+Per-user history keeps the last 20 messages; the shared channel context keeps 10. The shared context is what lets the bot connect a question from one user with a follow-up from another.
+
+!!! warning "Privacy"
+
+    With `privacyOptInOnly` off, every message in the channel goes to a third-party LLM provider as context, and the bot can pull up to 100 lines of server history on request. Turn it off only where users know and consent.
 
 ## Rate limiting
 
@@ -210,22 +218,31 @@ Every failure falls back to local storage: endpoint unreachable, upload rejected
 | `bridgeEnabled` | channel | `False` | Expose loaded Limnoria plugin commands to the LLM as a tool |
 | `bridgeAllowedPlugins` | channel | empty | Plugin allowlist. Empty uses the curated read-safe default set |
 | `bridgeDebugInChannel` | channel | `False` | Append a bridge-call debug footer to replies |
-| `memeAliases` | global | `tyrone=yallgot biggums=yallgot chappelle=yallgot` | Extra template names, `name=id` or `name=https://image`. An id target adds the name as a keyword on that template; a URL target adds a two-caption template drawn on that image. Hyphens for spaces in the name |
 
-The bridge never exposes the state-changing commands listed in `MUTATING_COMMANDS`, which covers the curated default plugins. Allowlisting another plugin exposes its unlisted commands, subject only to Limnoria capabilities. A creator can hold at most 5 active scheduled LLM tasks per channel. The `irc_lookup` tool (live `LIST`, `NAMES`, `WHOIS`, `WHOWAS`, `WHO`, topic, network info, CTCP) is always on the chat tool surface; its `history` kind also needs `privacyOptInOnly` off. The models behind `@meme` are listed under [Model selection](#model-selection).
+The bridge only reaches plugins Limnoria has loaded, and only `Misc` loads on its own, so `@load` the rest first: see [Bridge tools → Loading the plugins](../reference/bridge-tools.md#loading-the-plugins). A non-empty `bridgeAllowedPlugins` replaces the curated set rather than extending it. The bridge never exposes the state-changing commands in `MUTATING_COMMANDS`; allowlisting a plugin outside the curated set exposes its other commands, subject only to Limnoria capabilities. [Bridge tools](../reference/bridge-tools.md) has the security model and every refusal.
 
-See [Tuning and monitoring](tuning-monitoring.md) for the bridge's security model and the scheduled-task tool.
+The `irc_lookup` tool (live `LIST`, `NAMES`, `WHOIS`, `WHOWAS`, `WHO`, topic, network info, CTCP) is on the chat tool surface whether the bridge is on or not; its `history` kind also needs `privacyOptInOnly` off.
 
 ## Status pages
 
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
 | `statusPageUrls` | global | `Claude=https://status.claude.com GitHub=https://www.githubstatus.com OpenAI=https://status.openai.com` | Space-separated status pages to poll and announce — both Atlassian Statuspage and incident.io pages work — each written as `Name=url` or as a bare url, which takes its host as its name. Names are 1-32 chars of `[A-Za-z0-9._-]`, case-insensitively unique, and are what the model uses to ask about one service. Unusable entries are dropped with a warning and the rest survive; at most 5 are polled |
-| `statusAnnounce` | channel | `False` | Announce incidents from every configured `statusPageUrls` page in this channel as they open and again as they resolve |
+| `statusAnnounce` | channel | `False` | Announce incidents from every configured `statusPageUrls` page in this channel as they open and again as they resolve — all or nothing per channel. Openings and resolutions share a budget of six LLM rewrites an hour; over budget the fixed template still goes out |
 
-`check_service_status` is on the model's tool surface whenever `statusPageUrls` holds at least one page. An empty `statusPageUrls` removes the tool and stops polling and announcing.
+`check_service_status` is on the model's tool surface whenever `statusPageUrls` holds at least one page. An empty `statusPageUrls` removes the tool and stops polling and announcing. Duplicate names, and the same page written two ways (trailing slash, case, default port), collapse to one.
 
-See [Tuning and monitoring](tuning-monitoring.md#status-pages) for the polling rotation, staleness, and the RSS cutover order.
+The bot polls `{url}/api/v2/summary.json` for each page every 2 minutes, in rotation inside one 45-second budget per pass, so a slow or failing page can't starve the others; with several pages configured, one may wait more than a cycle for its turn. A reading older than 10 minutes is reported to the model as stale. [Service status](../user/service-status.md) covers what users see.
+
+!!! warning "Turn off the RSS feed first"
+
+    If the channel already announces the same status page through the RSS plugin, remove that before turning `statusAnnounce` on, or every incident is reported twice:
+
+    ```
+    @rss announce remove #yourchan <feedname>
+    @config channel #yourchan plugins.LLM.statusAnnounce True
+    @flush
+    ```
 
 ## Aurora
 
@@ -249,7 +266,9 @@ The first check after a restart, and the first check after a channel turns annou
 |---------|-------|---------|-------------|
 | `pendingTasksEnabled` | channel | `False` | Advertise the five pending-task tools (create, list and cancel reminders and scheduled tasks) to the model, so natural-language scheduling works. Off by default: the schemas and their rules cost roughly 1,100 prompt tokens on every completion in the channel |
 
-The `@remind` command and the firing of reminders and tasks already created work regardless. This key only controls whether the model can handle reminders and scheduled tasks from plain language. Users reach both with `@remind list`, `del` and `clear` at any setting.
+The `@remind` command and the firing of reminders and tasks already created work regardless. This key only controls whether the model can handle reminders and scheduled tasks from plain language. Users reach both with `@remind list`, `del` and `clear` at any setting; owners reach anyone's with `@remind admin list|del|clear <nick>`. Limnoria's own `@scheduler list` does not show them, because they live in the plugin's database.
+
+Fixed limits: 25 pending reminders per user, 5 active scheduled tasks per creator per channel, 50 fires for a recurring reminder and 5 for a recurring task. A fire checks the creator's `ask` rate limit without using it up. A task whose creator has lost `llm.ask` is deleted at its next fire, with a one-line notice to its delivery target and nothing in the log at the plugin's `WARNING` level. The user side is in [Reminders](../user/reminders.md) and [Scheduled tasks](../user/scheduled-tasks.md).
 
 ## Timeouts and retries
 
@@ -272,5 +291,6 @@ When an `@ask` or `@draw` call times out, the bot keeps retrying in the backgrou
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
 | `commandPrefixes` | global | `. @` | Space-separated prefixes sanitised in output to prevent IRC command injection. The default covers both the conventional `.` and VibeBot's own `@` |
+| `memeAliases` | global | `tyrone=yallgot biggums=yallgot chappelle=yallgot` | Extra `@meme` template names, `name=id` or `name=https://image`. An id target adds the name as a keyword on that template; a URL target adds a two-caption template drawn on that image. Hyphens for spaces in the name. The models behind `@meme` are under [Model selection](#model-selection) |
 
 Fixed limits: an image prompt is at most 10,000 characters (chat text is not measured), an assistant turn makes at most 12 tool-call round trips, and at most 16 outbound LLM calls run at once across all surfaces. The SQLite database is `data/LLM.db` in Limnoria's data directory, and the plugin logs at `WARNING`. Limnoria's automatic `WHO` on join is skipped when the `account-tag` and `extended-join` capabilities are active.

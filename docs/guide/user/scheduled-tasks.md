@@ -9,18 +9,32 @@ There's no `@schedule` command. You create scheduled tasks conversationally: ask
 
 ## Task or reminder
 
-A [reminder](reminders.md) fits when:
+<div class="vb-vs" markdown>
+
+<div markdown>
+
+**[Reminder](reminders.md)**
 
 - You already know the exact text you want delivered later.
 - You want a poke or a deadline, not a synthesis.
+- Set with `@remind`; repeats up to 50 times.
 
-A scheduled task fits when:
+</div>
+<div markdown>
+
+**Scheduled task**
 
 - The bot needs to look something up at run time.
-- The output should reflect the world as of the run, not as of when you scheduled it.
-- You want the bot to do work, not echo a string.
+- The output should reflect the world as of the run.
+- Set by asking in conversation; repeats up to 5 times.
 
-Good candidates:
+</div>
+
+</div>
+
+An action reminder (`@remind in 2 hours check …`) sits between the two. [Four kinds](reminders.md#four-kinds) compares all of them: limits, caps, and what each can do when it fires.
+
+Good candidates for a task:
 
 - `every Monday at 9am check my open PRs and tell me which are stale`
 - `at 6pm summarize the day's #news traffic and post a one-paragraph digest`
@@ -30,16 +44,14 @@ Good candidates:
 
 Schedule a task the same way you'd ask the bot anything else. Mention it by name, or send a PM:
 
-```
-VibeBot, every weekday at 9am check the changelog of <repo> and tell me what shipped
-VibeBot, in 30 minutes check the weather and tell me whether to bring a jacket
+```irc
+<you>     VibeBot, every weekday at 9am check the changelog of <repo> and
+          tell me what shipped
+<VibeBot> I'll check the changelog every weekday at 9am and tell you what
+          shipped.
 ```
 
-The bot confirms in plain English, describing the schedule rather than the underlying tool call:
-
-```
-<VibeBot> I'll check the changelog every weekday at 9am and tell you what shipped.
-```
+The bot confirms in plain English, describing the schedule rather than the underlying tool call. A one-off works the same way: "VibeBot, in 30 minutes check the weather and tell me whether to bring a jacket".
 
 Scheduling needs an authenticated network account.
 
@@ -77,13 +89,13 @@ VibeBot, every Monday at 9am check my PRs and message me directly
 
 ## What a task can do at run time
 
-A fire runs on the reminder-action profile — the one a `@remind` action fire uses, not the chat profile you get from `@ask`. It sees all 20 of the built-in tools, including the bookkeeping ones chat hides, but not the chat-only extras (aurora, irc_lookup, reactions, make_meme, the Limnoria bridge). A fire happens with nobody present to type a command, so it keeps the bookkeeping tools too. Capabilities are fixed at `llm.ask` and `llm.draw`, so owner and admin powers are never inherited.
+A fire runs on the reminder-action profile — the one a `@remind` action fire uses, not the chat profile you get from `@ask`. It sees all 20 of the built-in tools, including the bookkeeping ones chat hides, but not the chat-only extras: [aurora](aurora.md), channel and nick lookups, reactions, memes, and the Limnoria bridge. A fire happens with nobody present to type a command, so it keeps the bookkeeping tools too. Capabilities are fixed at `llm.ask` and `llm.draw`, so owner and admin powers are never inherited.
 
 - **Search** the web.
 - **Fetch** URLs.
 - **Draw** with the image tool.
 - **Bookkeeping:** read and edit your memories, read your usage, and list or cancel your other pending tasks.
-- **Status:** check the status pages the bot watches (`statusPageUrls`), wherever any are set.
+- **Status:** check the [status pages](service-status.md) the bot watches, wherever any are set.
 
 The Limnoria bridge is not available at fire time — it rides `@ask`, mentions and PMs only. Neither is scheduling: a task can set a follow-up reminder, but it cannot schedule another task.
 

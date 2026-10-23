@@ -15,7 +15,15 @@ Users fall into one of four tiers, checked from most to least privileged:
 | Registered | Authenticated with the network | Uses the base settings |
 | Unregistered | Not identified | Uses the `Unreg` settings (`ask` only) |
 
-To grant the `trusted` capability, see the [Limnoria capabilities documentation](https://docs.limnoria.net/use/capabilities.html).
+Grant or revoke the `trusted` tier with Limnoria's capability commands (needs `admin`):
+
+```
+@admin capability add <account> trusted
+@admin capability remove <account> trusted
+@user capabilities <account>
+```
+
+With the shipped defaults, trusted only loosens the image and meme limits: `ask` is 15 a minute at every tier.
 
 ### Setting pattern
 
@@ -25,7 +33,13 @@ The rate-limited commands are `ask`, `draw`, `meme`, and `story`. Each has a set
 - `{cmd}TrustedRateLimitCount` and `{cmd}TrustedRateLimitWindow`: trusted users.
 - `askUnregRateLimitCount` and `askUnregRateLimitWindow`: unregistered users. Only `ask` has this pair; `draw`, `meme`, and `story` refuse callers without an authenticated account before the rate limiter runs, so only the registered and Trusted tiers apply to them.
 
-A count of `0` blocks nothing; it disables the limit for that command and tier. All rate-limit settings are global.
+A count of `0` blocks nothing; it disables the limit for that command and tier. All rate-limit settings are global, so changing one needs `owner`:
+
+```
+@config plugins.LLM.drawRateLimitCount 4
+@config plugins.LLM.drawRateLimitWindow 300
+@flush
+```
 
 Buckets are keyed by account name for identified users and by nick for everyone else, so an unidentified user can reset an `ask` bucket by changing nick. `draw`, `meme`, and `story` are unaffected: they refuse to run without an account at all.
 
@@ -37,6 +51,8 @@ Buckets are keyed by account name for identified users and by nick for everyone 
 | `draw` | 2 per 300 s | 5 per 60 s | refused |
 | `meme` | 6 per 60 s | 12 per 60 s | refused |
 | `story` | 2 per 300 s | 5 per 60 s | refused |
+
+On top of its bucket, `@story` has a per-account cooldown, `verseStorybookCooldownSeconds` (default 300 s, set per channel), that applies to every tier with no exemption for owners and admins. With the defaults that cooldown is the real limit: one page per account every five minutes.
 
 The `@draw`, `@meme`, and `@story` commands require an authenticated account. The chat `make_meme` tool, picture edits included, runs for any `llm.ask` caller under the `ask` bucket only.
 

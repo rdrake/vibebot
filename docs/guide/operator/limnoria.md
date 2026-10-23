@@ -142,7 +142,7 @@ Editing `bot.conf` by hand is for when the bot is down. Stop the bot and the upd
 | `privacyOptInOnly` | channel | `True` sends only lines addressed to the bot to the provider |
 | `contextTimeoutMinutes` | channel | Minutes of quiet before the bot forgets the conversation |
 | `verseEnabled` | channel | Turns the shared-fiction verse on |
-| `statusAnnounce` | channel | Announces service-status incidents in the channel |
+| `statusAnnounce` | channel | Announces service-status incidents in the channel. Remove any RSS feed for the same page first, or incidents post twice |
 | `auroraAnnounce` | channel | Announces aurora storm watches in the channel |
 
 Examples:
@@ -154,6 +154,8 @@ Examples:
 @config plugins.LLM.assistantModel anthropic/claude-haiku-5-5
 @flush
 ```
+
+After a model change, `@model #chat` shows the model the channel is set to and the one that answered its last reply.
 
 A user's own `@instruct` instruction is not a registry setting; users set and clear it themselves. See [Memory and instructions](../user/memory.md).
 
