@@ -4273,3 +4273,49 @@ class TestOverlayReadsViaProfiles:
         plugin.llm_service.assistant_completion.assert_called_once()
         sys_prompt = plugin.llm_service.assistant_completion.call_args.kwargs["system_prompt"]
         assert sys_prompt == "SENTINEL_OVERLAY_VALUE"
+
+
+class TestReminderActionFireDepth:
+    """A fired action reminder is a fired schedule: it may not schedule a task.
+
+    The guide (user/reminders.md) promises a depth cap of one for every fire;
+    ``schedule_llm_task`` enforces it by refusing a depth-tagged msg, so the
+    reminder fire must hand the turn a tagged msg.
+    """
+
+    def test_reminder_action_fire_runs_with_the_schedule_depth_tag(
+        self, mock_irc: MagicMock, mocker: MockerFixture
+    ) -> None:
+        from llm.service import AssistantResult, Spend
+
+        mocker.patch.object(LLM, "registryValue", side_effect=make_registry_side_effect())
+        plugin_init_patches(mocker)
+        plugin = LLM(mock_irc)
+        plugin.llm_service.sanitize_output.side_effect = lambda x: x
+
+        mock_world = mocker.patch("llm.plugin.world")
+        active_irc = mocker.MagicMock()
+        active_irc.nick = "testbot"
+        mock_world.ircs = [active_irc]
+
+        mocker.patch.object(plugin, "_check_rate_limit", return_value=False)
+        mocker.patch.object(plugin, "_gather_history", return_value=([], []))
+        mocker.patch.object(plugin, "_get_user_memories", return_value=[])
+        plugin.db.get_instruction.return_value = ""
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
+            content="done", spend=Spend.ZERO
+        )
+
+        row = make_reminder_row(
+            event_name="llm_remind_action_depth",
+            nick="alice",
+            channel="#ops",
+            message="m",
+            action_prompt="every day remind me to stretch",
+            account="alice",
+        )
+        plugin._fire_reminder(row, 1_800_000_000.0)
+
+        plugin.llm_service.assistant_completion.assert_called_once()
+        fired_msg = plugin.llm_service.assistant_completion.call_args.kwargs["msg"]
+        assert fired_msg.tagged("llm_schedule_depth")

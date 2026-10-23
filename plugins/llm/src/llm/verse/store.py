@@ -1197,7 +1197,7 @@ class VerseStore:
             # ----------------------------------------------------------
             scene_text = (
                 f"You step into {place_name}. {place_summary}"
-                " Use @look to inspect things or @ask … to act."
+                " Use @look to inspect things or @rp … to act."
             )
 
         return AvatarOptInResult(

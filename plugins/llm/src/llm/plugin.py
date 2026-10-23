@@ -3748,6 +3748,9 @@ class LLM(callbacks.Plugin):
             if account:
                 msg_kwargs["server_tags"] = {"account": account}
             synthetic_msg = ircmsgs.IrcMsg(**msg_kwargs)
+            # A fired reminder is a fired schedule: same depth cap as a task
+            # fire, so its turn cannot call schedule_llm_task.
+            synthetic_msg.tag("llm_schedule_depth", 1)
 
             # The user's @instruct rides as user-role data (see assistant_completion
             # user_instruction), not prepended to the system overlay.

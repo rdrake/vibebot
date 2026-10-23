@@ -372,8 +372,8 @@ ASSISTANT_TOOLS: list[dict[str, Any]] = [
             "name": "schedule_llm_task",
             "description": (
                 "Schedule a future LLM task. At fire time the bot runs an "
-                "@ask invocation as you, with full tool access (search, fetch, "
-                "draw, Limnoria bridge). Use this for tasks that need "
+                "@ask invocation as you, with search, fetch, draw, memory and "
+                "status tools (not the Limnoria bridge). Use this for tasks that need "
                 "TOOLS at fire time, e.g. 'every Monday at 9am check my open "
                 "PRs and tell me which are stale'. For plain text reminders "
                 "with no action, use set_reminder instead. Recurring is "
