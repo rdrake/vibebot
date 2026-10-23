@@ -11,8 +11,8 @@ ExecStart=/bin/bash -c '\
   docker pull -q ${IMAGE}; \
   REMOTE=$(docker inspect --format="{{.Id}}" ${IMAGE}); \
   if [ "$LOCAL" != "$REMOTE" ]; then \
-    echo "Update found: restarting vibebot..."; \
-    systemctl --user restart vibebot.service; \
+    echo "Update found: restarting vibebot if it is running..."; \
+    systemctl --user try-restart vibebot.service; \
   else \
     echo "No update available"; \
   fi'

@@ -276,4 +276,6 @@ uninstall-timer:
 
 install-deploy: install-service install-timer
 	@echo ""
-	@echo "Deployment complete. Bot will auto-update every 15 minutes."
+	@echo "Service and update timer installed. The bot is not started: fill in"
+	@echo "bot.conf and env (steps above), then start it. The timer only updates"
+	@echo "a running bot, so it never starts one on its own."

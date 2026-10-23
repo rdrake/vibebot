@@ -68,7 +68,7 @@ loginctl enable-linger $USER
 
 Limnoria writes its in-memory registry to `bot.conf` when it shuts down. Edit the file while the bot runs, then restart, and that shutdown write replaces your edit with the old values. Restarting after an edit is exactly what loses it.
 
-Either stop the bot before editing, following the order in [Editing bot.conf safely](operations.md#editing-botconf-safely): stop the timer, stop the bot, edit, start the bot, start the timer. Or change the value live from IRC with `@config` and follow it with `@flush`, which writes the registry to `bot.conf` at once. A `@config` change without `@flush` can be lost on a restart that skips the shutdown flush.
+Either stop the bot before editing, following the order in [Editing bot.conf safely](operations.md#editing-botconf-safely): stop the bot, edit, start it again. Or change the value live from IRC with `@config` and follow it with `@flush`, which writes the registry to `bot.conf` at once. A `@config` change without `@flush` can be lost on a restart that skips the shutdown flush.
 
 ## Keys and refusals
 

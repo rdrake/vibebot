@@ -20,7 +20,7 @@ Two independent paths keep the running bot current. Both end in the same place: 
 
 A push that touches only `docs/**`, `*.md`, or `mkdocs.yml` builds nothing. CI's `paths-ignore` skips those, and because `docker.yml` triggers on CI success, no image is built and the running bot is never restarted. Documentation still publishes: `pages.yml` has its own trigger on `docs/**` and `mkdocs.yml`. A push that changes only a root-level `*.md` fires nothing at all.
 
-**Path 2: updater timer.** `vibebot-updater.timer` fires every 15 minutes. Its service compares the image the running container uses against the registry's `:latest` and restarts `vibebot` when they differ, including when the bot is stopped, because there is then no container to compare (see [Editing bot.conf safely](#editing-botconf-safely)). This path catches anything the push deploy missed, such as a host that was offline during the push, or a repository without the deploy secrets.
+**Path 2: updater timer.** `vibebot-updater.timer` fires every 15 minutes. Its service compares the image the running container uses against the registry's `:latest` and restarts `vibebot` when they differ. It uses `try-restart`, so it only ever restarts a bot that is running: a bot you stopped stays stopped, and picks up the new image when you start it. This path catches anything the push deploy missed, such as a host that was offline during the push, or a repository without the deploy secrets.
 
 The source code never needs to live on the server. The Docker image has everything; the server holds only configuration and data.
 
@@ -52,7 +52,7 @@ The forced command ignores whatever the workflow sends, and `restrict` turns off
 | `vibebot-updater.service` | Compares image digests; restarts the bot when they differ |
 | `vibebot-updater.timer` | Triggers the update check every 15 minutes |
 
-Install all three with `make install-deploy`. See [Installation](installation.md) for the full setup walkthrough, including why to install the timer last on a new host.
+Install all three with `make install-deploy`. See [Installation](installation.md) for the full setup walkthrough.
 
 ## Quick reference
 
@@ -67,23 +67,23 @@ Install all three with `make install-deploy`. See [Installation](installation.md
 | Stop the bot | `systemctl --user stop vibebot` |
 | Start the bot | `systemctl --user start vibebot` |
 
-A stopped bot does not stay stopped: the updater timer restarts it within 15 minutes. Stop `vibebot-updater.timer` as well when you need the bot down for longer than that; see below.
+A stopped bot stays stopped: the updater only restarts a running bot. A crashed one is restarted by the service itself (`Restart=always`).
 
 ## Editing bot.conf safely
 
 Limnoria writes its in-memory registry to `bot.conf` on shutdown. If you edit the file while the bot is running, the shutdown write replaces your changes, so restarting after an edit loses it.
 
-The updater timer will restart the bot out from under you, so stop it first. `vibebot-updater.service` reads the local image off the *container* with `docker inspect ... vibebot`, and the container runs `--rm`, so while the bot is stopped that lookup falls back to `none`. It never matches the registry digest, and the timer restarts the bot on its next 15-minute tick, partway through your edit.
-
-Always follow this order:
+Stop the bot, edit, start it again. The updater timer leaves a stopped bot alone, so it can keep running:
 
 ```bash
-systemctl --user stop vibebot-updater.timer
 systemctl --user stop vibebot
 # edit ~/.config/vibebot/bot.conf
 systemctl --user start vibebot
-systemctl --user start vibebot-updater.timer
 ```
+
+!!! note "Hosts set up before 23 October 2026"
+
+    Older copies of `vibebot-updater.service` used `systemctl restart`, which also *starts* a stopped bot on the next 15-minute tick, partway through an edit. Run `make install-timer` once to install the current unit, or stop `vibebot-updater.timer` around edits.
 
 For single settings, prefer the `@config` command from IRC; it changes the live registry. Follow it with `@flush`, which writes the registry to `bot.conf` at once: on this deployment a restart has more than once come without a shutdown flush, and an unflushed `@config` change was lost. See the [Limnoria crash course](limnoria.md). Reserve direct file edits for bulk changes and values that are awkward to type in IRC.
 
@@ -198,14 +198,12 @@ The SQLite databases run in WAL mode, so recent writes can sit in the `-wal` fil
 <div markdown>
 **Stop, then copy**
 
-Stop the timer and the bot, copy the whole directory, start them again. The bot is off IRC for the copy, and every file is consistent.
+Stop the bot, copy the whole directory, start it again. The bot is off IRC for the copy, and every file is consistent.
 
 ```bash
-systemctl --user stop vibebot-updater.timer
 systemctl --user stop vibebot
 tar -C ~/.config -czf vibebot-$(date +%F).tar.gz vibebot
 systemctl --user start vibebot
-systemctl --user start vibebot-updater.timer
 ```
 </div>
 

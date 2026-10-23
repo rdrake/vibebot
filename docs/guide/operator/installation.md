@@ -70,7 +70,7 @@ After installing, complete the setup:
     loginctl enable-linger $USER
     ```
 
-4. **Install the update timer** once the bot runs; see [Auto-updates](#auto-updates).
+4. **Install the update timer**; see [Auto-updates](#auto-updates).
 
 </div>
 
@@ -104,9 +104,7 @@ Install the update timer to pull new Docker images automatically (checks every 1
 make install-timer
 ```
 
-!!! warning "The timer starts the bot"
-
-    `make install-timer` enables and starts the timer at once. On its next quarter-hour tick the updater finds no running `vibebot` container, treats that as an outdated image, and runs `systemctl --user restart vibebot`, which starts the bot even if you never enabled it. On a new host, install the timer only after `bot.conf` and `env` are filled in. `make install-deploy` installs the service and the timer together, so use it only on a host that already has both files.
+The timer only restarts a bot that is already running, so installing it before `bot.conf` and `env` are filled in is safe: nothing starts until you start the service yourself. `make install-deploy` installs the service and the timer together.
 
 See [Operations](operations.md) for how the two update paths work together.
 
