@@ -8,10 +8,11 @@ Type=oneshot
 Environment=IMAGE=ghcr.io/rdrake/vibebot:latest
 ExecStart=/bin/bash -c '\
   LOCAL=$(docker inspect --format="{{.Image}}" vibebot 2>/dev/null || echo "none"); \
+  if [ "$LOCAL" = "none" ]; then echo "vibebot is not running; nothing to update"; exit 0; fi; \
   docker pull -q ${IMAGE}; \
   REMOTE=$(docker inspect --format="{{.Id}}" ${IMAGE}); \
   if [ "$LOCAL" != "$REMOTE" ]; then \
-    echo "Update found: restarting vibebot if it is running..."; \
+    echo "Update found: restarting vibebot..."; \
     systemctl --user try-restart vibebot.service; \
   else \
     echo "No update available"; \
