@@ -1,46 +1,51 @@
 /* VibeBot docs theme.
-   Layout: the chrome is a terminal IRC client. Weechat-blue title and status
+   Layout: the chrome is a terminal IRC client. Molokai-grey title and status
    bars frame every page; the landing page is a client window whose buffer
    list is the guide's sections. Reading pages stay a plain column.
-   Nick colours come from the mIRC palette. Code is always terminal-dark. */
+   Colours are Molokai (vim): dark mode is the scheme itself, light mode is
+   Molokai's foreground as paper with its accents darkened for contrast.
+   Code is always Molokai-dark. */
 
 @import url("https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,400..800&display=swap");
 
 :root,
 [data-md-color-scheme="default"] {
-  --vb-bg: #f3f4f7;
+  --vb-bg: #f8f8f2;
   --vb-panel: #ffffff;
-  --vb-rule: #d9dce6;
-  --vb-fg: #141726;
-  --vb-body: #3d4256;
-  --vb-dim: #555b70;
-  --vb-faint: #6a7086;
-  --vb-link: #1d40c4;
-  --vb-inline: #e3e6ef;
-  --vb-notice: #e6eaf7;
-  --vb-notice-code: #d5dbf0;
-  --vb-ok: #2c7322;
-  --vb-drop: #9a3d0b;
+  --vb-rule: #dad9ce;
+  --vb-fg: #1b1d1e;
+  --vb-body: #3b3a32;
+  --vb-dim: #5b5a50;
+  --vb-faint: #6b6a5f;
+  --vb-link: #b5114a;
+  --vb-inline: #ecebe2;
+  --vb-notice: #efeee6;
+  --vb-notice-code: #e2e1d6;
+  --vb-ok: #4a7310;
+  --vb-drop: #a04f00;
+  --vb-warn-bg: #fbefe0;
+  --vb-warn-code: rgb(160 79 0 / 0.12);
 
-  --vb-bar: #233a8c;
-  --vb-bar-deep: #1a2c6c;
-  --vb-bar-fg: #eef1ff;
-  --vb-bar-soft: #c9d2f2;
-  --vb-bar-dim: #aab6e4;
-  --vb-bar-line: #3d55a8;
+  --vb-bar: #403d3d;
+  --vb-bar-deep: #2d2b2b;
+  --vb-bar-fg: #f8f8f2;
+  --vb-bar-soft: #d6d5cc;
+  --vb-bar-dim: #b8b6ac;
+  --vb-bar-line: #5c5858;
+  --vb-bar-mark: #f92672;
 
-  --vb-term: #0f1016;
-  --vb-term-2: #161822;
-  --vb-term-fg: #d8d6ce;
-  --vb-term-dim: #7c8093;
-  --vb-term-rule: #262936;
+  --vb-term: #1b1d1e;
+  --vb-term-2: #232526;
+  --vb-term-fg: #f8f8f2;
+  --vb-term-dim: #7e8e91;
+  --vb-term-rule: #34383a;
 
-  --vb-n-bot: #56d4e3;
-  --vb-n-alice: #ff9259;
-  --vb-n-bob: #8d93a8;
-  --vb-n-carol: #c992ff;
-  --vb-n-dave: #86de7a;
-  --vb-n-str: #a6d98f;
+  --vb-n-bot: #66d9ef;
+  --vb-n-alice: #fd971f;
+  --vb-n-bob: #a0a39a;
+  --vb-n-carol: #ae81ff;
+  --vb-n-dave: #a6e22e;
+  --vb-n-str: #e6db74;
 
   --vb-display: "Martian Mono", "JetBrains Mono", ui-monospace, monospace;
 
@@ -61,21 +66,23 @@
 }
 
 [data-md-color-scheme="slate"] {
-  --vb-bg: #14151b;
-  --vb-panel: #1a1b23;
-  --vb-rule: #2b2d39;
-  --vb-fg: #e2e0d9;
-  --vb-body: #c4c3bd;
-  --vb-dim: #9a9ba8;
-  --vb-faint: #8a8c9a;
-  --vb-link: #8eabff;
-  --vb-inline: #23252f;
-  --vb-notice: #1b2242;
-  --vb-notice-code: #27305a;
-  --vb-ok: #86de7a;
-  --vb-drop: #f0aa6a;
+  --vb-bg: #1b1d1e;
+  --vb-panel: #232526;
+  --vb-rule: #3a3d3e;
+  --vb-fg: #f8f8f2;
+  --vb-body: #d6d5cc;
+  --vb-dim: #a8a89e;
+  --vb-faint: #959589;
+  --vb-link: #66d9ef;
+  --vb-inline: #293739;
+  --vb-notice: #232526;
+  --vb-notice-code: #34383a;
+  --vb-ok: #a6e22e;
+  --vb-drop: #fd971f;
+  --vb-warn-bg: #2a2418;
+  --vb-warn-code: rgb(253 151 31 / 0.14);
 
-  --md-hue: 230;
+  --md-hue: 195;
   --md-default-bg-color: var(--vb-bg);
   --md-default-fg-color: var(--vb-fg);
   --md-default-fg-color--light: var(--vb-dim);
@@ -89,16 +96,16 @@
 [data-md-color-scheme="slate"] {
   --md-code-bg-color: var(--vb-term);
   --md-code-fg-color: var(--vb-term-fg);
-  --md-code-hl-color: rgb(142 171 255 / 0.18);
-  --md-code-hl-keyword-color: #8eabff;
+  --md-code-hl-color: rgb(73 72 62 / 0.6);
+  --md-code-hl-keyword-color: #f92672;
   --md-code-hl-string-color: var(--vb-n-str);
-  --md-code-hl-number-color: #f0aa6a;
-  --md-code-hl-constant-color: #f0aa6a;
+  --md-code-hl-number-color: var(--vb-n-carol);
+  --md-code-hl-constant-color: var(--vb-n-carol);
   --md-code-hl-special-color: var(--vb-n-alice);
-  --md-code-hl-function-color: var(--vb-n-bot);
+  --md-code-hl-function-color: var(--vb-n-dave);
   --md-code-hl-name-color: var(--vb-term-fg);
-  --md-code-hl-operator-color: var(--vb-n-carol);
-  --md-code-hl-punctuation-color: var(--vb-n-bob);
+  --md-code-hl-operator-color: #f92672;
+  --md-code-hl-punctuation-color: var(--vb-term-fg);
   --md-code-hl-comment-color: var(--vb-term-dim);
   --md-code-hl-generic-color: var(--vb-term-dim);
   --md-code-hl-variable-color: var(--vb-n-alice);
@@ -170,12 +177,13 @@ body {
 
 .md-tabs__item--active .md-tabs__link {
   background: var(--vb-bar-deep);
-  color: #ffffff;
+  color: var(--vb-bar-fg);
   font-weight: 700;
+  box-shadow: inset 0 -2px 0 var(--vb-bar-mark);
 }
 
 .md-tabs__link:hover {
-  color: #ffffff;
+  color: var(--vb-bar-fg);
 }
 
 .md-footer {
@@ -422,30 +430,18 @@ body {
 .md-typeset .admonition.warning,
 .md-typeset .admonition.danger,
 .md-typeset .admonition.caution {
-  background: #f6e4d6;
+  background: var(--vb-warn-bg);
 }
 
 .md-typeset .admonition.warning > .admonition-title,
 .md-typeset .admonition.danger > .admonition-title,
 .md-typeset .admonition.caution > .admonition-title {
-  color: #9a3d0b;
-}
-
-[data-md-color-scheme="slate"] .md-typeset .admonition.warning,
-[data-md-color-scheme="slate"] .md-typeset .admonition.danger,
-[data-md-color-scheme="slate"] .md-typeset .admonition.caution {
-  background: #2a2019;
-}
-
-[data-md-color-scheme="slate"] .md-typeset .admonition.warning > .admonition-title,
-[data-md-color-scheme="slate"] .md-typeset .admonition.danger > .admonition-title,
-[data-md-color-scheme="slate"] .md-typeset .admonition.caution > .admonition-title {
-  color: #f0aa6a;
+  color: var(--vb-drop);
 }
 
 .md-typeset .admonition.warning :not(pre) > code,
 .md-typeset .admonition.danger :not(pre) > code {
-  background: rgb(154 61 11 / 0.12);
+  background: var(--vb-warn-code);
 }
 
 /* ---------- Landing: masthead ---------- */
@@ -511,13 +507,13 @@ body {
 .md-typeset a.vb-btn--go {
   background: var(--vb-bar);
   border-color: var(--vb-bar);
-  color: #ffffff;
+  color: var(--vb-bar-fg);
 }
 
 .md-typeset a.vb-btn--go:hover {
   background: var(--vb-bar-deep);
   border-color: var(--vb-bar-deep);
-  color: #ffffff;
+  color: var(--vb-bar-fg);
 }
 
 .md-typeset a.vb-btn:focus-visible,
@@ -574,7 +570,7 @@ body {
   background: var(--vb-term);
   color: var(--vb-term-fg);
   border: 1px solid var(--vb-term-rule);
-  box-shadow: 0 30px 60px -40px rgb(15 20 50 / 0.6);
+  box-shadow: 0 30px 60px -40px rgb(0 0 0 / 0.6);
   font-family: var(--md-code-font-family);
   font-size: 0.7rem;
   line-height: 1.6;
@@ -627,7 +623,7 @@ body {
 
 .md-typeset .vb-wc__bufs .is-on {
   background: var(--vb-bar);
-  color: #ffffff;
+  color: var(--vb-bar-fg);
 }
 
 .md-typeset .vb-wc__bufs i {
@@ -1041,7 +1037,7 @@ body {
   display: grid;
   place-items: center;
   background: var(--vb-bar);
-  color: #ffffff;
+  color: var(--vb-bar-fg);
   font-family: var(--md-code-font-family);
   font-size: 0.68rem;
   font-weight: 700;
@@ -1110,7 +1106,7 @@ body {
 .md-typeset .vb-flow__node--end {
   background: var(--vb-bar);
   border-color: var(--vb-bar);
-  color: #ffffff;
+  color: var(--vb-bar-fg);
 }
 
 .md-typeset .vb-flow__node--end small {
