@@ -116,6 +116,9 @@ GROUNDING_ICON = "\U0001f310"  # 🌐 (globe with meridians)
 # slightly off is explained rather than mysterious.
 REWORDED_ICON = "\U0001f501"  # 🔁 (clockwise arrows)
 
+# CTCP framing around a /me payload: it shares the line budget with the text.
+_ACTION_WRAPPER = "\x01ACTION \x01"
+
 # Commands that support long-term memory extraction
 _MEMORY_COMMANDS = frozenset({"ask"})
 
@@ -5215,8 +5218,9 @@ class LLM(callbacks.Plugin):
             teaser_fn: ``(content, max_chars) -> str`` producing the final,
                 already-trimmed teaser for the link line.
             save_fn: ``(content) -> url | None`` pastebin hook.
-            nick_prefix: Optional ``"nick: "`` prefix, reserved out of the
-                teaser budget and prepended to the link line.
+            nick_prefix: Optional lead such as ``"nick: "`` or the reply
+                icons, reserved out of the teaser budget and prepended to the
+                link line.
             teaser_cap: Optional hard cap on teaser length
                 (``_LONG_REPLY_TEASER_MAX_CHARS``).
             save_failed_fallback: Line to return when the save fails; None
@@ -5388,6 +5392,7 @@ class LLM(callbacks.Plugin):
         *,
         prefixNick: bool = False,  # noqa: N803  (mirrors irc.reply kwarg)
         style: str = "answer",
+        icons: str = "",
     ) -> bool:
         """Reply with ``text`` inline when it is short, pastebinning the rest.
 
@@ -5400,11 +5405,17 @@ class LLM(callbacks.Plugin):
         server and the channel receives a one-line teaser plus the URL. When
         the save fails, we collapse to a single line ("teaser only") so we
         never send a raw multi-line body.
+
+        ``icons`` lead every form the reply takes. The link line's teaser is a
+        fresh summary, so they ride there as a budgeted prefix rather than in
+        the text: glued onto ``text`` they reached only the paste.
         """
         target = msg.channel if msg.channel else msg.nick
+        lead = f"{icons} " if icons else ""
+        body = f"{lead}{text}"
         allowed = self._reply_mores_length(target, network=irc.network)
 
-        logical_lines = [line for line in text.split("\n") if line.strip()]
+        logical_lines = [line for line in body.split("\n") if line.strip()]
         # (wire text, is a wrap-continuation of the previous logical line)
         chunks = [
             (piece, i > 0)
@@ -5418,7 +5429,27 @@ class LLM(callbacks.Plugin):
         # one line); only a sole non-blank logical line may go inline, and
         # _finish_irc_line still byte-wraps it against the wire budget.
         inline = logical_lines[0] if len(logical_lines) == 1 else None
+        line = self._summarized_irc_line(
+            text, inline=inline, allowed=allowed, target=target, style=style, lead=lead
+        )
+        return self._safe_reply(irc, line, prefixNick=prefixNick)
 
+    def _summarized_irc_line(
+        self,
+        text: str,
+        *,
+        inline: str | None,
+        allowed: int,
+        target: str,
+        style: str,
+        lead: str = "",
+    ) -> str:
+        """``_finish_irc_line`` with an LLM-summary teaser, for live replies.
+
+        ``lead`` (the reply icons) leads both ``inline`` — callers put it there
+        — and the link line, where ``_finish_irc_line`` reserves its bytes. The
+        paste gets ``lead`` + ``text``; the summary sees ``text`` alone.
+        """
         # One summary serves double duty: the page <title> (echoed by URL-title
         # bots in-channel) and the inline IRC teaser. Computed lazily so the
         # inline path never pays for the LLM call, and memoized so the title
@@ -5432,19 +5463,20 @@ class LLM(callbacks.Plugin):
                 )
             return summary_cache[0] or ""
 
-        line = self._finish_irc_line(
-            text,
+        return self._finish_irc_line(
+            f"{lead}{text}",
             inline=inline,
             allowed=allowed,
-            teaser_fn=lambda t, mc: self._trim_long_reply_teaser(
-                _summary() or self._fallback_long_reply_teaser(t, mc), mc
+            # From ``text``, not the paste body: the lead is already the prefix.
+            teaser_fn=lambda _t, mc: self._trim_long_reply_teaser(
+                _summary() or self._fallback_long_reply_teaser(text, mc), mc
             ),
             save_fn=lambda t: self.llm_service.save_markdown_to_http(
                 t, title=_summary(), style=style
             ),
+            nick_prefix=lead,
             teaser_cap=_LONG_REPLY_TEASER_MAX_CHARS,
         )
-        return self._safe_reply(irc, line, prefixNick=prefixNick)
 
     @staticmethod
     def _multiline_negotiated(irc: callbacks.Irc) -> bool:
@@ -5603,31 +5635,41 @@ class LLM(callbacks.Plugin):
             return response, False
 
         action_text = self._extract_action(irc, response)
+        style = "story" if getattr(result, "was_verse", False) else "answer"
+        icons = self._reply_icons(result)
+        lead = f"{icons} " if icons else ""
         if action_text:
-            action_text = self._prefix_reply_icons(action_text, result)
             self.log.info("sending action to %s/%s", channel, nick)
             target = caller.reply_target
+            # The CTCP wrapper rides inside the same line budget as the text.
+            # Sent raw, an overlong /me was cut off by the server mid-sentence.
+            action_line = self._summarized_irc_line(
+                action_text,
+                inline=f"{lead}{action_text}",
+                allowed=self._reply_mores_length(target, network=irc.network)
+                - len(_ACTION_WRAPPER),
+                target=target,
+                style=style,
+                lead=lead,
+            )
+            action_text = f"{lead}{action_text}"
             # safeArgument for the same reason as _safe_privmsg: this is a
             # raw-queue send of model-derived text, and IrcMsg's own CR/LF/NUL
             # assertion vanishes under python -O. sanitize_output already
             # removed the CTCP delimiter that safeArgument does NOT cover.
             if not self._safe_queue(
-                irc, ircmsgs.action(target, ircutils.safeArgument(action_text))
+                irc, ircmsgs.action(target, ircutils.safeArgument(action_line))
             ):
                 return response, False
             self._record_last_verse_line(irc, channel, action_text, result)
             return f"* {irc.nick} {action_text}", True
 
-        display_response = self._prefix_reply_icons(response, result)
+        display_response = f"{lead}{response}"
         self.log.info("replying to %s/%s", channel, nick)
         # Verse scenes that overflow to a paste render with the storybook
         # parchment theme — they're stories, not Q&A answers.
         if not self._send_long_reply(
-            irc,
-            msg,
-            display_response,
-            prefixNick=False,
-            style="story" if getattr(result, "was_verse", False) else "answer",
+            irc, msg, response, prefixNick=False, style=style, icons=icons
         ):
             return response, False
         self._record_last_verse_line(irc, channel, display_response, result)
@@ -6472,8 +6514,8 @@ class LLM(callbacks.Plugin):
             self.log.exception("image usage logging failed")
 
     @staticmethod
-    def _prefix_reply_icons(text: str, result: AssistantResult) -> str:
-        """Prefix the reply with an icon per signal the turn raised.
+    def _reply_icons(result: AssistantResult) -> str:
+        """One icon per signal the turn raised, space-joined; "" for none.
 
         Both can apply at once — a grounded answer that also drew a reworded
         image — so they chain rather than choosing. Order is fixed so the same
@@ -6484,7 +6526,7 @@ class LLM(callbacks.Plugin):
             icons.append(GROUNDING_ICON)
         if getattr(result, "image_reworded", False):
             icons.append(REWORDED_ICON)
-        return f"{' '.join(icons)} {text}" if icons else text
+        return " ".join(icons)
 
     def _resolve_caller(self, irc: callbacks.Irc, msg: IrcMsg) -> Caller:
         """Resolve the sender of ``msg`` to a :class:`Caller`.

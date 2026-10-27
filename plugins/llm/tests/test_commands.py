@@ -314,6 +314,60 @@ class TestAskCommand:
 
         mock_action.assert_called_once_with("#test", "\U0001f310 looks it up")
 
+    def test_an_action_too_long_for_one_line_pastebins_as_an_action(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """A /me that overflows the wire budget goes out as a /me teaser + URL.
+
+        Sent raw it was one oversized PRIVMSG the server cut off mid-sentence.
+        The CTCP wrapper counts against the budget like the text does.
+        """
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch("llm.plugin.conf.get", return_value=100)
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.save_markdown_to_http.return_value = "https://e.co/x.html"
+        plugin.llm_service.summarize_for_irc.return_value = "Teaser."
+        body = " ".join(["rummages through the archive"] * 10)
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
+            content=f"/me {body}", grounding_used=True, model="gpt-4"
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["dig", "it", "up"])
+
+        plugin.llm_service.save_markdown_to_http.assert_called_once_with(
+            f"\U0001f310 {body}", title="Teaser.", style="answer"
+        )
+        sent = mock_irc.queueMsg.call_args.args[0]
+        assert sent.args == (
+            "#test",
+            "\x01ACTION \U0001f310 Teaser. - Full answer: https://e.co/x.html\x01",
+        )
+        assert len(sent.args[1].encode()) <= 100
+
+    @pytest.mark.parametrize("over", [0, 1])
+    def test_an_action_pastebins_exactly_when_its_ctcp_line_overflows(
+        self, over, plugin_env, mocker: MockerFixture
+    ):
+        """A /me whose wrapped line is exactly the budget goes whole; one byte more pastebins."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch("llm.plugin.conf.get", return_value=100)
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.save_markdown_to_http.return_value = "https://e.co/x.html"
+        plugin.llm_service.summarize_for_irc.return_value = "Teaser."
+        body = "x" * (100 - len("\x01ACTION \x01") + over)
+        plugin.llm_service.assistant_completion.return_value = assistant_result(
+            content=f"/me {body}", model="gpt-4"
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["go"])
+
+        sent = mock_irc.queueMsg.call_args.args[0].args[1]
+        if over:
+            assert sent == "\x01ACTION Teaser. - Full answer: https://e.co/x.html\x01"
+        else:
+            plugin.llm_service.save_markdown_to_http.assert_not_called()
+            assert sent == f"\x01ACTION {body}\x01"
+
     def test_ask_bare_me_not_treated_as_action(self, plugin_env, mocker: MockerFixture):
         """GIVEN LLM responds with '/me' with no trailing text WHEN ask called THEN uses reply."""
         plugin, mock_irc, mock_msg = plugin_env
@@ -1029,6 +1083,82 @@ class TestDispatchAssistantReply:
 
         reply_text = mock_irc.reply.call_args[0][0]
         assert reply_text.startswith("\U0001f310 \U0001f501")
+
+    def test_grounding_icon_survives_on_a_pastebinned_answer(self, plugin_env):
+        """A grounded answer too long for one line keeps 🌐 on the channel line.
+
+        The teaser is a fresh summary of the answer, so an icon glued onto the
+        answer text only reached the paste; the channel never saw the globe.
+        """
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.save_markdown_to_http.return_value = "https://e.co/x.html"
+        plugin.llm_service.summarize_for_irc.return_value = "Teaser."
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
+            content="line one\nline two\nline three",
+            grounding_used=True,
+            spend=Spend.ZERO,
+            model="gpt-4",
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["what's new"])
+
+        mock_irc.reply.assert_called_once_with(
+            "\U0001f310 Teaser. - Full answer: https://e.co/x.html", prefixNick=False
+        )
+        # The summary (also the page <title>) is made from the answer alone.
+        assert plugin.llm_service.summarize_for_irc.call_args.args[0] == (
+            "line one\nline two\nline three"
+        )
+
+    def test_pastebin_fallback_teaser_carries_the_icon_once(self, plugin_env):
+        """When summarizing fails the first line is the teaser — one icon, not two."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.save_markdown_to_http.return_value = "https://e.co/x.html"
+        plugin.llm_service.summarize_for_irc.return_value = None
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
+            content="line one\nline two\nline three",
+            grounding_used=True,
+            spend=Spend.ZERO,
+            model="gpt-4",
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["what's new"])
+
+        mock_irc.reply.assert_called_once_with(
+            "\U0001f310 line one - Full answer: https://e.co/x.html", prefixNick=False
+        )
+
+    def test_icons_on_a_pastebinned_answer_come_out_of_the_byte_budget(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """Under a tight budget the icons still lead and the URL still fits."""
+        plugin, mock_irc, mock_msg = plugin_env
+        mocker.patch("llm.plugin.conf.get", return_value=80)
+        url = "https://example.com/llm/full.html"
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.save_markdown_to_http.return_value = url
+        plugin.llm_service.summarize_for_irc.return_value = (
+            "A summary far longer than the eighty bytes this channel allows per line."
+        )
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
+            content="\n".join(f"line {i}" for i in range(1, 8)),
+            grounding_used=True,
+            image_reworded=True,
+            spend=Spend.ZERO,
+            model="gpt-4",
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["what's new"])
+
+        line = mock_irc.reply.call_args.args[0]
+        assert line.startswith("\U0001f310 \U0001f501 A summary")
+        assert line.endswith(f" - Full answer: {url}")
+        assert len(line.encode()) <= 80
 
     # ------------------------------------------------------------------
     # Reminder-mutation suppression (ask only)
