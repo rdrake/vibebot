@@ -222,12 +222,16 @@ class TestDoPrivmsg:
         plugin._route_addressed_to_assistant.assert_not_called()
         plugin.context.add_message.assert_not_called()
 
-    def test_doprivmsg_routes_reply_to_bot_line(self, plugin_with_mocks: tuple) -> None:
-        """GIVEN +draft/reply to a msgid the bot sent WHEN doPrivmsg THEN routes, no nick needed."""
+    @pytest.mark.parametrize("tag", ["+draft/reply", "+reply"])
+    def test_doprivmsg_routes_reply_to_bot_line(self, plugin_with_mocks: tuple, tag: str) -> None:
+        """GIVEN a reply tag to a msgid the bot sent WHEN doPrivmsg THEN routes, no nick needed.
+
+        Seance and poxchat send +draft/reply; Textual-NG sends the ratified +reply.
+        """
         plugin, mock_irc, mock_msg = plugin_with_mocks
         plugin._own_msgids[(mock_irc.network, "bot-1")] = None
         mock_msg.args = ("#channel", "and what about tomorrow?")
-        mock_msg.server_tags = {"+draft/reply": "bot-1"}
+        mock_msg.server_tags = {tag: "bot-1"}
 
         plugin.doPrivmsg(mock_irc, mock_msg)
 
@@ -342,6 +346,27 @@ class TestOwnMsgidTracking:
 
         assert not plugin._is_reply_to_own_line(irc, self._reply("x"))
         assert plugin._is_reply_to_own_line(irc, self._reply("z"))
+
+
+class TestReplyParent:
+    """_reply_parent reads both reply-tag spellings."""
+
+    @pytest.mark.parametrize(
+        ("tags", "expected"),
+        [
+            ({"+draft/reply": "a"}, "a"),
+            ({"+reply": "b"}, "b"),
+            ({"+draft/reply": "a", "+reply": "b"}, "a"),
+            ({"+draft/reply": "", "+reply": "b"}, "b"),
+            ({"msgid": "m"}, ""),
+            ({}, ""),
+            (None, ""),
+        ],
+    )
+    def test_reply_parent(self, tags: dict[str, str] | None, expected: str) -> None:
+        from llm.plugin import _reply_parent
+
+        assert _reply_parent(tags) == expected
 
 
 class TestInFilterDispatchGate:

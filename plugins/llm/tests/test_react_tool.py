@@ -83,11 +83,12 @@ class TestReactHandler:
         assert payload == {"status": "ok", "message": "reacted 👍 to testnick's message"}
         plugin.llm_service.send_reaction.assert_called_once_with(irc, "#test", "trigger-1", "👍")
 
-    def test_no_nick_on_a_reply_reacts_to_the_replied_to_message(self, react_env) -> None:
+    @pytest.mark.parametrize("tag", ["+draft/reply", "+reply"])
+    def test_no_nick_on_a_reply_reacts_to_the_replied_to_message(self, react_env, tag) -> None:
         # rdrake replied to the bot's line with "Praying hands emoji" and the
         # reaction belonged on that line, not on the request (prod 2026-10-10).
         plugin, irc, msg = react_env
-        msg.server_tags["+draft/reply"] = "bot-line-7"
+        msg.server_tags[tag] = "bot-line-7"
 
         payload = _call(plugin, irc, msg, emoji="🙏")
 

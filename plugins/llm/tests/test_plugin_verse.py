@@ -2819,6 +2819,19 @@ class TestDoTagmsgReactionCapture:
         assert ev["sentiment"] == "approve"
         assert ev["reactor"] == "fc42"
         assert ev["was_verse"] is True
+        assert ev["target_msgid"] == "abc"
+
+    @pytest.mark.parametrize("tag", ["+draft/reply", "+reply"])
+    def test_reaction_target_reads_either_reply_spelling(self, reaction_env, tag):
+        """Textual-NG's reaction rides +reply; Seance's rides +draft/reply."""
+        plugin, irc, msg, tmp_path = reaction_env
+        plugin._last_bot_line[("testnet", "#test")] = {"text": "a verse", "ts": time.time()}
+        msg.server_tags = {"+draft/react": "\U0001f44d", tag: "abc"}
+        msg.channel = "#test"
+        msg.nick = "fc42"
+        plugin.doTagmsg(irc, msg)
+        lines = self._path(tmp_path).read_text(encoding="utf-8").strip().splitlines()
+        assert json.loads(lines[0])["target_msgid"] == "abc"
 
     def test_every_reaction_is_recorded_when_the_verse_dir_exists(self, reaction_env):
         """In prod data/verse/ already holds the stores; capture must still append."""

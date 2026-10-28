@@ -13,7 +13,7 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
@@ -209,6 +209,17 @@ def _parse_iso_utc(tag: Any) -> datetime | None:
     except ValueError:
         return None
     return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
+
+
+def _reply_parent(tags: Mapping[str, Any] | None) -> str:
+    """The msgid a message replies to, or ``""``.
+
+    ``+draft/reply`` is what poxchat and Seance send; ``+reply`` is the
+    ratified spelling (Textual-NG). Read both, draft first.
+    """
+    if not tags:
+        return ""
+    return tags.get("+draft/reply") or tags.get("+reply") or ""
 
 
 # Longest emoji the react tool accepts, in code points. ZWJ sequences
@@ -2717,8 +2728,8 @@ class LLM(callbacks.Plugin):
             self.log.exception("last_msgids flush failed (%s rows)", len(rows))
 
     def _is_reply_to_own_line(self, irc: callbacks.Irc, msg: IrcMsg) -> bool:
-        """True when msg carries +draft/reply pointing at one of the bot's lines."""
-        target = (getattr(msg, "server_tags", None) or {}).get("+draft/reply")
+        """True when msg carries a reply tag pointing at one of the bot's lines."""
+        target = _reply_parent(getattr(msg, "server_tags", None))
         if not target:
             return False
         with self._own_msgids_lock:
@@ -3311,7 +3322,7 @@ class LLM(callbacks.Plugin):
                 reactor=msg.nick,
                 channel=channel,
                 network=irc.network,
-                target_msgid=server_tags.get("+draft/reply"),
+                target_msgid=_reply_parent(server_tags) or None,
                 last_bot_line=last,
                 now=time.time(),
                 capture_enabled=True,
@@ -4725,7 +4736,7 @@ class LLM(callbacks.Plugin):
             target = where
             tags = getattr(msg, "server_tags", None) or {}
             trigger_msgid = tags.get("msgid") or ""
-            reply_msgid = tags.get("+draft/reply") or ""
+            reply_msgid = _reply_parent(tags)
             if not nick and reply_msgid:
                 # A client reply points at the message they mean.
                 target_label = f"the message {msg.nick} replied to"
