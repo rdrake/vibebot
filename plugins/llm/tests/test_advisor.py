@@ -83,8 +83,10 @@ def run(make_service, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch):  
 
 
 def test_chat_step_offers_the_advisor_with_the_longer_timeout(run) -> None:  # type: ignore[no-untyped-def]
-    _result, calls, _log = run([make_completion_response("done")])
+    result, calls, _log = run([make_completion_response("done")])
 
+    # Offered but not consulted: the reply carries no ⚡.
+    assert not result.advisor_used
     assert calls[0]["advisor"] == OPUS
     assert calls[0]["timeout"] == ADVISOR_TIMEOUT
 
@@ -97,6 +99,7 @@ def test_after_a_consult_later_steps_neither_offer_it_nor_wait_longer(run) -> No
     )
 
     assert result.content == "here's the plan"
+    assert result.advisor_used
     assert calls[0]["advisor"] == OPUS
     assert "advisor" not in calls[1]
     assert calls[1]["timeout"] == 30

@@ -116,6 +116,10 @@ GROUNDING_ICON = "\U0001f310"  # 🌐 (globe with meridians)
 # slightly off is explained rather than mysterious.
 REWORDED_ICON = "\U0001f501"  # 🔁 (clockwise arrows)
 
+# Icon shown when the chat model consulted the stronger advisor model
+# (LLM.advisorModel) before answering.
+ADVISOR_ICON = "⚡"  # ⚡ (high voltage)
+
 # CTCP framing around a /me payload: it shares the line budget with the text.
 _ACTION_WRAPPER = "\x01ACTION \x01"
 
@@ -6528,11 +6532,13 @@ class LLM(callbacks.Plugin):
     def _reply_icons(result: AssistantResult) -> str:
         """One icon per signal the turn raised, space-joined; "" for none.
 
-        Both can apply at once — a grounded answer that also drew a reworded
-        image — so they chain rather than choosing. Order is fixed so the same
-        turn always renders the same way.
+        Several can apply at once — an advised, grounded answer that also
+        drew a reworded image — so they chain rather than choosing. Order is
+        fixed so the same turn always renders the same way.
         """
         icons = []
+        if getattr(result, "advisor_used", False):
+            icons.append(ADVISOR_ICON)
         if getattr(result, "grounding_used", False):
             icons.append(GROUNDING_ICON)
         if getattr(result, "image_reworded", False):

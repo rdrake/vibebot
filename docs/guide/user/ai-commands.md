@@ -12,11 +12,12 @@ Plain language covers questions, web lookups, images, code, service status, [aur
 
 ## Icons on a reply
 
-Two icons can appear at the front of a reply. They are the bot telling you
-something about how the answer was produced, and both can show at once.
+Three icons can appear at the front of a reply. They are the bot telling you
+something about how the answer was produced, and more than one can show at once.
 
 | Icon | Meaning |
 |------|---------|
+| ⚡ | The bot judged the question hard and consulted a stronger model before answering |
 | 🌐 | The answer used a live web lookup rather than the model's own knowledge |
 | 🔁 | A content filter refused the image, so the bot reworded the prompt and tried again. You got a picture, but the wording behind it moved, so it may read a little differently from what you asked for |
 

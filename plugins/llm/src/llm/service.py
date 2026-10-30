@@ -1859,6 +1859,8 @@ class AssistantResult(NamedTuple):
     # The call timed out. ``error`` is set too, so nothing is stored as a
     # reply; this only lets the usage row say ``timeout`` instead of ``error``.
     timed_out: bool = False
+    # A stronger model was consulted this turn (LLM.advisorModel).
+    advisor_used: bool = False
 
     # Read-only views for consumers that take any result type and read the
     # three spend fields by name (_store_context_and_log_usage).
@@ -5234,6 +5236,8 @@ Examples (echo → action_prompt: ""):
             # both when no tool ran and when every tool errored — only the
             # first of those is an invented complaint.
             any_tool_ran = False
+            # Whether a consult came back this turn; the reply shows ⚡.
+            advisor_used = False
             for _step in range(max_steps):
                 self.log.info(
                     "assistant_completion step %i: model=%s messages=%i",
@@ -5286,6 +5290,7 @@ Examples (echo → action_prompt: ""):
                 if reply.advisor_called:
                     self.log.info("assistant consulted advisor %s", advisor_model)
                     advisor_model = ""
+                    advisor_used = True
                 # The response ended mid-consult. Sending the turn back
                 # unchanged, with the advisor still attached, resumes it.
                 if reply.finish_reason == "pause":
@@ -5441,6 +5446,7 @@ Examples (echo → action_prompt: ""):
                             model=model,
                             grounding_used=executor.grounding_used,
                             image_reworded=executor.image_reworded,
+                            advisor_used=advisor_used,
                             error="Model echoed the prompt instead of replying.",
                             last_successful_tool=last_successful_tool,
                         )
@@ -5459,6 +5465,7 @@ Examples (echo → action_prompt: ""):
                         model=model,
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
+                        advisor_used=advisor_used,
                         last_successful_tool=last_successful_tool,
                         last_tool_message=last_tool_message,
                         final_text_after_tools=content,
@@ -5616,6 +5623,7 @@ Examples (echo → action_prompt: ""):
                         model=model,
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
+                        advisor_used=advisor_used,
                         last_successful_tool="verse_storybook",
                         final_text_after_tools="",
                     )
@@ -5638,6 +5646,7 @@ Examples (echo → action_prompt: ""):
                         model=model,
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
+                        advisor_used=advisor_used,
                         last_successful_tool=last_successful_tool,
                         last_tool_message=last_tool_message,
                         final_text_after_tools="",
@@ -5686,6 +5695,7 @@ Examples (echo → action_prompt: ""):
                         model=model,
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
+                        advisor_used=advisor_used,
                         last_successful_tool=reply.tool_calls[-1].name,
                         final_text_after_tools=url,
                         was_verse=was_verse,
@@ -5703,6 +5713,7 @@ Examples (echo → action_prompt: ""):
                 model=model,
                 grounding_used=executor.grounding_used,
                 image_reworded=executor.image_reworded,
+                advisor_used=advisor_used,
                 error="Assistant exceeded maximum tool-call steps.",
                 last_successful_tool=last_successful_tool,
                 last_tool_message=last_tool_message,

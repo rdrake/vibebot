@@ -1020,6 +1020,27 @@ class TestDispatchAssistantReply:
         )
         assert "some reply" in reply_text
 
+    def test_advised_grounded_reply_shows_both_icons_advisor_first(
+        self, plugin_env, mocker: MockerFixture
+    ):
+        """A turn that consulted the advisor carries ⚡, ahead of 🌐 when both apply."""
+        plugin, mock_irc, mock_msg = plugin_env
+        plugin.llm_service.detect_images.return_value = []
+        plugin.llm_service.assistant_completion.side_effect = None
+        plugin.llm_service.assistant_completion.return_value = AssistantResult(
+            content="some reply",
+            spend=Spend.ZERO,
+            grounding_used=True,
+            advisor_used=True,
+            model="anthropic/claude-haiku-5-5",
+        )
+
+        plugin.ask(mock_irc, mock_msg, ["hello"])
+
+        reply_text = mock_irc.reply.call_args[0][0]
+        assert reply_text.startswith("⚡ \U0001f310"), reply_text
+        assert "some reply" in reply_text
+
     @pytest.mark.parametrize("command", ["ask", "draw"])
     def test_reworded_image_icon_prefixed_consistently(
         self, command, plugin_env, mocker: MockerFixture
