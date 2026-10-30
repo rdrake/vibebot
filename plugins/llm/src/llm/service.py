@@ -129,6 +129,9 @@ REFUSAL_FALLBACK_MODEL = "xai/grok-4-1-fast-non-reasoning"
 MAX_PROMPT_LENGTH = 10_000  # characters
 # Image calls are slower than text, especially with auto-rewrite retries.
 DRAW_TIMEOUT = 120  # seconds
+# A step that may consult the advisor runs a second model inside the same
+# non-streaming request, so LLM.timeout (30 s) is too short for it.
+ADVISOR_TIMEOUT = 120  # seconds
 META_MAX_STEPS = 12  # tool-call round trips per assistant invocation
 FILE_CLEANUP_MAX = 1000  # files kept in the HTTP directory
 # Active schedule_llm_task tasks per creator per channel.
@@ -4908,6 +4911,23 @@ Examples (echo → action_prompt: ""):
             fallback_model = REFUSAL_FALLBACK_MODEL
             if fallback_model == model or self._missing_key_error(fallback_model):
                 fallback_model = ""
+            # Chat only: verse wants prose, not planning, and draw has its own
+            # planner. Cleared once a consult comes back, so a turn pays for
+            # one at most.
+            advisor_model = ""
+            if route_profile == PROFILE_CHAT:
+                advisor_model = self.plugin.registryValue("advisorModel", target)
+            if advisor_model and not provider.advisor_pairs(model, advisor_model):
+                # xai/ executors (a channel's own choice, or the refusal
+                # fallback's re-run) have no advisor tool; only a bad
+                # anthropic/ pairing is a misconfiguration.
+                if self._is_anthropic_model(model):
+                    self.log.warning(
+                        "advisorModel %s cannot advise %s; consulting nobody",
+                        advisor_model,
+                        model,
+                    )
+                advisor_model = ""
 
             max_steps = META_MAX_STEPS
             timeout = self.plugin.registryValue("timeout")
@@ -5244,13 +5264,17 @@ Examples (echo → action_prompt: ""):
                     }
                 elif _step == 0 and force_initial_pending_tool:
                     completion_kwargs["tool_choice"] = "required"
+                step_timeout = timeout
+                if advisor_model:
+                    completion_kwargs["advisor"] = advisor_model
+                    step_timeout = max(timeout, ADVISOR_TIMEOUT)
 
                 reply = self._timed_completion(
                     f"assistant_step_{_step + 1}",
                     model=model,
                     messages=messages,
                     channel=channel,
-                    timeout=timeout,
+                    timeout=step_timeout,
                     tools=profile_tools,
                     **completion_kwargs,
                 )
@@ -5258,6 +5282,15 @@ Examples (echo → action_prompt: ""):
 
                 if reply.text:
                     last_assistant_text = reply.text
+
+                if reply.advisor_called:
+                    self.log.info("assistant consulted advisor %s", advisor_model)
+                    advisor_model = ""
+                # The response ended mid-consult. Sending the turn back
+                # unchanged, with the advisor still attached, resumes it.
+                if reply.finish_reason == "pause":
+                    messages.append(reply.turn())
+                    continue
 
                 # If the LLM returned text (no tool calls), we're done
                 if not reply.tool_calls:

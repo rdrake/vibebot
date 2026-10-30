@@ -101,6 +101,20 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
+    "advisorModel",
+    ValidatedModelName(
+        "anthropic/claude-opus-5-5",
+        _("""Stronger model the chat assistant may consult, at most once per
+        turn, when it judges a request hard. The assistant decides; most chat
+        never calls it. Must be an anthropic/ model at least as capable as
+        assistantModel (otherwise it is skipped with a log warning). Empty
+        turns it off. A consult adds roughly $0.05 on Opus and can take tens
+        of seconds."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "memoryModel",
     ValidatedModelName(
         "",

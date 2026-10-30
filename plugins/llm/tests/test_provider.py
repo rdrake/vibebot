@@ -433,6 +433,165 @@ class TestAnthropicReply:
 
 
 # ---------------------------------------------------------------------------
+# Advisor tool
+# ---------------------------------------------------------------------------
+
+# Interleaved as the API returns it: the consult sits between the executor's
+# own text and its tool call, and the advice is encrypted.
+ADVISED_REPLY = {
+    "content": [
+        {"type": "thinking", "thinking": "", "signature": "sig-1"},
+        {"type": "text", "text": "Let me check."},
+        {"type": "server_tool_use", "id": "srvtoolu_1", "name": "advisor", "input": {}},
+        {
+            "type": "advisor_tool_result",
+            "tool_use_id": "srvtoolu_1",
+            "content": {"type": "advisor_redacted_result", "encrypted_content": "EqQB..."},
+        },
+        {"type": "text", "text": " Searching."},
+        {"type": "tool_use", "id": "toolu_9", "name": "search_web", "input": {"query": "cats"}},
+    ],
+    "stop_reason": "tool_use",
+    "usage": {
+        "input_tokens": 1000,
+        "output_tokens": 100,
+        "iterations": [
+            {"type": "message", "input_tokens": 400, "output_tokens": 40},
+            {
+                "type": "advisor_message",
+                "model": "claude-opus-5-5",
+                "input_tokens": 800,
+                "cache_read_input_tokens": 200,
+                "output_tokens": 1500,
+            },
+            {"type": "message", "input_tokens": 600, "output_tokens": 60},
+        ],
+    },
+}
+
+
+class TestAdvisor:
+    def test_advisor_rides_as_a_capped_server_tool_under_its_beta(self, post: FakePost) -> None:
+        provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30, advisor=OPUS)
+        assert post.body["tools"] == [
+            {
+                "type": "advisor_20260301",
+                "name": "advisor",
+                "model": "claude-opus-5-5",
+                "max_uses": 1,
+                "max_tokens": provider.ADVISOR_MAX_TOKENS,
+            }
+        ]
+        assert post.calls[-1]["headers"]["anthropic-beta"] == "advisor-tool-2026-03-01"
+
+    def test_no_advisor_no_beta_header(self, post: FakePost) -> None:
+        provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30, tools=TOOLS)
+        assert "anthropic-beta" not in post.calls[-1]["headers"]
+        assert [t["name"] for t in post.body["tools"]] == ["search_web"]
+
+    def test_consult_is_booked_at_the_advisors_rates(
+        self, post: FakePost, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        post.reply = ADVISED_REPLY
+        provider._unpriced.discard("anthropic/")
+        reply = provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30, advisor=OPUS)
+        # The executor's own iterations are already in the top-level totals;
+        # they are neither priced twice nor mistaken for an unpriced model.
+        assert not any("price" in r.message for r in caplog.records)
+        # Haiku on the top-level totals: 1000×0.10 + 100×0.50.
+        # Opus on its iteration: 800×4.00 + 200×0.20 + 1500×20.00.
+        executor = 1000 * 0.10 + 100 * 0.50
+        advisor = 800 * 4.00 + 200 * 0.20 + 1500 * 20.00
+        assert reply.cost == pytest.approx((executor + advisor) / 1e6)
+        assert reply.usage == provider.Usage(input_tokens=1000, output_tokens=100)
+        assert reply.advisor_called
+        assert reply.text == "Let me check. Searching."
+
+    def test_consult_usage_missing_fields_count_as_zero(self, post: FakePost) -> None:
+        def consult(**tokens: int) -> dict[str, Any]:
+            return {"type": "advisor_message", "model": "claude-opus-5-5", **tokens}
+
+        post.reply = {
+            "content": [],
+            "stop_reason": "end_turn",
+            "usage": {
+                "iterations": [
+                    consult(output_tokens=1000),
+                    consult(input_tokens=1000, cache_creation_input_tokens=100),
+                ]
+            },
+        }
+        reply = provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30, advisor=OPUS)
+        assert reply.cost == pytest.approx((1000 * 20.00 + 1000 * 4.00 + 100 * 5.00) / 1e6)
+
+    def test_next_step_replays_the_consult_verbatim_and_in_order(self, post: FakePost) -> None:
+        post.reply = ADVISED_REPLY
+        messages: list[dict[str, Any]] = [{"role": "user", "content": "x"}]
+        reply = provider.chat(HAIKU, messages, timeout=30, tools=TOOLS, advisor=OPUS)
+        messages += [reply.turn(), {"role": "tool", "tool_call_id": "toolu_9", "content": "meow"}]
+        provider.chat(HAIKU, messages, timeout=30, tools=TOOLS)
+        assert post.body["messages"][1] == {
+            "role": "assistant",
+            "content": ADVISED_REPLY["content"],
+        }
+
+    def test_pause_turn_is_a_pause_not_a_finished_reply(self, post: FakePost) -> None:
+        pending = {"type": "server_tool_use", "id": "srvtoolu_1", "name": "advisor", "input": {}}
+        post.reply = {"content": [pending], "stop_reason": "pause_turn"}
+        reply = provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30, advisor=OPUS)
+        assert reply.finish_reason == "pause"
+        assert not reply.advisor_called
+        assert reply.turn()["anthropic_content"] == [pending]
+
+    def test_a_turn_without_a_consult_carries_no_raw_content(self, post: FakePost) -> None:
+        post.reply = ANTHROPIC_TOOL_REPLY
+        reply = provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30, advisor=OPUS)
+        assert "anthropic_content" not in reply.turn()
+        assert not reply.advisor_called
+
+    def test_xai_never_sees_the_raw_content(self, post: FakePost) -> None:
+        post.reply = ADVISED_REPLY
+        reply = provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30, advisor=OPUS)
+        post.reply = {"choices": [{"message": {"content": "ok"}}]}
+        provider.chat(GROK, [{"role": "user", "content": "x"}, reply.turn()], timeout=30)
+        assert "anthropic_content" not in post.body["messages"][1]
+
+    def test_unpriced_advisor_books_only_the_executor(self, post: FakePost) -> None:
+        post.reply = {
+            "content": [],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 0,
+                "iterations": [
+                    {"type": "advisor_message", "model": "claude-x", "output_tokens": 9}
+                ],
+            },
+        }
+        reply = provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30)
+        assert reply.cost == pytest.approx(1000 * 0.10 / 1e6)
+
+    @pytest.mark.parametrize(
+        ("executor", "advisor", "allowed"),
+        [
+            (HAIKU, OPUS, True),
+            (HAIKU, "anthropic/claude-sonnet-5-5", True),
+            (HAIKU, HAIKU, True),
+            (OPUS, OPUS, True),
+            (OPUS, FABLE, True),
+            (OPUS, "anthropic/claude-sonnet-5-5", False),
+            (FABLE, OPUS, False),
+            (GROK, OPUS, False),
+            (HAIKU, GROK, False),
+            ("anthropic/claude-unknown", OPUS, False),
+            (HAIKU, "anthropic/claude-unknown", False),
+        ],
+    )
+    def test_advisor_pairs(self, executor: str, advisor: str, allowed: bool) -> None:
+        assert provider.advisor_pairs(executor, advisor) is allowed
+
+
+# ---------------------------------------------------------------------------
 # xAI chat
 # ---------------------------------------------------------------------------
 

@@ -50,6 +50,7 @@ Models are `provider/name` strings, and the provider must be `anthropic/` or `xa
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
 | `assistantModel` | channel | `anthropic/claude-haiku-5-5` | All assistant text and tool work: chat, planner, memory, reminders, scheduled tasks. Needs vision support if users paste image URLs |
+| `advisorModel` | channel | `anthropic/claude-opus-5-5` | A stronger model chat may consult at most once a turn, through Anthropic's advisor tool. The assistant model decides when; most chat never calls it. A consult runs inside the same request, so a step that may consult gets a 120-second timeout instead of `timeout`, and an Opus consult costs about $0.05, booked at Opus rates. Chat turns only, never verse or `@draw`. Must be an `anthropic/` model at least as capable as `assistantModel`; any other pairing is skipped with a log warning, and an `xai/` assistant model never consults. Empty turns it off |
 | `memoryModel` | channel | empty | Model for the memory extraction that runs after a stored `@ask` or chat reply to an authenticated user. Falls back to `assistantModel`. A cheap model is enough |
 | `verseModel` | channel | empty | Model for verse-mode replies. Falls back to `assistantModel`. Set this when the assistant model is a terse reasoning model that writes poor prose |
 

@@ -43,6 +43,26 @@ USER_AGENT = "vibebot"
 # nothing an IRC bot says comes close to this one.
 DEFAULT_MAX_TOKENS = 16000
 
+# The advisor tool (beta): the executor may consult a stronger model inside
+# the same request. One consult per request; the cap bounds the advisor's
+# thinking plus advice (the request's max_tokens does not), and the docs put
+# a typical consult at 1,400-1,800 tokens.
+ADVISOR_BETA = "advisor-tool-2026-03-01"
+ADVISOR_MAX_TOKENS = 2048
+
+# Capability order for the advisor pairing rule: the advisor must be at least
+# as capable as the executor or the API answers 400. Models missing here are
+# never paired.
+_ADVISOR_RANK = {
+    "anthropic/claude-haiku-5-5": 1,
+    "anthropic/claude-sonnet-5-5": 2,
+    "anthropic/claude-opus-5-5": 3,
+    "anthropic/claude-fable-5-1": 4,
+}
+
+# Keys on an assistant message that only Anthropic reads back.
+_ANTHROPIC_ONLY_KEYS = frozenset({"thinking_blocks", "anthropic_content"})
+
 # xAI reports cost as integer ticks. A tick of 1e-10 USD is inferred, not
 # documented: 200000000 ticks on a refused draw matched the $0.02 list price
 # (measured 2026-08-15).
@@ -147,6 +167,11 @@ class Reply:
     cost: float = 0.0
     grounded: bool = False  # search only: the web was actually consulted
     thinking: tuple[dict[str, Any], ...] = ()  # opaque, returned verbatim
+    # The whole Anthropic content, in order, when the advisor ran: its advice
+    # is encrypted and reaches the next step only if these blocks go back
+    # exactly as they came.
+    blocks: tuple[dict[str, Any], ...] = ()
+    advisor_called: bool = False  # an advisor_tool_result came back
 
     def turn(self) -> dict[str, Any]:
         """This reply as an assistant message to append to the conversation.
@@ -167,6 +192,8 @@ class Reply:
             ]
         if self.thinking:
             message["thinking_blocks"] = list(self.thinking)
+        if self.blocks:
+            message["anthropic_content"] = list(self.blocks)
         return message
 
 
@@ -363,6 +390,7 @@ def chat(
     max_tokens: int | None = None,
     json_reply: bool | dict[str, Any] = False,
     cache_key: str | None = None,
+    advisor: str | None = None,
 ) -> Reply:
     """One chat completion.
 
@@ -370,7 +398,11 @@ def chat(
     ``"auto"``, ``"required"``, ``"none"`` or ``{"type": "function",
     "function": {"name": ...}}``. ``json_reply`` is True for "answer with a
     JSON object" or a JSON Schema the answer must match. ``cache_key`` pins
-    xAI's prompt-cache routing; Anthropic caching is automatic.
+    xAI's prompt-cache routing; Anthropic caching is automatic. ``advisor``
+    is an ``anthropic/`` model the executor may consult once (see
+    :func:`advisor_pairs`); a reply whose finish_reason is ``pause`` stopped
+    mid-consult and is resumed by sending its turn back with the same
+    advisor.
     """
     provider, name = _split(model)
     if provider == "anthropic":
@@ -383,6 +415,17 @@ def chat(
             json_reply=json_reply,
         )
         headers = {"x-api-key": _key(model, provider), "anthropic-version": ANTHROPIC_VERSION}
+        if advisor:
+            body.setdefault("tools", []).append(
+                {
+                    "type": "advisor_20260301",
+                    "name": "advisor",
+                    "model": _split(advisor)[1],
+                    "max_uses": 1,
+                    "max_tokens": ADVISOR_MAX_TOKENS,
+                }
+            )
+            headers["anthropic-beta"] = ADVISOR_BETA
         data = _post(
             f"{ANTHROPIC_URL}/messages",
             headers,
@@ -511,6 +554,8 @@ def _anthropic_request(
                     }
                 ],
             )
+        elif role == "assistant" and message.get("anthropic_content"):
+            add("assistant", [dict(block) for block in message["anthropic_content"]])
         elif role == "assistant":
             blocks = [dict(block) for block in message.get("thinking_blocks") or []]
             text = _text_of(content)
@@ -595,14 +640,51 @@ _ANTHROPIC_FINISH = {
     "tool_use": "tool_calls",
     "max_tokens": "length",
     "refusal": "refusal",
+    # A consult still pending when the response ended.
+    "pause_turn": "pause",
 }
+
+
+def advisor_pairs(model: str, advisor: str) -> bool:
+    """Whether ``advisor`` may advise ``model``: both Anthropic, and the
+    advisor at least as capable."""
+    rank = _ADVISOR_RANK.get(model)
+    return rank is not None and _ADVISOR_RANK.get(advisor, 0) >= rank
+
+
+def _advisor_cost(usage: dict[str, Any]) -> float:
+    """What the advisor consults cost, at the advisor's own rates.
+
+    Top-level usage counts the executor only; each consult is an
+    ``advisor_message`` entry in ``usage.iterations``.
+    """
+    cost = 0.0
+    for iteration in usage.get("iterations") or []:
+        if iteration.get("type") != "advisor_message":
+            continue
+        model = f"anthropic/{iteration.get('model', '')}"
+        price = PRICES.get(model)
+        if price is None:
+            _warn_unpriced(model)
+            continue
+        cost += (
+            int(iteration.get("input_tokens") or 0) * price.input
+            + int(iteration.get("cache_creation_input_tokens") or 0) * price.cache_write
+            + int(iteration.get("cache_read_input_tokens") or 0) * price.cache_read
+            + int(iteration.get("output_tokens") or 0) * price.output
+        ) / 1e6
+    return cost
 
 
 def _anthropic_reply(model: str, data: dict[str, Any]) -> Reply:
     texts: list[str] = []
     calls: list[ToolCall] = []
     thinking: list[dict[str, Any]] = []
-    for block in data.get("content") or []:
+    content = data.get("content") or []
+    advised = any(
+        block.get("type") in ("server_tool_use", "advisor_tool_result") for block in content
+    )
+    for block in content:
         kind = block.get("type")
         if kind == "text":
             texts.append(block.get("text") or "")
@@ -637,8 +719,10 @@ def _anthropic_reply(model: str, data: dict[str, Any]) -> Reply:
         tool_calls=tuple(calls),
         finish_reason=_ANTHROPIC_FINISH.get(data.get("stop_reason") or "", "stop"),
         usage=Usage(input_tokens=fresh + written + read, output_tokens=output, cached_tokens=read),
-        cost=cost,
+        cost=cost + _advisor_cost(raw),
         thinking=tuple(thinking),
+        blocks=tuple(content) if advised else (),
+        advisor_called=any(block.get("type") == "advisor_tool_result" for block in content),
     )
 
 
@@ -654,7 +738,7 @@ def _xai_request(
     body: dict[str, Any] = {
         "model": name,
         "messages": [
-            {key: value for key, value in message.items() if key != "thinking_blocks"}
+            {key: value for key, value in message.items() if key not in _ANTHROPIC_ONLY_KEYS}
             for message in messages
         ],
     }
