@@ -847,10 +847,13 @@ def _patch_irc_docapnew() -> None:
     irclib.Irc.doCapNew = doCapNew
 
 
-# Draft caps irc_lookup kind=history and delete_last_reply need. Limnoria's
-# list has neither, and AfterNET (Nefarious) gates CHATHISTORY and REDACT on
-# them. Requested like draft/multiline: only with experimentalExtensions.
-_EXTRA_EXPERIMENTAL_CAPS = frozenset({"draft/chathistory", "draft/message-redaction"})
+# Draft caps irc_lookup kind=history, delete_last_reply and file host uploads
+# need. Limnoria's list has none of them, and AfterNET (Nefarious) gates
+# CHATHISTORY and REDACT on theirs. Requested like draft/multiline: only with
+# experimentalExtensions.
+_EXTRA_EXPERIMENTAL_CAPS = frozenset(
+    {"draft/authtoken", "draft/chathistory", "draft/message-redaction"}
+)
 
 
 def _patch_request_caps() -> None:
@@ -1022,6 +1025,9 @@ class LLM(callbacks.Plugin):
 
         # Serializes worker-thread irc.queueMsg calls (see _safe_queue).
         self._irc_send_lock = threading.Lock()
+        # One TOKEN GENERATE in flight: replies carry no id, and ircquery would
+        # hand one single-use token to every caller waiting on the same key.
+        self._filehost_token_lock = threading.Lock()
 
         # Recency-attributed verse reaction signal (see verse/reactions.py).
         # Last verse line the bot said per (network, channel); read by doTagmsg.
@@ -2937,6 +2943,64 @@ class LLM(callbacks.Plugin):
     @staticmethod
     def _network_of(irc: callbacks.Irc) -> str:
         return str(getattr(irc, "network", "") or "")
+
+    # ------------------------------------------------------------------
+    # File host tokens (IRCv3 draft/FILEHOST + draft/authtoken)
+    # ------------------------------------------------------------------
+    def _filehost_irc(self) -> Any | None:
+        """The network that advertises an https file host and grants tokens for it."""
+        for irc in list(world.ircs):
+            url = irc.state.supported.get("draft/FILEHOST")
+            if (
+                "draft/authtoken" in irc.state.capabilities_ack
+                and isinstance(url, str)
+                and url.startswith("https://")
+            ):
+                return irc
+        return None
+
+    def filehost_endpoint(self) -> str | None:
+        """Upload URL of the network's file host, or None when it has none."""
+        irc = self._filehost_irc()
+        return irc.state.supported["draft/FILEHOST"] if irc else None
+
+    def filehost_token(self) -> str | None:
+        """A fresh single-use upload token, or None with the reason logged."""
+        irc = self._filehost_irc()
+        if irc is None:
+            return None
+        with self._filehost_token_lock:
+            got = self._query_collect(
+                irc,
+                "filehost_token",
+                "FILEHOST",
+                ircmsgs.IrcMsg(command="TOKEN", args=("GENERATE", "FILEHOST")),
+            )
+        if got is None:
+            self.log.warning("filehost: no reply to TOKEN GENERATE; storing image locally")
+            return None
+        rows, error = got
+        if error is not None:
+            self.log.warning("filehost: server refused a token: %s", error)
+            return None
+        return rows[0] if rows else None
+
+    def doToken(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """``TOKEN GENERATE FILEHOST :<token>``."""
+        if msg.args[:2] == ("GENERATE", "FILEHOST") and len(msg.args) > 2:
+            network = self._network_of(irc)
+            self._irc_queries.feed("filehost_token", network, "FILEHOST", msg.args[2])
+            self._irc_queries.close("filehost_token", network, "FILEHOST")
+
+    def doFail(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """``FAIL TOKEN <code> [context] :<description>`` ends the wait for a token."""
+        if len(msg.args) > 2 and msg.args[0] == "TOKEN":
+            self._irc_queries.close(
+                "filehost_token",
+                self._network_of(irc),
+                "FILEHOST",
+                error=f"{msg.args[1]}: {msg.args[-1]}",
+            )
 
     def do322(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
         """RPL_LIST: ``<me> <channel> <count> :<topic>``."""

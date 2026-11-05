@@ -765,7 +765,7 @@ def _is_image_failure(content: str) -> bool:
     """
     if not content:
         return False
-    if _IMAGE_URL_RE.search(content):
+    if _ANY_IMAGE_URL_RE.search(content):
         return False
     return _IMAGE_FAILURE_RE.search(content[:_IMAGE_FAILURE_OPENING_CHARS]) is not None
 
@@ -2350,18 +2350,18 @@ class LLMService:
 
     def _restrict_img_srcs(self, html: str, url_base: str) -> str:
         """Drop <img> whose src is neither a bare relative filename nor under one
-        of our own bases (url_base, or the configured external image host).
+        of our own bases (url_base, or the network's file host).
 
         Storybook embeds its illustrations by relative filename (same http_root as
         the page), so legitimate images survive; externally-hosted images (tracking
-        pixels / SSRF-on-view) are removed from every pastebin page. When
-        imageUploadUrl is set our illustrations live on that host instead and are
-        embedded absolutely, so its prefix is allowed too.
+        pixels / SSRF-on-view) are removed from every pastebin page. Images on the
+        file host are embedded absolutely, so its origin is allowed too.
         """
         allowed = [url_base.rstrip("/") + "/"]
-        upload_base = self._image_upload_base()
-        if upload_base:
-            allowed.append(upload_base)
+        endpoint = self._filehost_endpoint()
+        if endpoint:
+            parsed = urlparse(endpoint)
+            allowed.append(f"{parsed.scheme}://{parsed.netloc}/")
 
         def _ok(src: str) -> bool:
             s = src.strip()
@@ -5590,7 +5590,10 @@ Examples (echo → action_prompt: ""):
                             # from one lifted out of history.
                             image_tool_called = True
                             image_url = str(parsed.get("message", "")).strip()
-                            minted_image_urls.update(_IMAGE_URL_RE.findall(image_url))
+                            # Any image shape, not just img_<hex>: the upload
+                            # host names its own links, and the guard compares
+                            # against what _ANY_IMAGE_URL_RE finds in the reply.
+                            minted_image_urls.update(_ANY_IMAGE_URL_RE.findall(image_url))
                             if image_url:
                                 step_image_urls.append(image_url)
                     elif isinstance(parsed, dict) and tc.name in _IMAGE_MINTING_TOOLS:
@@ -6034,15 +6037,13 @@ Examples (echo → action_prompt: ""):
         """Hosts that only this bot can legitimately publish images to.
 
         Both destinations `_save_image_bytes` can return: the configured
-        upload service (``imageUploadUrl``) and the local HTTP root it falls
-        back to (``httpUrlBase``). An image URL on one of these that the
+        network's file host and the local HTTP root it falls back to
+        (``httpUrlBase``). An image URL on one of these that the
         current turn did not mint is stale or invented -- see
         :func:`_unminted_image_urls`. A URL anywhere else is somebody else's
         image and is none of our business.
         """
-        candidates = [self.get_http_paths()[1]]
-        with contextlib.suppress(Exception):
-            candidates.append(str(self.plugin.registryValue("imageUploadUrl") or ""))
+        candidates = [self.get_http_paths()[1], self._filehost_endpoint()]
         return frozenset(h for c in candidates if (h := _image_url_host(c)))
 
     def get_http_paths(self) -> tuple[str, str]:
@@ -6284,10 +6285,6 @@ Examples (echo → action_prompt: ""):
             self.log.debug("PNG→JPEG conversion failed, keeping PNG")
             return image_bytes, "png"
 
-    # Ceiling advertised by the reference host (paste.boxlabs.uk/img/). Bigger
-    # images go straight to local storage instead of burning an upload attempt.
-    _IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
-
     _IMAGE_MIME_TYPES = {
         "png": "image/png",
         "jpg": "image/jpeg",
@@ -6296,111 +6293,55 @@ Examples (echo → action_prompt: ""):
         "gif": "image/gif",
     }
 
-    def _image_upload_base(self) -> str:
-        """Origin of the configured external image host, or "" when uploads are off.
+    def _filehost_endpoint(self) -> str:
+        """Upload URL the IRC network advertises (draft/FILEHOST), or "" for none."""
+        url = self.plugin.filehost_endpoint()
+        return url if isinstance(url, str) and validate_external_url(url) else ""
 
-        The whole origin rather than the endpoint path: a host is free to file
-        uploads somewhere other than the directory you POST to.
+    def _upload_image(self, image_bytes: bytes, extension: str) -> str | None:
+        """Upload to the network's file host and return the public link.
+
+        Returns None for every failure, so the caller stores the image locally.
+        Each upload asks for its own token: they are single-use. The link gets
+        posted to channels, so only an image on the host we uploaded to counts.
         """
-        from urllib.parse import urlparse
-
-        endpoint = (self.plugin.registryValue("imageUploadUrl") or "").strip()
-        if not endpoint or not validate_external_url(endpoint):
-            return ""
-        # validate_external_url guarantees an http(s) scheme and a hostname.
-        parsed = urlparse(endpoint)
-        return f"{parsed.scheme}://{parsed.netloc}/"
-
-    def _upload_image_bytes(self, image_bytes: bytes, extension: str) -> str | None:
-        """Upload image bytes to the external host in ``imageUploadUrl``.
-
-        Sends a multipart POST on the ``images[]`` field and reads the public URL
-        out of the JSON reply. Returns None for every failure mode — uploads
-        disabled, unsafe endpoint, oversize image, network error, rejected or
-        untrustworthy reply — so callers silently fall back to local storage.
-
-        The reply comes from a third party and is untrusted: only an image URL on
-        the configured host is accepted.
-        """
+        import urllib.error
         import urllib.request
-        from urllib.parse import urljoin, urlparse
+        from urllib.parse import urljoin
 
-        endpoint = (self.plugin.registryValue("imageUploadUrl") or "").strip()
-        if not endpoint:
+        endpoint = self._filehost_endpoint()
+        token = self.plugin.filehost_token() if endpoint else None
+        if not token:
             return None
-        if not validate_external_url(endpoint):
-            self.log.warning("imageUploadUrl is not a safe http(s) URL; storing image locally")
-            return None
-        if len(image_bytes) > self._IMAGE_UPLOAD_MAX_BYTES:
-            self.log.info(
-                "Image is %i bytes, over the %i upload limit; storing locally",
-                len(image_bytes),
-                self._IMAGE_UPLOAD_MAX_BYTES,
-            )
-            return None
-
-        boundary = f"----VibeBot{uuid.uuid4().hex}"
-        filename = f"img_{uuid.uuid4().hex[:16]}.{extension}"
-        mime = self._IMAGE_MIME_TYPES.get(extension, "application/octet-stream")
-        body = b"".join(
-            [
-                f"--{boundary}\r\n".encode(),
-                b'Content-Disposition: form-data; name="strip_exif"\r\n\r\n1\r\n',
-                f"--{boundary}\r\n".encode(),
-                (
-                    f'Content-Disposition: form-data; name="images[]"; filename="{filename}"\r\n'
-                    f"Content-Type: {mime}\r\n\r\n"
-                ).encode(),
-                image_bytes,
-                f"\r\n--{boundary}--\r\n".encode(),
-            ]
-        )
-
-        # Same policy as provider-image downloads: a 3xx could point anywhere, so
-        # fail closed rather than follow it.
-        opener = _no_redirect_opener()
-        timeout = DRAW_TIMEOUT
         req = urllib.request.Request(
             endpoint,
-            data=body,
+            data=image_bytes,
             headers={
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Authorization": f"Bearer {token}",
+                "Content-Type": self._IMAGE_MIME_TYPES.get(extension, "application/octet-stream"),
                 "User-Agent": "VibeBot/8",
             },
         )
-
+        # A redirect could carry the bearer token to a host nobody checked.
         try:
-            with opener.open(req, timeout=timeout) as resp:  # noqa: S310
-                payload = json.loads(resp.read(64 * 1024).decode("utf-8", "replace"))
+            with _no_redirect_opener().open(req, timeout=DRAW_TIMEOUT) as resp:  # noqa: S310
+                location = resp.headers.get("Location") or ""
+        except urllib.error.HTTPError as e:
+            reason = e.read(200).decode("utf-8", "replace")
+            self.log.warning("Filehost upload to %s failed: HTTP %i: %s", endpoint, e.code, reason)
+            return None
         except Exception as e:
-            self.log.warning("Image upload to %s failed: %s", endpoint[:200], e)
+            self.log.warning("Filehost upload to %s failed: %s", endpoint, e)
             return None
 
-        results = payload.get("results") if isinstance(payload, dict) else None
-        first = results[0] if isinstance(results, list) and results else None
-        if not isinstance(first, dict) or not first.get("success"):
-            reason = first.get("error") if isinstance(first, dict) else "no result in reply"
-            self.log.warning("Image upload rejected by %s: %s", endpoint[:200], reason)
-            return None
-
-        file_path = first.get("filePath")
-        if not isinstance(file_path, str) or not file_path:
-            self.log.warning("Image upload reply had no filePath")
-            return None
-
-        url = urljoin(endpoint, file_path)
+        url = urljoin(endpoint, location)
         parsed = urlparse(url)
-        # An image upload may legitimately come back under a different image
-        # extension — the reference host recompresses, so png in can be jpg
-        # out — which is why it accepts the whole set rather than the one sent.
-        valid_extensions = (".png", ".jpg", ".jpeg", ".webp", ".gif")
         if (
-            parsed.scheme not in ("http", "https")
-            or parsed.hostname != urlparse(endpoint).hostname
+            parsed.hostname != urlparse(endpoint).hostname
             or ".." in parsed.path
-            or not parsed.path.lower().endswith(valid_extensions)
+            or not parsed.path.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
         ):
-            self.log.warning("Image upload returned an untrusted URL; storing locally")
+            self.log.warning("Filehost upload returned an unusable link: %s", location[:200])
             return None
         return url
 
@@ -6413,8 +6354,8 @@ Examples (echo → action_prompt: ""):
     def _save_image_bytes(self, image_bytes: bytes, extension: str = "png") -> str | None:
         """Save raw image bytes and return their public URL.
 
-        Uploads to ``imageUploadUrl`` when configured, otherwise (and on any
-        upload failure) writes to the local HTTP root.
+        Uploads to the network's file host when it has one, otherwise (and on
+        any upload failure) writes to the local HTTP root.
 
         Args:
             image_bytes: Raw image bytes
@@ -6432,7 +6373,7 @@ Examples (echo → action_prompt: ""):
         if extension == "png":
             image_bytes, extension = self._convert_png_to_jpeg(image_bytes)
 
-        uploaded = self._upload_image_bytes(image_bytes, extension)
+        uploaded = self._upload_image(image_bytes, extension)
         if uploaded:
             return uploaded
 

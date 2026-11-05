@@ -287,20 +287,6 @@ conf.registerGlobalValue(
     ),
 )
 
-conf.registerGlobalValue(
-    LLM,
-    "imageUploadUrl",
-    registry.String(
-        "",
-        _("""Endpoint of an external image host for generated images. Expects a
-        multipart POST on the "images[]" field and a JSON reply shaped like
-        {"results": [{"success": true, "filePath": "/img/x.png"}]} — for example
-        https://paste.boxlabs.uk/img/. If empty, images are stored locally under
-        httpRoot and served from httpUrlBase. Any upload failure falls back to
-        local storage, so this is safe to leave pointed at a flaky host."""),
-    ),
-)
-
 # ============================================================================
 # Conversation Context (channel-specific with global defaults)
 # ============================================================================

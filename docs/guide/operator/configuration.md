@@ -193,24 +193,17 @@ Because the bot skips Limnoria's automatic WHO on join when `account-tag` and `e
 |---------|-------|---------|-------------|
 | `httpRoot` | global | empty | Filesystem path for output files. Empty keeps them under Limnoria's `data/web/llm/` and serves them from its built-in HTTP server. Setting it **unhooks that server** — an external server such as nginx must serve the path, and `httpUrlBase` must be set to match, or every generated link 404s |
 | `httpUrlBase` | global | empty | Public base URL for output files. Empty uses Limnoria's `publicUrl` plus `/llm`; if `publicUrl` is also unset the bot falls back to `http://localhost:<http port>/llm`, which nobody off the host can open |
-| `imageUploadUrl` | global | empty | External image host for generated images. Empty stores them locally |
 | `fileCleanupAge` | global | `720` | Delete output files older than this many hours (30 days) |
 
 Replies that wrap to at most 3 IRC lines go inline as one IRCv3 `draft/multiline` batch (this needs `supybot.protocols.irc.experimentalExtensions`); longer replies are saved as HTML and announced with a one-line teaser of up to 220 characters and a link. The output directory keeps at most 1,000 files.
 
-### Offloading images to an external host
+### Generated images and the network's file host
 
-Set `imageUploadUrl` to an uploader that takes a multipart `POST` on the `images[]` field and answers with JSON:
+When the server advertises IRCv3 `draft/FILEHOST` and grants `draft/authtoken`, generated images go to the network's file host and storybook pages embed the absolute URL. There is nothing to configure and no key to hold: the bot asks the server for a single-use token (`TOKEN GENERATE FILEHOST`) for each image. Pages themselves (long answers, stories) still come from your own HTTP server.
 
-```json
-{"results": [{"success": true, "filePath": "/img/img_abc123.png"}]}
-```
+It needs `supybot.protocols.irc.experimentalExtensions` on, a server that advertises a host, and the bot logged in to an account. On AfterNET, FractalRealities advertises `paste.boxlabs.uk`, and not every server advertises a host.
 
-Generated images then live on that host instead of under `httpRoot`, and storybook pages embed the absolute URL. Pages themselves (long answers, stories) still come from your own HTTP server, so this offloads bandwidth rather than replacing it.
-
-Every failure falls back to local storage: endpoint unreachable, upload rejected, image over 10 MB, or a reply naming a URL that is not an image on the configured host. An outage costs a slower draw, nothing more.
-
-[paste.boxlabs.uk/img/](https://paste.boxlabs.uk/img/) is an externally operated uploader, the host this contract follows, and it needs no key. Ask the host's owner before pointing the bot at somebody else's uploader.
+Every failure stores the image locally under `httpRoot` instead, at the cost of a slower draw. Look for log lines starting `filehost:` or `Filehost upload`. A bot that is not logged in logs `server refused a token: ACCOUNT_REQUIRED`. The host sets its own retention and limits: `paste.boxlabs.uk` keeps uploads for 30 days, so an old storybook page loses its pictures, and the software behind it defaults to 30 uploads an hour per account, so a large storybook can finish on local storage.
 
 ## Limnoria tool bridge
 

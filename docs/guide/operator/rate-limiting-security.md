@@ -103,7 +103,7 @@ Model output is sanitised before it reaches IRC, and incoming text before Limnor
 - **IRC command injection.** Lines starting with a configured command prefix get a leading space, so neither this bot nor another can be driven by model output. `commandPrefixes` defaults to `. @` — the conventional `.` and VibeBot's own `@`; add any others the network uses.
 - **Wire-structural bytes.** NUL and the CTCP delimiter `\x01` are deleted from every outbound model line, the `ACTION` path included, so model text cannot forge a CTCP. Leaked model sentinels such as `<|eos|>` are stripped in the same pass.
 - **API key scrubbing.** Error messages are scrubbed of API keys before display.
-- **HTML sanitisation.** Every page the bot publishes — long answers, storybooks, verse dumps — passes through `nh3`, an allowlist-based sanitiser restricted to `http`, `https`, and `mailto` URLs. A second pass drops any `<img>` whose source is neither a bare relative filename nor under `httpUrlBase` or `imageUploadUrl`, so model output cannot embed a tracking pixel or fire a request when the page is opened.
+- **HTML sanitisation.** Every page the bot publishes — long answers, storybooks, verse dumps — passes through `nh3`, an allowlist-based sanitiser restricted to `http`, `https`, and `mailto` URLs. A second pass drops any `<img>` whose source is neither a bare relative filename nor under `httpUrlBase` or the network's file host, so model output cannot embed a tracking pixel or fire a request when the page is opened.
 - **Inbound control characters.** Incoming PRIVMSG text has its C0 control characters removed, ESC among them, and unbalanced `[` or `]` replaced with full-width equivalents, before Limnoria's tokenizer sees it.
 
 ### Prompt injection defences
