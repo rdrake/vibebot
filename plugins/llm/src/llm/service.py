@@ -6309,8 +6309,11 @@ Examples (echo → action_prompt: ""):
         import urllib.request
         from urllib.parse import urljoin
 
+        # The server chooses this address, and validate_external_url does no DNS.
         endpoint = self._filehost_endpoint()
-        token = self.plugin.filehost_token() if endpoint else None
+        if not endpoint or not self._resolves_to_public(endpoint):
+            return None
+        token = self.plugin.filehost_token(endpoint)
         if not token:
             return None
         req = urllib.request.Request(
@@ -6334,13 +6337,21 @@ Examples (echo → action_prompt: ""):
             self.log.warning("Filehost upload to %s failed: %s", endpoint, e)
             return None
 
-        url = urljoin(endpoint, location)
-        parsed = urlparse(url)
-        if (
-            parsed.hostname != urlparse(endpoint).hostname
-            or ".." in parsed.path
-            or not parsed.path.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
-        ):
+        # Comparing scheme and netloc also refuses "evil.example\\@host/x.png", which
+        # urlparse calls host but a browser opens on evil.example.
+        try:
+            url = urljoin(endpoint, location)
+            parsed = urlparse(url)
+            ours = urlparse(endpoint)
+            usable = (
+                (parsed.scheme, parsed.netloc) == (ours.scheme, ours.netloc)
+                and not re.search(r"[\s\\]", url)
+                and ".." not in parsed.path
+                and parsed.path.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
+            )
+        except ValueError:
+            usable = False
+        if not usable:
             self.log.warning("Filehost upload returned an unusable link: %s", location[:200])
             return None
         return url

@@ -2964,10 +2964,14 @@ class LLM(callbacks.Plugin):
         irc = self._filehost_irc()
         return irc.state.supported["draft/FILEHOST"] if irc else None
 
-    def filehost_token(self) -> str | None:
-        """A fresh single-use upload token, or None with the reason logged."""
+    def filehost_token(self, endpoint: str) -> str | None:
+        """A fresh single-use token for ``endpoint``, or None with the reason logged.
+
+        Refuses when the advertising network changed since ``endpoint`` was read,
+        so one network's token never goes to another network's host.
+        """
         irc = self._filehost_irc()
-        if irc is None:
+        if irc is None or irc.state.supported["draft/FILEHOST"] != endpoint:
             return None
         with self._filehost_token_lock:
             got = self._query_collect(

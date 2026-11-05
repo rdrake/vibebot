@@ -51,7 +51,7 @@ class TestTokenFromTheServer:
             plugin.doToken(irc, _token_reply("a.b.c"))
 
         irc.queueMsg.side_effect = reply
-        assert plugin.filehost_token() == "a.b.c"
+        assert plugin.filehost_token(ENDPOINT) == "a.b.c"
 
     def test_a_refusal_ends_the_wait_and_logs_the_reason(self, env, mocker: MockerFixture) -> None:
         plugin, irc = env
@@ -61,7 +61,7 @@ class TestTokenFromTheServer:
             irc, ircmsgs.IrcMsg(command="FAIL", args=("TOKEN", "ACCOUNT_REQUIRED", "Log in"))
         )
 
-        assert plugin.filehost_token() is None
+        assert plugin.filehost_token(ENDPOINT) is None
         assert log.warning.call_args[0][1] == "ACCOUNT_REQUIRED: Log in"
 
     def test_another_commands_failure_is_not_a_refusal(self, env, mocker: MockerFixture) -> None:
@@ -73,7 +73,7 @@ class TestTokenFromTheServer:
             plugin.doToken(irc, _token_reply("still-mine"))
 
         irc.queueMsg.side_effect = reply
-        assert plugin.filehost_token() == "still-mine"
+        assert plugin.filehost_token(ENDPOINT) == "still-mine"
 
     def test_a_token_for_another_service_is_not_ours(self, env, mocker: MockerFixture) -> None:
         plugin, irc = env
@@ -81,7 +81,7 @@ class TestTokenFromTheServer:
         irc.queueMsg.side_effect = lambda _m: plugin.doToken(
             irc, ircmsgs.IrcMsg(command="TOKEN", args=("GENERATE", "OTHER", "theirs"))
         )
-        assert plugin.filehost_token() is None
+        assert plugin.filehost_token(ENDPOINT) is None
 
     def test_a_reply_without_a_token_is_ignored(self, env, mocker: MockerFixture) -> None:
         plugin, irc = env
@@ -89,12 +89,12 @@ class TestTokenFromTheServer:
         irc.queueMsg.side_effect = lambda _m: plugin.doToken(
             irc, ircmsgs.IrcMsg(command="TOKEN", args=("GENERATE", "FILEHOST"))
         )
-        assert plugin.filehost_token() is None
+        assert plugin.filehost_token(ENDPOINT) is None
 
     def test_no_reply_gives_up(self, env, mocker: MockerFixture) -> None:
         plugin, _irc = env
         mocker.patch.object(plugin, "_IRC_QUERY_TIMEOUT", 0.01)
-        assert plugin.filehost_token() is None
+        assert plugin.filehost_token(ENDPOINT) is None
 
     def test_concurrent_uploads_never_share_a_single_use_token(self, env) -> None:
         plugin, irc = env
@@ -105,7 +105,7 @@ class TestTokenFromTheServer:
 
         def worker() -> None:
             start.wait(5)
-            results.append(plugin.filehost_token())
+            results.append(plugin.filehost_token(ENDPOINT))
 
         threads = [threading.Thread(target=worker) for _ in range(2)]
         for thread in threads:
@@ -127,7 +127,12 @@ class TestTokenFromTheServer:
         irc.state.capabilities_ack = caps
         irc.state.supported = supported
         assert plugin.filehost_endpoint() is None
-        assert plugin.filehost_token() is None
+        assert plugin.filehost_token(ENDPOINT) is None
+        irc.queueMsg.assert_not_called()
+
+    def test_a_token_is_only_issued_for_the_host_that_network_advertises(self, env) -> None:
+        plugin, irc = env
+        assert plugin.filehost_token("https://other.example/filehost") is None
         irc.queueMsg.assert_not_called()
 
     def test_the_advertised_host_is_the_endpoint(self, env) -> None:
@@ -162,6 +167,11 @@ class _Host(http.server.BaseHTTPRequestHandler):
             "/off-host": (201, b"", "https://evil.example.net/x.jpg"),
             "/not-image": (201, b"", f"{here}/filehost/page.html"),
             "/traversal": (201, b"", f"{here}/filehost/../x.jpg"),
+            "/ftp": (201, b"", f"ftp://{self.headers['Host']}/x.jpg"),
+            "/other-port": (201, b"", "http://127.0.0.1:1/x.jpg"),
+            "/backslash": (201, b"", f"http://evil.example\\@{self.headers['Host']}/x.jpg"),
+            "/space": (201, b"", f"{here}/filehost/a b.jpg"),
+            "/malformed": (201, b"", "http://[bad/x.jpg"),
             "/replayed": (401, b'{"message":"This token has already been used"}', None),
             "/moved": (302, b"", f"{here}/stolen"),
         }
@@ -186,7 +196,8 @@ class TestSavingAnImage:
         )
         # The local test host is loopback, which the real check rightly refuses.
         mocker.patch("llm.service.validate_external_url", return_value=True)
-        plugin.filehost_token = lambda: "a.b.c"
+        mocker.patch.object(service, "_resolves_to_public", return_value=True)
+        plugin.filehost_token = lambda _endpoint: "a.b.c"
         return service
 
     def _save(self, service, url: str) -> str:
@@ -206,7 +217,19 @@ class TestSavingAnImage:
         assert self._save(service, f"{host}/relative") == f"{host}/filehost/abc.jpg"
 
     @pytest.mark.parametrize(
-        "path", ["/no-location", "/off-host", "/not-image", "/traversal", "/replayed"]
+        "path",
+        [
+            "/no-location",
+            "/off-host",
+            "/not-image",
+            "/traversal",
+            "/ftp",
+            "/other-port",
+            "/backslash",
+            "/space",
+            "/malformed",
+            "/replayed",
+        ],
     )
     def test_anything_but_an_image_on_the_host_stores_locally(self, service, host, path) -> None:
         assert self._save(service, f"{host}{path}").startswith("https://example.com/llm/img_")
@@ -225,7 +248,7 @@ class TestSavingAnImage:
         assert result.startswith("https://example.com/llm/img_")
 
     def test_no_token_never_contacts_the_host(self, service, host) -> None:
-        service.plugin.filehost_token = lambda: None
+        service.plugin.filehost_token = lambda _endpoint: None
         assert self._save(service, f"{host}/ok").startswith("https://example.com/llm/img_")
         assert _Host.seen == []
 
@@ -234,6 +257,19 @@ class TestAnUnsafeHost:
     def test_is_never_given_a_token(self, make_service, tmp_path, mocker: MockerFixture) -> None:
         service, plugin = make_service(httpRoot=str(tmp_path), httpUrlBase="https://e.example/llm")
         plugin.filehost_endpoint = lambda: "https://127.0.0.1/filehost"
+        token = mocker.Mock()
+        plugin.filehost_token = token
+
+        service._save_image_bytes(IMAGE, "jpg")
+
+        token.assert_not_called()
+
+    def test_a_name_resolving_to_a_private_address_is_never_given_a_token(
+        self, make_service, tmp_path, mocker: MockerFixture
+    ) -> None:
+        service, plugin = make_service(httpRoot=str(tmp_path), httpUrlBase="https://e.example/llm")
+        plugin.filehost_endpoint = lambda: ENDPOINT
+        mocker.patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("10.0.0.5", 0))])
         token = mocker.Mock()
         plugin.filehost_token = token
 
