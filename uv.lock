@@ -366,9 +366,9 @@ wheels = [
 
 [[package]]
 name = "limnoria"
-version = "2026.5.8"
+version = "2026.10.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a4/b9/0ecba934d71f80ec0da428402e05623ee70c4c0b9f084df1c2d2cc28059b/limnoria-2026.5.8.tar.gz", hash = "sha256:ac9cd7302f7cf9235094d9e474c2bf60bee3967d1460be7bae6cc741eb54aef9", size = 1110745, upload-time = "2026-05-08T05:12:13.951Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d4/25/51fe00b0bc26a7f0c2de52992a4d572ada5cbfdadd7567638284a5555d00/limnoria-2026.10.4.tar.gz", hash = "sha256:b21e986ac7f9905a9653dff919db46de9e27068fa8b68b878b2c576cdeab7c7c", size = 1109281, upload-time = "2026-10-18T09:58:56.676Z" }
 
 [[package]]
 name = "llm"
