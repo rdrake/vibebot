@@ -27,6 +27,7 @@ WIRE = Path(__file__).parent / "fixtures" / "provider_wire"
 HAIKU = "anthropic/claude-haiku-5-5"
 OPUS = "anthropic/claude-opus-5-5"
 FABLE = "anthropic/claude-fable-5-1"
+FABLE_52 = "anthropic/claude-fable-5-2"
 GROK = "xai/grok-4-1-fast-non-reasoning"
 
 SYSTEM = [{"role": "system", "content": "You are vibebot."}]
@@ -141,14 +142,15 @@ class TestAnthropicRequest:
         expected["max_tokens"] = provider.DEFAULT_MAX_TOKENS  # litellm: the 128K ceiling
         assert post.body == expected
 
-    @pytest.mark.parametrize("model", [OPUS, FABLE])
+    @pytest.mark.parametrize("model", [OPUS, FABLE, FABLE_52])
     @pytest.mark.parametrize(
         "choice", ["required", {"type": "function", "function": {"name": "search_web"}}]
     )
     def test_forced_tool_choice_is_sent_as_auto_where_the_model_rejects_it(
         self, post: FakePost, model: str, choice: str | dict[str, Any]
     ) -> None:
-        # Opus 5.5 and Fable 5.1 answer tool_choice "any" or "tool" with a 400.
+        # Opus 5.5 and Fable 5.1/5.2 answer tool_choice "any" or "tool" with a
+        # 400; Fable 5.2 did so in prod on every forced search (2026-11-23).
         provider.chat(
             model,
             SYSTEM + [{"role": "user", "content": "search cats"}],
@@ -375,6 +377,7 @@ class TestAnthropicReply:
             ("anthropic/claude-sonnet-5-5", 100 * 2.00 + 1000 * 2.50 + 4000 * 0.10 + 50 * 10.00),
             (OPUS, 100 * 4.00 + 1000 * 5.00 + 4000 * 0.20 + 50 * 20.00),
             (FABLE, 100 * 10.00 + 1000 * 12.50 + 4000 * 0.25 + 50 * 50.00),
+            (FABLE_52, 100 * 8.00 + 1000 * 10.00 + 4000 * 0.20 + 50 * 40.00),
         ],
     )
     def test_sonnet_opus_and_fable_spend_is_booked_at_list_price(
@@ -581,6 +584,8 @@ class TestAdvisor:
             (OPUS, FABLE, True),
             (OPUS, "anthropic/claude-sonnet-5-5", False),
             (FABLE, OPUS, False),
+            (FABLE_52, FABLE_52, True),
+            (FABLE_52, OPUS, False),
             (GROK, OPUS, False),
             (HAIKU, GROK, False),
             ("anthropic/claude-unknown", OPUS, False),

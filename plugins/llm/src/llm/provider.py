@@ -61,6 +61,7 @@ _ADVISOR_RANK = {
     "anthropic/claude-sonnet-5-5": 2,
     "anthropic/claude-opus-5-5": 3,
     "anthropic/claude-fable-5-1": 4,
+    "anthropic/claude-fable-5-2": 5,
 }
 
 # Keys on an assistant message that only Anthropic reads back.
@@ -104,6 +105,9 @@ PRICES: dict[str, Price] = {
     "anthropic/claude-opus-5-5": Price(input=4.00, output=20.00, cache_read=0.20, cache_write=5.00),
     "anthropic/claude-fable-5-1": Price(
         input=10.00, output=50.00, cache_read=0.25, cache_write=12.50
+    ),
+    "anthropic/claude-fable-5-2": Price(
+        input=8.00, output=40.00, cache_read=0.20, cache_write=10.00
     ),
     "xai/grok-4.3": _GROK_43,
     # Both fast aliases are served by grok-4.3 (owner, 2026-10-14), so they
@@ -619,7 +623,14 @@ def _anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
 # the tool (an explicit search, reminder or storybook request, or the image
 # retry nudge), so "auto" leaves the call to the model instead of failing.
 _NO_FORCED_TOOL_CHOICE = frozenset(
-    {"claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5-1"}
+    {
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-fable-5-1",
+        "claude-mythos-5-1",
+        "claude-fable-5-2",
+        "claude-mythos-5-2",
+    }
 )
 
 
