@@ -805,8 +805,152 @@ class TestSearch:
         }
         assert provider.search("xai/grok-4.3", "q", timeout=60).grounded is False
 
-    def test_needs_xai(self, post: FakePost) -> None:
+    def test_needs_a_provider_with_search(self, post: FakePost) -> None:
         with pytest.raises(provider.BadRequestError):
+            provider.search("openai/gpt-5", "q", timeout=60)
+        assert post.calls == []
+
+
+def _searched_reply(*, searches: int = 1, stop: str = "end_turn") -> dict[str, Any]:
+    """A Messages reply in which Claude announced, searched, then answered."""
+    return {
+        "content": [
+            {"type": "text", "text": "I'll look that up."},
+            {
+                "type": "server_tool_use",
+                "id": "srvtoolu_1",
+                "name": "web_search",
+                "input": {"query": "toronto weather"},
+            },
+            {
+                "type": "web_search_tool_result",
+                "tool_use_id": "srvtoolu_1",
+                "content": [
+                    {"type": "web_search_result", "url": "https://a.example", "title": "A"}
+                ],
+            },
+            {"type": "text", "text": "It is "},
+            {
+                "type": "text",
+                "text": "5C and cloudy",
+                "citations": [{"type": "web_search_result_location", "url": "https://a.example"}],
+            },
+            {"type": "text", "text": "."},
+        ],
+        "stop_reason": stop,
+        "usage": {
+            "input_tokens": 1000,
+            "output_tokens": 100,
+            "server_tool_use": {"web_search_requests": searches},
+        },
+    }
+
+
+class TestAnthropicSearch:
+    """Search on an anthropic/ model runs Anthropic's own web tools."""
+
+    def test_request_offers_web_search_and_fetch(self, post: FakePost) -> None:
+        post.reply = _searched_reply()
+        provider.search(HAIKU, "weather in toronto?", timeout=60, cache_key="ignored")
+        call = post.calls[-1]
+        assert call["url"] == "https://api.anthropic.com/v1/messages"
+        assert call["headers"]["x-api-key"] == "sk-ant-test-key-0123456789"
+        assert "anthropic-beta" not in call["headers"]
+        assert call["body"]["model"] == "claude-haiku-5-5"
+        assert call["body"]["messages"] == [{"role": "user", "content": "weather in toronto?"}]
+        assert [(t["type"], t["name"]) for t in call["body"]["tools"]] == [
+            ("web_search_20250305", "web_search"),
+            ("web_fetch_20250910", "web_fetch"),
+        ]
+        assert "prompt_cache_key" not in call["body"]
+
+    def test_answer_is_the_text_after_the_last_result(self, post: FakePost) -> None:
+        post.reply = _searched_reply()
+        reply = provider.search(HAIKU, "q", timeout=60)
+        assert reply.text == "It is 5C and cloudy."
+        assert reply.grounded is True
+
+    def test_each_search_adds_a_cent_to_the_token_cost(self, post: FakePost) -> None:
+        post.reply = _searched_reply(searches=2)
+        reply = provider.search(HAIKU, "q", timeout=60)
+        # 1000 input × $0.10 + 100 output × $0.50, per million, plus 2 × $0.01
+        assert reply.usage == provider.Usage(1000, 100, 0)
+        assert reply.cost == pytest.approx((100 + 50) / 1e6 + 0.02)
+
+    def test_a_failed_search_does_not_ground_the_reply(self, post: FakePost) -> None:
+        post.reply = {
+            "content": [
+                {"type": "server_tool_use", "id": "s1", "name": "web_search", "input": {}},
+                {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "s1",
+                    "content": {
+                        "type": "web_search_tool_result_error",
+                        "error_code": "unavailable",
+                    },
+                },
+                {"type": "text", "text": "I couldn't search."},
+            ],
+            "stop_reason": "end_turn",
+        }
+        reply = provider.search(HAIKU, "q", timeout=60)
+        assert (reply.text, reply.grounded) == ("I couldn't search.", False)
+
+    def test_a_fetched_page_grounds_the_reply(self, post: FakePost) -> None:
+        post.reply = {
+            "content": [
+                {"type": "server_tool_use", "id": "f1", "name": "web_fetch", "input": {}},
+                {
+                    "type": "web_fetch_tool_result",
+                    "tool_use_id": "f1",
+                    "content": {"type": "web_fetch_result", "url": "https://a.example"},
+                },
+                {"type": "text", "text": "The page says hi."},
+            ],
+            "stop_reason": "end_turn",
+        }
+        reply = provider.search(HAIKU, "summarize https://a.example", timeout=60)
+        assert (reply.text, reply.grounded) == ("The page says hi.", True)
+
+    def test_a_paused_turn_is_sent_back_to_finish(
+        self, post: FakePost, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        paused = {
+            "content": [{"type": "server_tool_use", "id": "s1", "name": "web_search", "input": {}}],
+            "stop_reason": "pause_turn",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 1,
+                "server_tool_use": {"web_search_requests": 1},
+            },
+        }
+        replies = [paused, _searched_reply(searches=1)]
+        fake = FakePost()
+
+        def answer(url, headers, body, *, timeout, provider):  # noqa: ANN001
+            fake(url, headers, body, timeout=timeout, provider=provider)
+            return replies[len(fake.calls) - 1]
+
+        monkeypatch.setattr(provider, "_post", answer)
+        reply = provider.search(HAIKU, "q", timeout=60)
+        assert len(fake.calls) == 2
+        resumed = fake.calls[1]["body"]["messages"]
+        assert resumed == [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": paused["content"]},
+        ]
+        assert reply.text == "It is 5C and cloudy."
+        assert reply.usage == provider.Usage(1010, 101, 0)
+        assert reply.cost == pytest.approx((101 + 50.5) / 1e6 + 0.02)
+
+    def test_resumes_stop_after_two(self, post: FakePost) -> None:
+        post.reply = {"content": [], "stop_reason": "pause_turn"}
+        provider.search(HAIKU, "q", timeout=60)
+        assert len(post.calls) == 3
+
+    def test_a_refusal_raises(self, post: FakePost) -> None:
+        post.reply = {"content": [], "stop_reason": "refusal"}
+        with pytest.raises(provider.RefusalError):
             provider.search(HAIKU, "q", timeout=60)
 
 

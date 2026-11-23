@@ -106,7 +106,7 @@ Keep those boundaries intact:
 ### Changing LLM behaviour
 
 - Framework prompts live in `prompts.py` (see Architecture); verse prompt assembly is `build_verse_system_prompt` in `verse/avatar.py`. Only `assistantSystemPrompt` is a channel-overridable registry setting.
-- Model selection is per-purpose. The registry holds `assistantModel`, `memoryModel`, and `verseModel`; image, search, meme, refusal-fallback and verse-compaction models are fixed constants (`IMAGE_MODEL`, `SEARCH_MODEL`, `MEME_MODEL`, `MEME_EDIT_MODEL`, `REFUSAL_FALLBACK_MODEL` in `service.py`; `_VERSE_COMPACTION_MODEL` in `plugin.py`). Bumping the chat model does not move verse; update both when that is the intent.
+- Model selection is per-purpose. The registry holds `assistantModel`, `memoryModel`, and `verseModel`; image, meme, refusal-fallback and verse-compaction models are fixed constants, and search runs on `assistantModel` when it is `anthropic/` and on `SEARCH_MODEL` otherwise (`IMAGE_MODEL`, `SEARCH_MODEL`, `MEME_MODEL`, `MEME_EDIT_MODEL`, `REFUSAL_FALLBACK_MODEL` in `service.py`; `_VERSE_COMPACTION_MODEL` in `plugin.py`). Bumping the chat model does not move verse; update both when that is the intent.
 - API keys are resolved from the environment at call time, keyed on the provider of the model being called (`apikeys.api_key_for`). A model with any prefix but `anthropic/` or `xai/` is rejected at `@config` time.
 
 ## Important files

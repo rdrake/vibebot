@@ -16,6 +16,9 @@ Model strings are ``provider/name``:
 - ``anthropic/<name>``: Messages API.
 - ``xai/<name>``: OpenAI-compatible chat and image endpoints, plus the Responses
   API for web search.
+
+Web search runs on the model's own provider: Anthropic's web_search and
+web_fetch server tools, or xAI's Responses API.
 """
 
 from __future__ import annotations
@@ -803,12 +806,20 @@ def _xai_reply(model: str, data: dict[str, Any]) -> Reply:
 
 
 def search(model: str, prompt: str, *, timeout: float, cache_key: str | None = None) -> Reply:
-    """Answer ``prompt`` with live web search: xAI's Responses API and its
-    ``web_search`` tool, the only place xAI offers search now.
-    ``Reply.grounded`` says whether the search actually ran."""
+    """Answer ``prompt`` with live web search on the model's own provider.
+
+    ``xai/``: the Responses API with its ``web_search`` tool, the only place
+    xAI offers search now. ``anthropic/``: the Messages API with the
+    ``web_search`` and ``web_fetch`` server tools, so a URL named in the
+    prompt is read too. ``Reply.grounded`` says whether the web was actually
+    consulted. ``cache_key`` pins xAI's prompt-cache routing; Anthropic
+    ignores it.
+    """
     provider, name = _split(model)
+    if provider == "anthropic":
+        return _anthropic_search(model, name, prompt, timeout=timeout)
     if provider != "xai":
-        raise BadRequestError(f"web search needs an xai/ model, not {model!r}")
+        raise BadRequestError(f"no web search for {model!r} (use anthropic/ or xai/)")
     body: dict[str, Any] = {"model": name, "input": prompt, "tools": [{"type": "web_search"}]}
     if cache_key:
         body["prompt_cache_key"] = cache_key
@@ -820,6 +831,100 @@ def search(model: str, prompt: str, *, timeout: float, cache_key: str | None = N
         provider=provider,
     )
     return _responses_reply(model, data)
+
+
+# The basic tool versions: every current Claude model takes them, Haiku 5.5
+# included, which the dynamic-filtering versions (_20260209 and later) leave
+# out. An IRC answer is a few lines; filtering pages through code execution
+# buys nothing here but latency.
+ANTHROPIC_SEARCH_TOOLS: tuple[dict[str, Any], ...] = (
+    {"type": "web_search_20250305", "name": "web_search", "max_uses": 3},
+    {"type": "web_fetch_20250910", "name": "web_fetch", "max_uses": 3, "max_content_tokens": 20000},
+)
+# $10 per 1,000 searches on top of tokens. Fetches cost tokens only.
+ANTHROPIC_SEARCH_USD = 0.01
+# Searches run in a server-side loop that hands the turn back with
+# pause_turn after 10 iterations; resend to let it finish, this many times.
+_SEARCH_MAX_RESUMES = 2
+_SEARCH_RESULT_TYPES = frozenset({"web_search_tool_result", "web_fetch_tool_result"})
+
+
+def _anthropic_search(model: str, name: str, prompt: str, *, timeout: float) -> Reply:
+    headers = {"x-api-key": _key(model, "anthropic"), "anthropic-version": ANTHROPIC_VERSION}
+    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    content: list[dict[str, Any]] = []
+    usage = Usage()
+    cost = 0.0
+    finish = "stop"
+    for _ in range(_SEARCH_MAX_RESUMES + 1):
+        body: dict[str, Any] = {
+            "model": name,
+            "max_tokens": DEFAULT_MAX_TOKENS,
+            "messages": messages,
+            "tools": [dict(tool) for tool in ANTHROPIC_SEARCH_TOOLS],
+        }
+        data = _post(
+            f"{ANTHROPIC_URL}/messages", headers, body, timeout=timeout, provider="anthropic"
+        )
+        step = _anthropic_reply(model, data)
+        searches = int(
+            ((data.get("usage") or {}).get("server_tool_use") or {}).get("web_search_requests") or 0
+        )
+        usage = Usage(
+            input_tokens=usage.input_tokens + step.usage.input_tokens,
+            output_tokens=usage.output_tokens + step.usage.output_tokens,
+            cached_tokens=usage.cached_tokens + step.usage.cached_tokens,
+        )
+        cost += step.cost + searches * ANTHROPIC_SEARCH_USD
+        content.extend(data.get("content") or [])
+        finish = step.finish_reason
+        if finish != "pause":
+            break
+        messages = [messages[0], {"role": "assistant", "content": list(content)}]
+    if finish == "refusal":
+        raise RefusalError("anthropic declined the search")
+    return Reply(
+        text=_answer_text(content),
+        usage=usage,
+        cost=cost,
+        grounded=_searched(content),
+        finish_reason=finish,
+    )
+
+
+def _answer_text(content: list[dict[str, Any]]) -> str:
+    """The text after the last search or fetch result.
+
+    Text before it is the model announcing what it will look up ("I'll
+    search for..."), which an IRC answer does not want.
+    """
+    start = 0
+    for index, block in enumerate(content):
+        if block.get("type") in _SEARCH_RESULT_TYPES:
+            start = index + 1
+    return "".join(
+        block.get("text") or "" for block in content[start:] if block.get("type") == "text"
+    ).strip()
+
+
+def _searched(content: list[dict[str, Any]]) -> bool:
+    """Whether a search or fetch returned something, or the answer cites one.
+
+    An error result comes back as an object with ``error_code`` (HTTP 200);
+    a search that worked returns a list, a fetch a ``web_fetch_result``.
+    """
+    for block in content:
+        kind = block.get("type")
+        if kind == "text" and block.get("citations"):
+            return True
+        if kind not in _SEARCH_RESULT_TYPES:
+            continue
+        result = block.get("content")
+        if isinstance(result, list) and result:
+            return True
+        if isinstance(result, dict) and result.get("type") == "web_fetch_result":
+            return True
+    return False
 
 
 def _responses_reply(model: str, data: dict[str, Any]) -> Reply:

@@ -39,7 +39,7 @@ API keys are **not** part of the Limnoria registry. They come from environment v
 | `ANTHROPIC_API_KEY` | Anthropic (`anthropic/` models) |
 | `XAI_API_KEY` | xAI (`xai/` models) |
 
-These are the only two providers the bot can call. With the defaults, chat and the `@meme` template picker need `ANTHROPIC_API_KEY` (a named template with captions renders locally and calls no model), and search, subject research, `@draw`, meme picture edits and the refusal fallback need `XAI_API_KEY`, because they run on fixed xAI models (see [Model selection](#model-selection)).
+These are the only two providers the bot can call. With the defaults, chat and the `@meme` template picker need `ANTHROPIC_API_KEY` (a named template with captions renders locally and calls no model), and `@draw`, meme picture edits and the refusal fallback need `XAI_API_KEY`, because they run on fixed xAI models (see [Model selection](#model-selection)). Search and subject research use the key of whichever provider runs them: `ANTHROPIC_API_KEY` while `assistantModel` is an `anthropic/` model, `XAI_API_KEY` otherwise.
 
 Copy `.env.example` to `~/.config/vibebot/env` and set the variables there; the systemd unit passes that file to the container with `--env-file` (see [Installation](installation.md)). A model whose provider has no key configured fails with an error naming the missing variable, for example `no API key configured for provider 'xai' (set XAI_API_KEY)`.
 
@@ -60,7 +60,7 @@ The other roles run on fixed models:
 |------|-------|-------|
 | Refusal fallback | `xai/grok-4-1-fast-non-reasoning` | Re-runs a chat turn once when its model refuses: an Anthropic `stop_reason` refusal (at once, with no retry), a policy refusal that survives its one retry, or a provider refusal error. The fallback gets the original request without the refusal. Skipped when the turn already runs on this model, when `XAI_API_KEY` is unset, or when a tool that changes something (a reminder, an image, a memory) already worked this turn, since the re-run would repeat it. Its cost books at `xai/grok-4.3` rates, the model behind the alias |
 | Images | `xai/grok-imagine-image` | `@draw`, `@story` and the `generate_image` tool |
-| Search | `xai/grok-4.3` | Web search, URL fetch and [subject research](#subject-research). GitHub links skip it: they are read through GitHub's API. A request can run at most three searches |
+| Search | `assistantModel` when it is an `anthropic/` model, else `xai/grok-4.3` | Web search, URL fetch and [subject research](#subject-research). On an Anthropic model these use Anthropic's `web_search` and `web_fetch` server tools ($10 per 1,000 searches on top of tokens); on xAI, the Responses API's `web_search`. GitHub links skip it: they are read through GitHub's API. A request can run at most three searches |
 | Meme picker | `anthropic/claude-haiku-5-5` | Picks a template and writes captions when `@meme` (or `make_meme`'s `brief`) names no template the catalog knows. It opens on a short list (the 40 most popular templates plus up to 20 sharing a word with the request, about 5K prompt tokens) and can call a `search_templates` tool up to twice to reach the rest of the catalog. No search: one call, about 5K tokens, 2 s. Each search is another round trip: about 12K tokens and 4 s with one, 19K and 6 s with two. Under $0.003 either way. [Subject research](#subject-research) runs first, adding one search-model call and a few seconds to every picker request |
 | Meme picture edits | `xai/grok-imagine-image` | The picker's `draw` (and `make_meme`'s). Templates with picture slots get one generated picture per slot (`/v1/images/generations`), masked into the blank; other templates send the captioned meme to `/v1/images/edits`. About $0.02 per picture, refusals billed too |
 | Verse compaction | `anthropic/claude-haiku-5-5` | The daily verse compaction job |
@@ -103,8 +103,9 @@ other failure: asked about a name that exists nowhere, a grounded model guesses
 an appearance from the words in it rather than answering `NONE`, and a guess
 has nothing to cite. The tag is stripped before the line reaches the planner.
 
-The research runs on the search model (`xai/grok-4.3`), which in most
-deployments means the researcher is a different provider from the planner.
+The research runs on the search model: the channel's `assistantModel` when it
+is an `anthropic/` model, otherwise `xai/grok-4.3`, so the researcher may be a
+different provider from the planner.
 
 ## System prompts
 

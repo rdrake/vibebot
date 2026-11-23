@@ -113,8 +113,10 @@ CHANNEL_MSG_TRUNCATE_LEN = 150
 
 # Models for the jobs that do not run on the channel's assistantModel.
 IMAGE_MODEL = "xai/grok-imagine-image"
-# xAI's Responses API is the only web search the plugin calls, so search (and
-# the @draw subject-research pre-stage that rides on it) needs an xai/ model.
+# Web search runs on the channel's assistantModel when that is an anthropic/
+# model (Anthropic's web_search tool), and on this xAI model otherwise (xAI's
+# Responses API; the chat aliases are served by grok-4.3 anyway). See
+# LLMService.search_model.
 SEARCH_MODEL = "xai/grok-4.3"
 # Picks a template and writes captions when @meme names none the catalog
 # knows. Not the channel's chat model: grok-4-1-fast copies the template's
@@ -3614,8 +3616,9 @@ class LLMService:
     ) -> ToolResult:
         """Shared implementation for search_completion, url_completion and subject_dossier.
 
-        Runs :func:`provider.search`, xAI's Responses API with its
-        ``web_search`` tool, which also reads a URL named in the prompt. Any
+        Runs :func:`provider.search` on :meth:`search_model`: Anthropic's
+        web_search and web_fetch tools, or xAI's Responses API with its
+        ``web_search`` tool. Either reads a URL named in the prompt. Any
         failure comes back as a ToolResult carrying ``error_message``.
 
         Args:
@@ -3629,9 +3632,9 @@ class LLMService:
         """
         from .assistant import ToolResult
 
-        op = f"xai_responses_{kind}"
+        model = self.search_model(channel)
+        op = f"{'xai_responses' if model.startswith('xai/') else 'anthropic_web'}_{kind}"
         try:
-            model = SEARCH_MODEL
             t0 = time.monotonic()
 
             def timing(**outcome: Any) -> None:
@@ -3668,6 +3671,16 @@ class LLMService:
             self.log.exception("%s failed: %s", log_label, self._sanitize(str(e)))
             return ToolResult(content=json.dumps({"error": error_message}))
 
+    def search_model(self, channel: str) -> str:
+        """The model web search runs on in ``channel``.
+
+        The channel's assistantModel when it is an ``anthropic/`` model, so
+        search answers in the same voice and on the same key as chat;
+        :data:`SEARCH_MODEL` otherwise.
+        """
+        model = str(self.plugin.registryValue("assistantModel", channel) or "")
+        return model if model.startswith("anthropic/") else SEARCH_MODEL
+
     def search_completion(self, query: str, *, channel: str) -> ToolResult:
         """Run a grounded web-search completion and return a ToolResult."""
         return self._grounded_completion(
@@ -3679,7 +3692,7 @@ class LLMService:
         )
 
     def url_completion(self, url: str, *, channel: str) -> ToolResult:
-        """Fetch and summarize a URL (xAI's web_search reads it)."""
+        """Fetch and summarize a URL (the search model's web tools read it)."""
         from .assistant import ToolResult
 
         if not validate_external_url(url):
@@ -3731,7 +3744,7 @@ class LLMService:
         )
         return SubjectDossier(
             text=self._parse_dossier(result.content),
-            model=SEARCH_MODEL,
+            model=self.search_model(channel),
             prompt_tokens=result.prompt_tokens,
             completion_tokens=result.completion_tokens,
             cost=result.cost,
