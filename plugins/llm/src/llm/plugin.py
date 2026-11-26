@@ -116,6 +116,10 @@ GROUNDING_ICON = "\U0001f310"  # 🌐 (globe with meridians)
 # slightly off is explained rather than mysterious.
 REWORDED_ICON = "\U0001f501"  # 🔁 (clockwise arrows)
 
+# Icon shown when the chat model consulted the stronger advisor model
+# (LLM.advisorModel) before answering.
+ADVISOR_ICON = "⚡"  # ⚡ (high voltage)
+
 # CTCP framing around a /me payload: it shares the line budget with the text.
 _ACTION_WRAPPER = "\x01ACTION \x01"
 
@@ -843,10 +847,13 @@ def _patch_irc_docapnew() -> None:
     irclib.Irc.doCapNew = doCapNew
 
 
-# Draft caps irc_lookup kind=history and delete_last_reply need. Limnoria's
-# list has neither, and AfterNET (Nefarious) gates CHATHISTORY and REDACT on
-# them. Requested like draft/multiline: only with experimentalExtensions.
-_EXTRA_EXPERIMENTAL_CAPS = frozenset({"draft/chathistory", "draft/message-redaction"})
+# Draft caps irc_lookup kind=history, delete_last_reply and file host uploads
+# need. Limnoria's list has none of them, and AfterNET (Nefarious) gates
+# CHATHISTORY and REDACT on theirs. Requested like draft/multiline: only with
+# experimentalExtensions.
+_EXTRA_EXPERIMENTAL_CAPS = frozenset(
+    {"draft/authtoken", "draft/chathistory", "draft/message-redaction"}
+)
 
 
 def _patch_request_caps() -> None:
@@ -1018,6 +1025,9 @@ class LLM(callbacks.Plugin):
 
         # Serializes worker-thread irc.queueMsg calls (see _safe_queue).
         self._irc_send_lock = threading.Lock()
+        # One TOKEN GENERATE in flight: replies carry no id, and ircquery would
+        # hand one single-use token to every caller waiting on the same key.
+        self._filehost_token_lock = threading.Lock()
 
         # Recency-attributed verse reaction signal (see verse/reactions.py).
         # Last verse line the bot said per (network, channel); read by doTagmsg.
@@ -2933,6 +2943,68 @@ class LLM(callbacks.Plugin):
     @staticmethod
     def _network_of(irc: callbacks.Irc) -> str:
         return str(getattr(irc, "network", "") or "")
+
+    # ------------------------------------------------------------------
+    # File host tokens (IRCv3 draft/FILEHOST + draft/authtoken)
+    # ------------------------------------------------------------------
+    def _filehost_irc(self) -> Any | None:
+        """The network that advertises an https file host and grants tokens for it."""
+        for irc in list(world.ircs):
+            url = irc.state.supported.get("draft/FILEHOST")
+            if (
+                "draft/authtoken" in irc.state.capabilities_ack
+                and isinstance(url, str)
+                and url.startswith("https://")
+            ):
+                return irc
+        return None
+
+    def filehost_endpoint(self) -> str | None:
+        """Upload URL of the network's file host, or None when it has none."""
+        irc = self._filehost_irc()
+        return irc.state.supported["draft/FILEHOST"] if irc else None
+
+    def filehost_token(self, endpoint: str) -> str | None:
+        """A fresh single-use token for ``endpoint``, or None with the reason logged.
+
+        Refuses when the advertising network changed since ``endpoint`` was read,
+        so one network's token never goes to another network's host.
+        """
+        irc = self._filehost_irc()
+        if irc is None or irc.state.supported["draft/FILEHOST"] != endpoint:
+            return None
+        with self._filehost_token_lock:
+            got = self._query_collect(
+                irc,
+                "filehost_token",
+                "FILEHOST",
+                ircmsgs.IrcMsg(command="TOKEN", args=("GENERATE", "FILEHOST")),
+            )
+        if got is None:
+            self.log.warning("filehost: no reply to TOKEN GENERATE; storing image locally")
+            return None
+        rows, error = got
+        if error is not None:
+            self.log.warning("filehost: server refused a token: %s", error)
+            return None
+        return rows[0] if rows else None
+
+    def doToken(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """``TOKEN GENERATE FILEHOST :<token>``."""
+        if msg.args[:2] == ("GENERATE", "FILEHOST") and len(msg.args) > 2:
+            network = self._network_of(irc)
+            self._irc_queries.feed("filehost_token", network, "FILEHOST", msg.args[2])
+            self._irc_queries.close("filehost_token", network, "FILEHOST")
+
+    def doFail(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
+        """``FAIL TOKEN <code> [context] :<description>`` ends the wait for a token."""
+        if len(msg.args) > 2 and msg.args[0] == "TOKEN":
+            self._irc_queries.close(
+                "filehost_token",
+                self._network_of(irc),
+                "FILEHOST",
+                error=f"{msg.args[1]}: {msg.args[-1]}",
+            )
 
     def do322(self, irc: callbacks.Irc, msg: IrcMsg) -> None:  # noqa: N802
         """RPL_LIST: ``<me> <channel> <count> :<topic>``."""
@@ -6528,11 +6600,13 @@ class LLM(callbacks.Plugin):
     def _reply_icons(result: AssistantResult) -> str:
         """One icon per signal the turn raised, space-joined; "" for none.
 
-        Both can apply at once — a grounded answer that also drew a reworded
-        image — so they chain rather than choosing. Order is fixed so the same
-        turn always renders the same way.
+        Several can apply at once — an advised, grounded answer that also
+        drew a reworded image — so they chain rather than choosing. Order is
+        fixed so the same turn always renders the same way.
         """
         icons = []
+        if getattr(result, "advisor_used", False):
+            icons.append(ADVISOR_ICON)
         if getattr(result, "grounding_used", False):
             icons.append(GROUNDING_ICON)
         if getattr(result, "image_reworded", False):
@@ -9577,7 +9651,6 @@ class LLM(callbacks.Plugin):
                 return name
         return None
 
-    _REMINDER_MAX_SECONDS = 604800  # 7 days
     _REMINDER_MAX_PENDING_PER_USER = 25  # cap one-shot accumulation per user
     # A restatement of a reminder set this recently reads as a correction to it
     # ("no, wait, make it 2 minutes") rather than a second reminder. Keyed on
@@ -9804,12 +9877,12 @@ class LLM(callbacks.Plugin):
                 ok=False, message="Reminder must be at least 10 seconds from now."
             )
 
-        if result.seconds > self._REMINDER_MAX_SECONDS:
+        now = time.time()
+        if now + result.seconds >= agenda.reminder_horizon(now, user_tz.tz):
             return ReminderScheduleResult(
-                ok=False, message="Reminder can't be more than 7 days out."
+                ok=False, message="Reminder can't be more than a year out."
             )
 
-        now = time.time()
         pending = len(self._get_user_reminders(identity))
         if pending >= self._REMINDER_MAX_PENDING_PER_USER:
             return ReminderScheduleResult(

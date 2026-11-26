@@ -101,6 +101,20 @@ conf.registerChannelValue(
 
 conf.registerChannelValue(
     LLM,
+    "advisorModel",
+    ValidatedModelName(
+        "anthropic/claude-opus-5-5",
+        _("""Stronger model the chat assistant may consult, at most once per
+        turn, when it judges a request hard. The assistant decides; most chat
+        never calls it. Must be an anthropic/ model at least as capable as
+        assistantModel (otherwise it is skipped with a log warning). Empty
+        turns it off. A consult adds roughly $0.05 on Opus and can take tens
+        of seconds."""),
+    ),
+)
+
+conf.registerChannelValue(
+    LLM,
     "memoryModel",
     ValidatedModelName(
         "",
@@ -270,20 +284,6 @@ conf.registerGlobalValue(
         "",
         _("""Base URL for accessing saved files. If empty, uses Limnoria's
         HTTP server publicUrl + /llm/. Example: https://example.com/llm"""),
-    ),
-)
-
-conf.registerGlobalValue(
-    LLM,
-    "imageUploadUrl",
-    registry.String(
-        "",
-        _("""Endpoint of an external image host for generated images. Expects a
-        multipart POST on the "images[]" field and a JSON reply shaped like
-        {"results": [{"success": true, "filePath": "/img/x.png"}]} — for example
-        https://paste.boxlabs.uk/img/. If empty, images are stored locally under
-        httpRoot and served from httpUrlBase. Any upload failure falls back to
-        local storage, so this is safe to leave pointed at a flaky host."""),
     ),
 )
 

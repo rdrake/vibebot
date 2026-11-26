@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import threading
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 import pytest
 from llm.identity import Caller, Identity
-from llm.service import AssistantResult, ReminderParseResult, Spend
+from llm.service import AssistantResult, ReminderParseResult, Spend, seconds_until_local
+from llm.usertz import SOURCE_SET, UserTz
 
 from .conftest import (
     back_reminders_with_sqlite,
@@ -829,6 +832,67 @@ class TestParseReminderService:
         assert result.seconds == 1800
         assert result.message == "check build"
         assert "30m" in result.confirmation
+
+    def test_fire_at_seconds_are_counted_in_code_not_by_the_model(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """GIVEN fire_at a year on across 29 February WHEN parsing THEN seconds come from it.
+
+        The model's own count (365 days) is wrong for a span holding 29 Feb
+        2028; the date it named wins.
+        """
+        tz = ZoneInfo("America/Toronto")
+        now = datetime(2027, 11, 26, 7, 0, tzinfo=tz).timestamp()
+        mocker.patch("llm.service.time.time", return_value=now)
+        mock_completion = mocker.patch("llm.service.provider.chat")
+        mock_completion.return_value = make_completion_response(
+            json.dumps(
+                {
+                    "action": "schedule",
+                    "fire_at": "2028-11-26T07:00",
+                    "seconds": 365 * 86400,
+                    "message": "renew the domain",
+                    "confirmation": "Set for next year.",
+                }
+            )
+        )
+
+        result = service.parse_reminder(
+            "next year renew the domain", user_tz=UserTz(tz=tz, source=SOURCE_SET)
+        )
+
+        assert result.action == "schedule"
+        assert result.seconds == 366 * 86400
+
+    def test_unreadable_fire_at_falls_back_to_seconds(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        mock_completion = mocker.patch("llm.service.provider.chat")
+        mock_completion.return_value = make_completion_response(
+            '{"action": "schedule", "fire_at": "next tuesday", "seconds": 1800, '
+            '"message": "check build", "confirmation": "Set."}'
+        )
+
+        result = service.parse_reminder("in 30 minutes check build")
+
+        assert result.seconds == 1800
+
+    def test_fire_at_in_the_past_asks_again(
+        self, service: MagicMock, mocker: MockerFixture
+    ) -> None:
+        mocker.patch(
+            "llm.service.time.time",
+            return_value=datetime(2026, 11, 26, 12, 0, tzinfo=UTC).timestamp(),
+        )
+        mock_completion = mocker.patch("llm.service.provider.chat")
+        mock_completion.return_value = make_completion_response(
+            '{"action": "schedule", "fire_at": "2026-11-26T09:00", "seconds": null, '
+            '"message": "standup", "confirmation": "Set."}'
+        )
+
+        result = service.parse_reminder("at 9am standup")
+
+        assert result.action == "clarify"
 
     def test_parse_reminder_clarify_response(
         self, service: MagicMock, mocker: MockerFixture
@@ -2311,3 +2375,26 @@ class TestFinishAgendaWhileClosing:
         plugin._finish_agenda(agenda.Kind.REMINDER, "llm_remind_tea_1", time.time())
 
         assert reminder_names(plugin) == {"llm_remind_tea_1"}
+
+
+class TestSecondsUntilLocal:
+    """fire_at is wall-clock time in the owner's zone; the count is exact."""
+
+    def test_wall_clock_is_read_in_the_zone(self) -> None:
+        tz = ZoneInfo("America/Toronto")
+        now = datetime(2026, 11, 26, 12, 0, tzinfo=UTC).timestamp()  # 07:00 Toronto
+        assert seconds_until_local("2026-11-26T09:00", tz, now) == 2 * 3600
+
+    def test_a_dst_change_in_between_is_counted(self) -> None:
+        """Toronto springs forward on 2027-03-14, so 09:00 to 09:00 is 23 hours."""
+        tz = ZoneInfo("America/Toronto")
+        now = datetime(2027, 3, 13, 9, 0, tzinfo=tz).timestamp()
+        assert seconds_until_local("2027-03-14T09:00", tz, now) == 23 * 3600
+
+    def test_an_explicit_offset_is_kept(self) -> None:
+        now = datetime(2026, 11, 26, 12, 0, tzinfo=UTC).timestamp()
+        assert seconds_until_local("2026-11-26T13:00+00:00", ZoneInfo("Asia/Tokyo"), now) == 3600
+
+    @pytest.mark.parametrize("value", [None, 5, "", "tomorrow", "2026-13-01T00:00"])
+    def test_anything_but_a_date_time_is_none(self, value: object) -> None:
+        assert seconds_until_local(value, UTC, 0.0) is None

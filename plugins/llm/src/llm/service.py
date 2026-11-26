@@ -20,7 +20,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 from urllib.parse import urlparse
@@ -113,8 +113,10 @@ CHANNEL_MSG_TRUNCATE_LEN = 150
 
 # Models for the jobs that do not run on the channel's assistantModel.
 IMAGE_MODEL = "xai/grok-imagine-image"
-# xAI's Responses API is the only web search the plugin calls, so search (and
-# the @draw subject-research pre-stage that rides on it) needs an xai/ model.
+# Web search runs on the channel's assistantModel when that is an anthropic/
+# model (Anthropic's web_search tool), and on this xAI model otherwise (xAI's
+# Responses API; the chat aliases are served by grok-4.3 anyway). See
+# LLMService.search_model.
 SEARCH_MODEL = "xai/grok-4.3"
 # Picks a template and writes captions when @meme names none the catalog
 # knows. Not the channel's chat model: grok-4-1-fast copies the template's
@@ -129,6 +131,9 @@ REFUSAL_FALLBACK_MODEL = "xai/grok-4-1-fast-non-reasoning"
 MAX_PROMPT_LENGTH = 10_000  # characters
 # Image calls are slower than text, especially with auto-rewrite retries.
 DRAW_TIMEOUT = 120  # seconds
+# A step that may consult the advisor runs a second model inside the same
+# non-streaming request, so LLM.timeout (30 s) is too short for it.
+ADVISOR_TIMEOUT = 120  # seconds
 META_MAX_STEPS = 12  # tool-call round trips per assistant invocation
 FILE_CLEANUP_MAX = 1000  # files kept in the HTTP directory
 # Active schedule_llm_task tasks per creator per channel.
@@ -762,7 +767,7 @@ def _is_image_failure(content: str) -> bool:
     """
     if not content:
         return False
-    if _IMAGE_URL_RE.search(content):
+    if _ANY_IMAGE_URL_RE.search(content):
         return False
     return _IMAGE_FAILURE_RE.search(content[:_IMAGE_FAILURE_OPENING_CHARS]) is not None
 
@@ -1856,6 +1861,8 @@ class AssistantResult(NamedTuple):
     # The call timed out. ``error`` is set too, so nothing is stored as a
     # reply; this only lets the usage row say ``timeout`` instead of ``error``.
     timed_out: bool = False
+    # A stronger model was consulted this turn (LLM.advisorModel).
+    advisor_used: bool = False
 
     # Read-only views for consumers that take any result type and read the
     # three spend fields by name (_store_context_and_log_usage).
@@ -1921,6 +1928,25 @@ class PendingTaskResult(NamedTuple):
     # when the submitting path had no msgid (no message-tags, or a synthetic
     # msg), in which case delivery falls back to an untagged PRIVMSG.
     reply_msgid: str = ""
+
+
+def seconds_until_local(fire_at: object, tz: tzinfo, now: float) -> int | None:
+    """Whole seconds from ``now`` until ``fire_at``, a local ISO date-time in ``tz``.
+
+    ``fire_at`` comes from the reminder parser: "2027-11-26T09:00", read as
+    wall-clock time in ``tz``. One that carries its own offset keeps it.
+    Returns None when it is not a date-time; a past one gives a negative
+    count, which the caller rejects.
+    """
+    if not isinstance(fire_at, str):
+        return None
+    try:
+        when = datetime.fromisoformat(fire_at.strip())
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=tz)
+    return round(when.timestamp() - now)
 
 
 class ReminderParseResult(NamedTuple):
@@ -2345,18 +2371,18 @@ class LLMService:
 
     def _restrict_img_srcs(self, html: str, url_base: str) -> str:
         """Drop <img> whose src is neither a bare relative filename nor under one
-        of our own bases (url_base, or the configured external image host).
+        of our own bases (url_base, or the network's file host).
 
         Storybook embeds its illustrations by relative filename (same http_root as
         the page), so legitimate images survive; externally-hosted images (tracking
-        pixels / SSRF-on-view) are removed from every pastebin page. When
-        imageUploadUrl is set our illustrations live on that host instead and are
-        embedded absolutely, so its prefix is allowed too.
+        pixels / SSRF-on-view) are removed from every pastebin page. Images on the
+        file host are embedded absolutely, so its origin is allowed too.
         """
         allowed = [url_base.rstrip("/") + "/"]
-        upload_base = self._image_upload_base()
-        if upload_base:
-            allowed.append(upload_base)
+        endpoint = self._filehost_endpoint()
+        if endpoint:
+            parsed = urlparse(endpoint)
+            allowed.append(f"{parsed.scheme}://{parsed.netloc}/")
 
         def _ok(src: str) -> bool:
             s = src.strip()
@@ -3609,8 +3635,9 @@ class LLMService:
     ) -> ToolResult:
         """Shared implementation for search_completion, url_completion and subject_dossier.
 
-        Runs :func:`provider.search`, xAI's Responses API with its
-        ``web_search`` tool, which also reads a URL named in the prompt. Any
+        Runs :func:`provider.search` on :meth:`search_model`: Anthropic's
+        web_search and web_fetch tools, or xAI's Responses API with its
+        ``web_search`` tool. Either reads a URL named in the prompt. Any
         failure comes back as a ToolResult carrying ``error_message``.
 
         Args:
@@ -3624,9 +3651,9 @@ class LLMService:
         """
         from .assistant import ToolResult
 
-        op = f"xai_responses_{kind}"
+        model = self.search_model(channel)
+        op = f"{'xai_responses' if model.startswith('xai/') else 'anthropic_web'}_{kind}"
         try:
-            model = SEARCH_MODEL
             t0 = time.monotonic()
 
             def timing(**outcome: Any) -> None:
@@ -3663,6 +3690,16 @@ class LLMService:
             self.log.exception("%s failed: %s", log_label, self._sanitize(str(e)))
             return ToolResult(content=json.dumps({"error": error_message}))
 
+    def search_model(self, channel: str) -> str:
+        """The model web search runs on in ``channel``.
+
+        The channel's assistantModel when it is an ``anthropic/`` model, so
+        search answers in the same voice and on the same key as chat;
+        :data:`SEARCH_MODEL` otherwise.
+        """
+        model = str(self.plugin.registryValue("assistantModel", channel) or "")
+        return model if model.startswith("anthropic/") else SEARCH_MODEL
+
     def search_completion(self, query: str, *, channel: str) -> ToolResult:
         """Run a grounded web-search completion and return a ToolResult."""
         return self._grounded_completion(
@@ -3674,7 +3711,7 @@ class LLMService:
         )
 
     def url_completion(self, url: str, *, channel: str) -> ToolResult:
-        """Fetch and summarize a URL (xAI's web_search reads it)."""
+        """Fetch and summarize a URL (the search model's web tools read it)."""
         from .assistant import ToolResult
 
         if not validate_external_url(url):
@@ -3726,7 +3763,7 @@ class LLMService:
         )
         return SubjectDossier(
             text=self._parse_dossier(result.content),
-            model=SEARCH_MODEL,
+            model=self.search_model(channel),
             prompt_tokens=result.prompt_tokens,
             completion_tokens=result.completion_tokens,
             cost=result.cost,
@@ -4039,26 +4076,28 @@ class LLMService:
 Current time: {current_time}
 
 Response format (choose one):
-{{"action": "schedule", "seconds": <int>, "message": "<string>", "confirmation": "<string>", "note": "<string or null>", "action_prompt": "<string>", "recurrence_seconds": <int or null>, "recurrence_rrule": "<RRULE string or null>", "watch_mode": <bool>}}
+{{"action": "schedule", "fire_at": "<YYYY-MM-DDTHH:MM or null>", "seconds": <int or null>, "message": "<string>", "confirmation": "<string>", "note": "<string or null>", "action_prompt": "<string>", "recurrence_seconds": <int or null>, "recurrence_rrule": "<RRULE string or null>", "watch_mode": <bool>}}
 or
 {{"action": "clarify", "confirmation": "<question to ask user>"}}
 
 Rules:
-- "seconds" = seconds from now until reminder fires (must be positive)
+- "fire_at" = the local date and time the reminder fires, "YYYY-MM-DDTHH:MM" with no offset, in the user's local time above. Use it for every absolute or calendar time ("at 3pm", "tomorrow morning", "on March 3", "next year"); set "seconds" to null. Do NOT count the seconds yourself: the bot works them out from "fire_at".
+- "seconds" = seconds from now until reminder fires (must be positive). Use it only for relative times ("in 30 minutes", "in 2 hours"); set "fire_at" to null.
 - For relative times ("in 30 minutes"), set note to null — timezone is irrelevant
 - Absolute and calendar times ("at 3pm", "tomorrow morning", "tonight") without a timezone are in the user's local time above; {zone_rule}. "Morning" means 09:00, "afternoon" 15:00, "evening" 19:00, "tonight" 21:00.
 - RRULE BYHOUR/BYMINUTE are the user's local wall-clock time, not UTC.
+- "Next year" with no date means one year from now: the same date and time next year (the same "fire_at" with the year plus one).
 - If request is too vague (missing time or message), use "clarify"
 - "confirmation" is shown to the user immediately at scheduling time. It MUST only state that the reminder was set and when. Do NOT speculate about what the bot can or cannot do at fire time, do NOT mention tool limits, do NOT add disclaimers like "though I can only ..." — capability decisions happen at fire time, not now.
 - Keep confirmation concise (under 100 chars)
 - Extract just the reminder message, not the time part
 - For relative times ("in 30 minutes"), calculate seconds directly
-- For absolute times ("at 3pm"), calculate seconds until that time
+- For absolute times ("at 3pm"), give "fire_at", not "seconds"
 - Set "action_prompt" to a non-empty bare instruction whenever the message contains an imperative verb the BOT can execute. The bot can: search the web, fetch URLs, draw images, write/run code, summarize text, look up status, check builds/CVEs/feeds, generate content, query its own memory, send messages. If any of those verbs (draw, search, fetch, look up, check, summarize, generate, write, post, query, find, list, compute, ...) appears as the main verb of the user's request, that is an action — not an echo.
 - Set "action_prompt" to "" (empty) only when the user is clearly asking THEMSELVES to do something later (passive "remind me to X" where X is a human action like "call Bob", "go to the store", "take a break") OR the message is a pure label/note with no verb at all.
 - "action_prompt" is fed directly to the same engine that handles `@ask`. Write it as a self-contained instruction the user could literally type AFTER `@ask` and get the result they want — no `@ask` prefix, no time qualifier ("in 2 hours"), no "remind me", just the bare task. Preserve the user's wording where possible.
 - "message" should still be a short human-readable description shown in `@remind list` (e.g., "check Debian CVE-2026-31431 status", "draw copy fail").
-- Recurrence is now structured. For recurring requests, set "seconds" to the NEXT occurrence (the first fire time), then choose ONE of the following to populate:
+- Recurrence is now structured. For recurring requests, set "fire_at" (or "seconds", for a cadence starting from now) to the NEXT occurrence (the first fire time), then choose ONE of the following to populate:
   - For numeric cadences ("every 5 minutes", "every hour", "daily" interpreted as 86400 seconds), populate "recurrence_seconds" with the integer cadence in seconds; leave "recurrence_rrule" as null.
   - For calendar cadences ("every Monday at 9am", "first of the month", "every weekday at 5pm", "daily at 8am"), populate "recurrence_rrule" with a valid RFC 5545 RRULE string; leave "recurrence_seconds" as null. Do NOT include DTSTART in the rrule string — only the RRULE body (e.g. "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0").
   - For one-shot reminders, BOTH must be null.
@@ -4111,6 +4150,13 @@ Examples (echo → action_prompt: ""):
             action = data.get("action", "clarify")
             if action == "schedule":
                 seconds = data.get("seconds")
+                fire_at = data.get("fire_at")
+                # The model names the wall-clock time; the arithmetic is ours,
+                # so a year out lands on the right day across a 29 February
+                # or a DST change. An unreadable fire_at falls back to seconds.
+                from_fire_at = seconds_until_local(fire_at, user_tz.tz, time.time())
+                if from_fire_at is not None:
+                    seconds = from_fire_at
                 if not isinstance(seconds, int) or seconds <= 0:
                     return ReminderParseResult(
                         action="clarify",
@@ -4908,6 +4954,23 @@ Examples (echo → action_prompt: ""):
             fallback_model = REFUSAL_FALLBACK_MODEL
             if fallback_model == model or self._missing_key_error(fallback_model):
                 fallback_model = ""
+            # Chat only: verse wants prose, not planning, and draw has its own
+            # planner. Cleared once a consult comes back, so a turn pays for
+            # one at most.
+            advisor_model = ""
+            if route_profile == PROFILE_CHAT:
+                advisor_model = self.plugin.registryValue("advisorModel", target)
+            if advisor_model and not provider.advisor_pairs(model, advisor_model):
+                # xai/ executors (a channel's own choice, or the refusal
+                # fallback's re-run) have no advisor tool; only a bad
+                # anthropic/ pairing is a misconfiguration.
+                if self._is_anthropic_model(model):
+                    self.log.warning(
+                        "advisorModel %s cannot advise %s; consulting nobody",
+                        advisor_model,
+                        model,
+                    )
+                advisor_model = ""
 
             max_steps = META_MAX_STEPS
             timeout = self.plugin.registryValue("timeout")
@@ -5214,6 +5277,8 @@ Examples (echo → action_prompt: ""):
             # both when no tool ran and when every tool errored — only the
             # first of those is an invented complaint.
             any_tool_ran = False
+            # Whether a consult came back this turn; the reply shows ⚡.
+            advisor_used = False
             for _step in range(max_steps):
                 self.log.info(
                     "assistant_completion step %i: model=%s messages=%i",
@@ -5244,13 +5309,17 @@ Examples (echo → action_prompt: ""):
                     }
                 elif _step == 0 and force_initial_pending_tool:
                     completion_kwargs["tool_choice"] = "required"
+                step_timeout = timeout
+                if advisor_model:
+                    completion_kwargs["advisor"] = advisor_model
+                    step_timeout = max(timeout, ADVISOR_TIMEOUT)
 
                 reply = self._timed_completion(
                     f"assistant_step_{_step + 1}",
                     model=model,
                     messages=messages,
                     channel=channel,
-                    timeout=timeout,
+                    timeout=step_timeout,
                     tools=profile_tools,
                     **completion_kwargs,
                 )
@@ -5258,6 +5327,16 @@ Examples (echo → action_prompt: ""):
 
                 if reply.text:
                     last_assistant_text = reply.text
+
+                if reply.advisor_called:
+                    self.log.info("assistant consulted advisor %s", advisor_model)
+                    advisor_model = ""
+                    advisor_used = True
+                # The response ended mid-consult. Sending the turn back
+                # unchanged, with the advisor still attached, resumes it.
+                if reply.finish_reason == "pause":
+                    messages.append(reply.turn())
+                    continue
 
                 # If the LLM returned text (no tool calls), we're done
                 if not reply.tool_calls:
@@ -5408,6 +5487,7 @@ Examples (echo → action_prompt: ""):
                             model=model,
                             grounding_used=executor.grounding_used,
                             image_reworded=executor.image_reworded,
+                            advisor_used=advisor_used,
                             error="Model echoed the prompt instead of replying.",
                             last_successful_tool=last_successful_tool,
                         )
@@ -5426,6 +5506,7 @@ Examples (echo → action_prompt: ""):
                         model=model,
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
+                        advisor_used=advisor_used,
                         last_successful_tool=last_successful_tool,
                         last_tool_message=last_tool_message,
                         final_text_after_tools=content,
@@ -5550,7 +5631,10 @@ Examples (echo → action_prompt: ""):
                             # from one lifted out of history.
                             image_tool_called = True
                             image_url = str(parsed.get("message", "")).strip()
-                            minted_image_urls.update(_IMAGE_URL_RE.findall(image_url))
+                            # Any image shape, not just img_<hex>: the upload
+                            # host names its own links, and the guard compares
+                            # against what _ANY_IMAGE_URL_RE finds in the reply.
+                            minted_image_urls.update(_ANY_IMAGE_URL_RE.findall(image_url))
                             if image_url:
                                 step_image_urls.append(image_url)
                     elif isinstance(parsed, dict) and tc.name in _IMAGE_MINTING_TOOLS:
@@ -5583,6 +5667,7 @@ Examples (echo → action_prompt: ""):
                         model=model,
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
+                        advisor_used=advisor_used,
                         last_successful_tool="verse_storybook",
                         final_text_after_tools="",
                     )
@@ -5605,6 +5690,7 @@ Examples (echo → action_prompt: ""):
                         model=model,
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
+                        advisor_used=advisor_used,
                         last_successful_tool=last_successful_tool,
                         last_tool_message=last_tool_message,
                         final_text_after_tools="",
@@ -5653,6 +5739,7 @@ Examples (echo → action_prompt: ""):
                         model=model,
                         grounding_used=executor.grounding_used,
                         image_reworded=executor.image_reworded,
+                        advisor_used=advisor_used,
                         last_successful_tool=reply.tool_calls[-1].name,
                         final_text_after_tools=url,
                         was_verse=was_verse,
@@ -5670,6 +5757,7 @@ Examples (echo → action_prompt: ""):
                 model=model,
                 grounding_used=executor.grounding_used,
                 image_reworded=executor.image_reworded,
+                advisor_used=advisor_used,
                 error="Assistant exceeded maximum tool-call steps.",
                 last_successful_tool=last_successful_tool,
                 last_tool_message=last_tool_message,
@@ -5990,15 +6078,13 @@ Examples (echo → action_prompt: ""):
         """Hosts that only this bot can legitimately publish images to.
 
         Both destinations `_save_image_bytes` can return: the configured
-        upload service (``imageUploadUrl``) and the local HTTP root it falls
-        back to (``httpUrlBase``). An image URL on one of these that the
+        network's file host and the local HTTP root it falls back to
+        (``httpUrlBase``). An image URL on one of these that the
         current turn did not mint is stale or invented -- see
         :func:`_unminted_image_urls`. A URL anywhere else is somebody else's
         image and is none of our business.
         """
-        candidates = [self.get_http_paths()[1]]
-        with contextlib.suppress(Exception):
-            candidates.append(str(self.plugin.registryValue("imageUploadUrl") or ""))
+        candidates = [self.get_http_paths()[1], self._filehost_endpoint()]
         return frozenset(h for c in candidates if (h := _image_url_host(c)))
 
     def get_http_paths(self) -> tuple[str, str]:
@@ -6240,10 +6326,6 @@ Examples (echo → action_prompt: ""):
             self.log.debug("PNG→JPEG conversion failed, keeping PNG")
             return image_bytes, "png"
 
-    # Ceiling advertised by the reference host (paste.boxlabs.uk/img/). Bigger
-    # images go straight to local storage instead of burning an upload attempt.
-    _IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
-
     _IMAGE_MIME_TYPES = {
         "png": "image/png",
         "jpg": "image/jpeg",
@@ -6252,111 +6334,66 @@ Examples (echo → action_prompt: ""):
         "gif": "image/gif",
     }
 
-    def _image_upload_base(self) -> str:
-        """Origin of the configured external image host, or "" when uploads are off.
+    def _filehost_endpoint(self) -> str:
+        """Upload URL the IRC network advertises (draft/FILEHOST), or "" for none."""
+        url = self.plugin.filehost_endpoint()
+        return url if isinstance(url, str) and validate_external_url(url) else ""
 
-        The whole origin rather than the endpoint path: a host is free to file
-        uploads somewhere other than the directory you POST to.
+    def _upload_image(self, image_bytes: bytes, extension: str) -> str | None:
+        """Upload to the network's file host and return the public link.
+
+        Returns None for every failure, so the caller stores the image locally.
+        Each upload asks for its own token: they are single-use. The link gets
+        posted to channels, so only an image on the host we uploaded to counts.
         """
-        from urllib.parse import urlparse
-
-        endpoint = (self.plugin.registryValue("imageUploadUrl") or "").strip()
-        if not endpoint or not validate_external_url(endpoint):
-            return ""
-        # validate_external_url guarantees an http(s) scheme and a hostname.
-        parsed = urlparse(endpoint)
-        return f"{parsed.scheme}://{parsed.netloc}/"
-
-    def _upload_image_bytes(self, image_bytes: bytes, extension: str) -> str | None:
-        """Upload image bytes to the external host in ``imageUploadUrl``.
-
-        Sends a multipart POST on the ``images[]`` field and reads the public URL
-        out of the JSON reply. Returns None for every failure mode — uploads
-        disabled, unsafe endpoint, oversize image, network error, rejected or
-        untrustworthy reply — so callers silently fall back to local storage.
-
-        The reply comes from a third party and is untrusted: only an image URL on
-        the configured host is accepted.
-        """
+        import urllib.error
         import urllib.request
-        from urllib.parse import urljoin, urlparse
+        from urllib.parse import urljoin
 
-        endpoint = (self.plugin.registryValue("imageUploadUrl") or "").strip()
-        if not endpoint:
+        # The server chooses this address, and validate_external_url does no DNS.
+        endpoint = self._filehost_endpoint()
+        if not endpoint or not self._resolves_to_public(endpoint):
             return None
-        if not validate_external_url(endpoint):
-            self.log.warning("imageUploadUrl is not a safe http(s) URL; storing image locally")
+        token = self.plugin.filehost_token(endpoint)
+        if not token:
             return None
-        if len(image_bytes) > self._IMAGE_UPLOAD_MAX_BYTES:
-            self.log.info(
-                "Image is %i bytes, over the %i upload limit; storing locally",
-                len(image_bytes),
-                self._IMAGE_UPLOAD_MAX_BYTES,
-            )
-            return None
-
-        boundary = f"----VibeBot{uuid.uuid4().hex}"
-        filename = f"img_{uuid.uuid4().hex[:16]}.{extension}"
-        mime = self._IMAGE_MIME_TYPES.get(extension, "application/octet-stream")
-        body = b"".join(
-            [
-                f"--{boundary}\r\n".encode(),
-                b'Content-Disposition: form-data; name="strip_exif"\r\n\r\n1\r\n',
-                f"--{boundary}\r\n".encode(),
-                (
-                    f'Content-Disposition: form-data; name="images[]"; filename="{filename}"\r\n'
-                    f"Content-Type: {mime}\r\n\r\n"
-                ).encode(),
-                image_bytes,
-                f"\r\n--{boundary}--\r\n".encode(),
-            ]
-        )
-
-        # Same policy as provider-image downloads: a 3xx could point anywhere, so
-        # fail closed rather than follow it.
-        opener = _no_redirect_opener()
-        timeout = DRAW_TIMEOUT
         req = urllib.request.Request(
             endpoint,
-            data=body,
+            data=image_bytes,
             headers={
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Authorization": f"Bearer {token}",
+                "Content-Type": self._IMAGE_MIME_TYPES.get(extension, "application/octet-stream"),
                 "User-Agent": "VibeBot/8",
             },
         )
-
+        # A redirect could carry the bearer token to a host nobody checked.
         try:
-            with opener.open(req, timeout=timeout) as resp:  # noqa: S310
-                payload = json.loads(resp.read(64 * 1024).decode("utf-8", "replace"))
+            with _no_redirect_opener().open(req, timeout=DRAW_TIMEOUT) as resp:  # noqa: S310
+                location = resp.headers.get("Location") or ""
+        except urllib.error.HTTPError as e:
+            reason = e.read(200).decode("utf-8", "replace")
+            self.log.warning("Filehost upload to %s failed: HTTP %i: %s", endpoint, e.code, reason)
+            return None
         except Exception as e:
-            self.log.warning("Image upload to %s failed: %s", endpoint[:200], e)
+            self.log.warning("Filehost upload to %s failed: %s", endpoint, e)
             return None
 
-        results = payload.get("results") if isinstance(payload, dict) else None
-        first = results[0] if isinstance(results, list) and results else None
-        if not isinstance(first, dict) or not first.get("success"):
-            reason = first.get("error") if isinstance(first, dict) else "no result in reply"
-            self.log.warning("Image upload rejected by %s: %s", endpoint[:200], reason)
-            return None
-
-        file_path = first.get("filePath")
-        if not isinstance(file_path, str) or not file_path:
-            self.log.warning("Image upload reply had no filePath")
-            return None
-
-        url = urljoin(endpoint, file_path)
-        parsed = urlparse(url)
-        # An image upload may legitimately come back under a different image
-        # extension — the reference host recompresses, so png in can be jpg
-        # out — which is why it accepts the whole set rather than the one sent.
-        valid_extensions = (".png", ".jpg", ".jpeg", ".webp", ".gif")
-        if (
-            parsed.scheme not in ("http", "https")
-            or parsed.hostname != urlparse(endpoint).hostname
-            or ".." in parsed.path
-            or not parsed.path.lower().endswith(valid_extensions)
-        ):
-            self.log.warning("Image upload returned an untrusted URL; storing locally")
+        # Comparing scheme and netloc also refuses "evil.example\\@host/x.png", which
+        # urlparse calls host but a browser opens on evil.example.
+        try:
+            url = urljoin(endpoint, location)
+            parsed = urlparse(url)
+            ours = urlparse(endpoint)
+            usable = (
+                (parsed.scheme, parsed.netloc) == (ours.scheme, ours.netloc)
+                and not re.search(r"[\s\\]", url)
+                and ".." not in parsed.path
+                and parsed.path.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
+            )
+        except ValueError:
+            usable = False
+        if not usable:
+            self.log.warning("Filehost upload returned an unusable link: %s", location[:200])
             return None
         return url
 
@@ -6369,8 +6406,8 @@ Examples (echo → action_prompt: ""):
     def _save_image_bytes(self, image_bytes: bytes, extension: str = "png") -> str | None:
         """Save raw image bytes and return their public URL.
 
-        Uploads to ``imageUploadUrl`` when configured, otherwise (and on any
-        upload failure) writes to the local HTTP root.
+        Uploads to the network's file host when it has one, otherwise (and on
+        any upload failure) writes to the local HTTP root.
 
         Args:
             image_bytes: Raw image bytes
@@ -6388,7 +6425,7 @@ Examples (echo → action_prompt: ""):
         if extension == "png":
             image_bytes, extension = self._convert_png_to_jpeg(image_bytes)
 
-        uploaded = self._upload_image_bytes(image_bytes, extension)
+        uploaded = self._upload_image(image_bytes, extension)
         if uploaded:
             return uploaded
 

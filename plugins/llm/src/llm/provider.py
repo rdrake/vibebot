@@ -16,6 +16,9 @@ Model strings are ``provider/name``:
 - ``anthropic/<name>``: Messages API.
 - ``xai/<name>``: OpenAI-compatible chat and image endpoints, plus the Responses
   API for web search.
+
+Web search runs on the model's own provider: Anthropic's web_search and
+web_fetch server tools, or xAI's Responses API.
 """
 
 from __future__ import annotations
@@ -42,6 +45,27 @@ USER_AGENT = "vibebot"
 # Anthropic requires max_tokens. litellm filled in the model's 128K ceiling;
 # nothing an IRC bot says comes close to this one.
 DEFAULT_MAX_TOKENS = 16000
+
+# The advisor tool (beta): the executor may consult a stronger model inside
+# the same request. One consult per request; the cap bounds the advisor's
+# thinking plus advice (the request's max_tokens does not), and the docs put
+# a typical consult at 1,400-1,800 tokens.
+ADVISOR_BETA = "advisor-tool-2026-03-01"
+ADVISOR_MAX_TOKENS = 2048
+
+# Capability order for the advisor pairing rule: the advisor must be at least
+# as capable as the executor or the API answers 400. Models missing here are
+# never paired.
+_ADVISOR_RANK = {
+    "anthropic/claude-haiku-5-5": 1,
+    "anthropic/claude-sonnet-5-5": 2,
+    "anthropic/claude-opus-5-5": 3,
+    "anthropic/claude-fable-5-1": 4,
+    "anthropic/claude-fable-5-2": 5,
+}
+
+# Keys on an assistant message that only Anthropic reads back.
+_ANTHROPIC_ONLY_KEYS = frozenset({"thinking_blocks", "anthropic_content"})
 
 # xAI reports cost as integer ticks. A tick of 1e-10 USD is inferred, not
 # documented: 200000000 ticks on a refused draw matched the $0.02 list price
@@ -81,6 +105,9 @@ PRICES: dict[str, Price] = {
     "anthropic/claude-opus-5-5": Price(input=4.00, output=20.00, cache_read=0.20, cache_write=5.00),
     "anthropic/claude-fable-5-1": Price(
         input=10.00, output=50.00, cache_read=0.25, cache_write=12.50
+    ),
+    "anthropic/claude-fable-5-2": Price(
+        input=8.00, output=40.00, cache_read=0.20, cache_write=10.00
     ),
     "xai/grok-4.3": _GROK_43,
     # Both fast aliases are served by grok-4.3 (owner, 2026-10-14), so they
@@ -147,6 +174,11 @@ class Reply:
     cost: float = 0.0
     grounded: bool = False  # search only: the web was actually consulted
     thinking: tuple[dict[str, Any], ...] = ()  # opaque, returned verbatim
+    # The whole Anthropic content, in order, when the advisor ran: its advice
+    # is encrypted and reaches the next step only if these blocks go back
+    # exactly as they came.
+    blocks: tuple[dict[str, Any], ...] = ()
+    advisor_called: bool = False  # an advisor_tool_result came back
 
     def turn(self) -> dict[str, Any]:
         """This reply as an assistant message to append to the conversation.
@@ -167,6 +199,8 @@ class Reply:
             ]
         if self.thinking:
             message["thinking_blocks"] = list(self.thinking)
+        if self.blocks:
+            message["anthropic_content"] = list(self.blocks)
         return message
 
 
@@ -363,6 +397,7 @@ def chat(
     max_tokens: int | None = None,
     json_reply: bool | dict[str, Any] = False,
     cache_key: str | None = None,
+    advisor: str | None = None,
 ) -> Reply:
     """One chat completion.
 
@@ -370,7 +405,11 @@ def chat(
     ``"auto"``, ``"required"``, ``"none"`` or ``{"type": "function",
     "function": {"name": ...}}``. ``json_reply`` is True for "answer with a
     JSON object" or a JSON Schema the answer must match. ``cache_key`` pins
-    xAI's prompt-cache routing; Anthropic caching is automatic.
+    xAI's prompt-cache routing; Anthropic caching is automatic. ``advisor``
+    is an ``anthropic/`` model the executor may consult once (see
+    :func:`advisor_pairs`); a reply whose finish_reason is ``pause`` stopped
+    mid-consult and is resumed by sending its turn back with the same
+    advisor.
     """
     provider, name = _split(model)
     if provider == "anthropic":
@@ -383,6 +422,17 @@ def chat(
             json_reply=json_reply,
         )
         headers = {"x-api-key": _key(model, provider), "anthropic-version": ANTHROPIC_VERSION}
+        if advisor:
+            body.setdefault("tools", []).append(
+                {
+                    "type": "advisor_20260301",
+                    "name": "advisor",
+                    "model": _split(advisor)[1],
+                    "max_uses": 1,
+                    "max_tokens": ADVISOR_MAX_TOKENS,
+                }
+            )
+            headers["anthropic-beta"] = ADVISOR_BETA
         data = _post(
             f"{ANTHROPIC_URL}/messages",
             headers,
@@ -511,6 +561,8 @@ def _anthropic_request(
                     }
                 ],
             )
+        elif role == "assistant" and message.get("anthropic_content"):
+            add("assistant", [dict(block) for block in message["anthropic_content"]])
         elif role == "assistant":
             blocks = [dict(block) for block in message.get("thinking_blocks") or []]
             text = _text_of(content)
@@ -571,7 +623,14 @@ def _anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
 # the tool (an explicit search, reminder or storybook request, or the image
 # retry nudge), so "auto" leaves the call to the model instead of failing.
 _NO_FORCED_TOOL_CHOICE = frozenset(
-    {"claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5-1"}
+    {
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-fable-5-1",
+        "claude-mythos-5-1",
+        "claude-fable-5-2",
+        "claude-mythos-5-2",
+    }
 )
 
 
@@ -595,14 +654,51 @@ _ANTHROPIC_FINISH = {
     "tool_use": "tool_calls",
     "max_tokens": "length",
     "refusal": "refusal",
+    # A consult still pending when the response ended.
+    "pause_turn": "pause",
 }
+
+
+def advisor_pairs(model: str, advisor: str) -> bool:
+    """Whether ``advisor`` may advise ``model``: both Anthropic, and the
+    advisor at least as capable."""
+    rank = _ADVISOR_RANK.get(model)
+    return rank is not None and _ADVISOR_RANK.get(advisor, 0) >= rank
+
+
+def _advisor_cost(usage: dict[str, Any]) -> float:
+    """What the advisor consults cost, at the advisor's own rates.
+
+    Top-level usage counts the executor only; each consult is an
+    ``advisor_message`` entry in ``usage.iterations``.
+    """
+    cost = 0.0
+    for iteration in usage.get("iterations") or []:
+        if iteration.get("type") != "advisor_message":
+            continue
+        model = f"anthropic/{iteration.get('model', '')}"
+        price = PRICES.get(model)
+        if price is None:
+            _warn_unpriced(model)
+            continue
+        cost += (
+            int(iteration.get("input_tokens") or 0) * price.input
+            + int(iteration.get("cache_creation_input_tokens") or 0) * price.cache_write
+            + int(iteration.get("cache_read_input_tokens") or 0) * price.cache_read
+            + int(iteration.get("output_tokens") or 0) * price.output
+        ) / 1e6
+    return cost
 
 
 def _anthropic_reply(model: str, data: dict[str, Any]) -> Reply:
     texts: list[str] = []
     calls: list[ToolCall] = []
     thinking: list[dict[str, Any]] = []
-    for block in data.get("content") or []:
+    content = data.get("content") or []
+    advised = any(
+        block.get("type") in ("server_tool_use", "advisor_tool_result") for block in content
+    )
+    for block in content:
         kind = block.get("type")
         if kind == "text":
             texts.append(block.get("text") or "")
@@ -637,8 +733,10 @@ def _anthropic_reply(model: str, data: dict[str, Any]) -> Reply:
         tool_calls=tuple(calls),
         finish_reason=_ANTHROPIC_FINISH.get(data.get("stop_reason") or "", "stop"),
         usage=Usage(input_tokens=fresh + written + read, output_tokens=output, cached_tokens=read),
-        cost=cost,
+        cost=cost + _advisor_cost(raw),
         thinking=tuple(thinking),
+        blocks=tuple(content) if advised else (),
+        advisor_called=any(block.get("type") == "advisor_tool_result" for block in content),
     )
 
 
@@ -654,7 +752,7 @@ def _xai_request(
     body: dict[str, Any] = {
         "model": name,
         "messages": [
-            {key: value for key, value in message.items() if key != "thinking_blocks"}
+            {key: value for key, value in message.items() if key not in _ANTHROPIC_ONLY_KEYS}
             for message in messages
         ],
     }
@@ -719,12 +817,20 @@ def _xai_reply(model: str, data: dict[str, Any]) -> Reply:
 
 
 def search(model: str, prompt: str, *, timeout: float, cache_key: str | None = None) -> Reply:
-    """Answer ``prompt`` with live web search: xAI's Responses API and its
-    ``web_search`` tool, the only place xAI offers search now.
-    ``Reply.grounded`` says whether the search actually ran."""
+    """Answer ``prompt`` with live web search on the model's own provider.
+
+    ``xai/``: the Responses API with its ``web_search`` tool, the only place
+    xAI offers search now. ``anthropic/``: the Messages API with the
+    ``web_search`` and ``web_fetch`` server tools, so a URL named in the
+    prompt is read too. ``Reply.grounded`` says whether the web was actually
+    consulted. ``cache_key`` pins xAI's prompt-cache routing; Anthropic
+    ignores it.
+    """
     provider, name = _split(model)
+    if provider == "anthropic":
+        return _anthropic_search(model, name, prompt, timeout=timeout)
     if provider != "xai":
-        raise BadRequestError(f"web search needs an xai/ model, not {model!r}")
+        raise BadRequestError(f"no web search for {model!r} (use anthropic/ or xai/)")
     body: dict[str, Any] = {"model": name, "input": prompt, "tools": [{"type": "web_search"}]}
     if cache_key:
         body["prompt_cache_key"] = cache_key
@@ -736,6 +842,100 @@ def search(model: str, prompt: str, *, timeout: float, cache_key: str | None = N
         provider=provider,
     )
     return _responses_reply(model, data)
+
+
+# The basic tool versions: every current Claude model takes them, Haiku 5.5
+# included, which the dynamic-filtering versions (_20260209 and later) leave
+# out. An IRC answer is a few lines; filtering pages through code execution
+# buys nothing here but latency.
+ANTHROPIC_SEARCH_TOOLS: tuple[dict[str, Any], ...] = (
+    {"type": "web_search_20250305", "name": "web_search", "max_uses": 3},
+    {"type": "web_fetch_20250910", "name": "web_fetch", "max_uses": 3, "max_content_tokens": 20000},
+)
+# $10 per 1,000 searches on top of tokens. Fetches cost tokens only.
+ANTHROPIC_SEARCH_USD = 0.01
+# Searches run in a server-side loop that hands the turn back with
+# pause_turn after 10 iterations; resend to let it finish, this many times.
+_SEARCH_MAX_RESUMES = 2
+_SEARCH_RESULT_TYPES = frozenset({"web_search_tool_result", "web_fetch_tool_result"})
+
+
+def _anthropic_search(model: str, name: str, prompt: str, *, timeout: float) -> Reply:
+    headers = {"x-api-key": _key(model, "anthropic"), "anthropic-version": ANTHROPIC_VERSION}
+    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    content: list[dict[str, Any]] = []
+    usage = Usage()
+    cost = 0.0
+    finish = "stop"
+    for _ in range(_SEARCH_MAX_RESUMES + 1):
+        body: dict[str, Any] = {
+            "model": name,
+            "max_tokens": DEFAULT_MAX_TOKENS,
+            "messages": messages,
+            "tools": [dict(tool) for tool in ANTHROPIC_SEARCH_TOOLS],
+        }
+        data = _post(
+            f"{ANTHROPIC_URL}/messages", headers, body, timeout=timeout, provider="anthropic"
+        )
+        step = _anthropic_reply(model, data)
+        searches = int(
+            ((data.get("usage") or {}).get("server_tool_use") or {}).get("web_search_requests") or 0
+        )
+        usage = Usage(
+            input_tokens=usage.input_tokens + step.usage.input_tokens,
+            output_tokens=usage.output_tokens + step.usage.output_tokens,
+            cached_tokens=usage.cached_tokens + step.usage.cached_tokens,
+        )
+        cost += step.cost + searches * ANTHROPIC_SEARCH_USD
+        content.extend(data.get("content") or [])
+        finish = step.finish_reason
+        if finish != "pause":
+            break
+        messages = [messages[0], {"role": "assistant", "content": list(content)}]
+    if finish == "refusal":
+        raise RefusalError("anthropic declined the search")
+    return Reply(
+        text=_answer_text(content),
+        usage=usage,
+        cost=cost,
+        grounded=_searched(content),
+        finish_reason=finish,
+    )
+
+
+def _answer_text(content: list[dict[str, Any]]) -> str:
+    """The text after the last search or fetch result.
+
+    Text before it is the model announcing what it will look up ("I'll
+    search for..."), which an IRC answer does not want.
+    """
+    start = 0
+    for index, block in enumerate(content):
+        if block.get("type") in _SEARCH_RESULT_TYPES:
+            start = index + 1
+    return "".join(
+        block.get("text") or "" for block in content[start:] if block.get("type") == "text"
+    ).strip()
+
+
+def _searched(content: list[dict[str, Any]]) -> bool:
+    """Whether a search or fetch returned something, or the answer cites one.
+
+    An error result comes back as an object with ``error_code`` (HTTP 200);
+    a search that worked returns a list, a fetch a ``web_fetch_result``.
+    """
+    for block in content:
+        kind = block.get("type")
+        if kind == "text" and block.get("citations"):
+            return True
+        if kind not in _SEARCH_RESULT_TYPES:
+            continue
+        result = block.get("content")
+        if isinstance(result, list) and result:
+            return True
+        if isinstance(result, dict) and result.get("type") == "web_fetch_result":
+            return True
+    return False
 
 
 def _responses_reply(model: str, data: dict[str, Any]) -> Reply:

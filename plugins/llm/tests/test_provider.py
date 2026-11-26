@@ -27,6 +27,7 @@ WIRE = Path(__file__).parent / "fixtures" / "provider_wire"
 HAIKU = "anthropic/claude-haiku-5-5"
 OPUS = "anthropic/claude-opus-5-5"
 FABLE = "anthropic/claude-fable-5-1"
+FABLE_52 = "anthropic/claude-fable-5-2"
 GROK = "xai/grok-4-1-fast-non-reasoning"
 
 SYSTEM = [{"role": "system", "content": "You are vibebot."}]
@@ -141,14 +142,15 @@ class TestAnthropicRequest:
         expected["max_tokens"] = provider.DEFAULT_MAX_TOKENS  # litellm: the 128K ceiling
         assert post.body == expected
 
-    @pytest.mark.parametrize("model", [OPUS, FABLE])
+    @pytest.mark.parametrize("model", [OPUS, FABLE, FABLE_52])
     @pytest.mark.parametrize(
         "choice", ["required", {"type": "function", "function": {"name": "search_web"}}]
     )
     def test_forced_tool_choice_is_sent_as_auto_where_the_model_rejects_it(
         self, post: FakePost, model: str, choice: str | dict[str, Any]
     ) -> None:
-        # Opus 5.5 and Fable 5.1 answer tool_choice "any" or "tool" with a 400.
+        # Opus 5.5 and Fable 5.1/5.2 answer tool_choice "any" or "tool" with a
+        # 400; Fable 5.2 did so in prod on every forced search (2026-11-23).
         provider.chat(
             model,
             SYSTEM + [{"role": "user", "content": "search cats"}],
@@ -375,6 +377,7 @@ class TestAnthropicReply:
             ("anthropic/claude-sonnet-5-5", 100 * 2.00 + 1000 * 2.50 + 4000 * 0.10 + 50 * 10.00),
             (OPUS, 100 * 4.00 + 1000 * 5.00 + 4000 * 0.20 + 50 * 20.00),
             (FABLE, 100 * 10.00 + 1000 * 12.50 + 4000 * 0.25 + 50 * 50.00),
+            (FABLE_52, 100 * 8.00 + 1000 * 10.00 + 4000 * 0.20 + 50 * 40.00),
         ],
     )
     def test_sonnet_opus_and_fable_spend_is_booked_at_list_price(
@@ -430,6 +433,167 @@ class TestAnthropicReply:
             )
             assert (reply.text, reply.cost) == ("hi", 0.0)
         assert sum("claude-unknown" in r.message for r in caplog.records) == 1
+
+
+# ---------------------------------------------------------------------------
+# Advisor tool
+# ---------------------------------------------------------------------------
+
+# Interleaved as the API returns it: the consult sits between the executor's
+# own text and its tool call, and the advice is encrypted.
+ADVISED_REPLY = {
+    "content": [
+        {"type": "thinking", "thinking": "", "signature": "sig-1"},
+        {"type": "text", "text": "Let me check."},
+        {"type": "server_tool_use", "id": "srvtoolu_1", "name": "advisor", "input": {}},
+        {
+            "type": "advisor_tool_result",
+            "tool_use_id": "srvtoolu_1",
+            "content": {"type": "advisor_redacted_result", "encrypted_content": "EqQB..."},
+        },
+        {"type": "text", "text": " Searching."},
+        {"type": "tool_use", "id": "toolu_9", "name": "search_web", "input": {"query": "cats"}},
+    ],
+    "stop_reason": "tool_use",
+    "usage": {
+        "input_tokens": 1000,
+        "output_tokens": 100,
+        "iterations": [
+            {"type": "message", "input_tokens": 400, "output_tokens": 40},
+            {
+                "type": "advisor_message",
+                "model": "claude-opus-5-5",
+                "input_tokens": 800,
+                "cache_read_input_tokens": 200,
+                "output_tokens": 1500,
+            },
+            {"type": "message", "input_tokens": 600, "output_tokens": 60},
+        ],
+    },
+}
+
+
+class TestAdvisor:
+    def test_advisor_rides_as_a_capped_server_tool_under_its_beta(self, post: FakePost) -> None:
+        provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30, advisor=OPUS)
+        assert post.body["tools"] == [
+            {
+                "type": "advisor_20260301",
+                "name": "advisor",
+                "model": "claude-opus-5-5",
+                "max_uses": 1,
+                "max_tokens": provider.ADVISOR_MAX_TOKENS,
+            }
+        ]
+        assert post.calls[-1]["headers"]["anthropic-beta"] == "advisor-tool-2026-03-01"
+
+    def test_no_advisor_no_beta_header(self, post: FakePost) -> None:
+        provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30, tools=TOOLS)
+        assert "anthropic-beta" not in post.calls[-1]["headers"]
+        assert [t["name"] for t in post.body["tools"]] == ["search_web"]
+
+    def test_consult_is_booked_at_the_advisors_rates(
+        self, post: FakePost, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        post.reply = ADVISED_REPLY
+        provider._unpriced.discard("anthropic/")
+        reply = provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30, advisor=OPUS)
+        # The executor's own iterations are already in the top-level totals;
+        # they are neither priced twice nor mistaken for an unpriced model.
+        assert not any("price" in r.message for r in caplog.records)
+        # Haiku on the top-level totals: 1000×0.10 + 100×0.50.
+        # Opus on its iteration: 800×4.00 + 200×0.20 + 1500×20.00.
+        executor = 1000 * 0.10 + 100 * 0.50
+        advisor = 800 * 4.00 + 200 * 0.20 + 1500 * 20.00
+        assert reply.cost == pytest.approx((executor + advisor) / 1e6)
+        assert reply.usage == provider.Usage(input_tokens=1000, output_tokens=100)
+        assert reply.advisor_called
+        assert reply.text == "Let me check. Searching."
+
+    def test_consult_usage_missing_fields_count_as_zero(self, post: FakePost) -> None:
+        def consult(**tokens: int) -> dict[str, Any]:
+            return {"type": "advisor_message", "model": "claude-opus-5-5", **tokens}
+
+        post.reply = {
+            "content": [],
+            "stop_reason": "end_turn",
+            "usage": {
+                "iterations": [
+                    consult(output_tokens=1000),
+                    consult(input_tokens=1000, cache_creation_input_tokens=100),
+                ]
+            },
+        }
+        reply = provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30, advisor=OPUS)
+        assert reply.cost == pytest.approx((1000 * 20.00 + 1000 * 4.00 + 100 * 5.00) / 1e6)
+
+    def test_next_step_replays_the_consult_verbatim_and_in_order(self, post: FakePost) -> None:
+        post.reply = ADVISED_REPLY
+        messages: list[dict[str, Any]] = [{"role": "user", "content": "x"}]
+        reply = provider.chat(HAIKU, messages, timeout=30, tools=TOOLS, advisor=OPUS)
+        messages += [reply.turn(), {"role": "tool", "tool_call_id": "toolu_9", "content": "meow"}]
+        provider.chat(HAIKU, messages, timeout=30, tools=TOOLS)
+        assert post.body["messages"][1] == {
+            "role": "assistant",
+            "content": ADVISED_REPLY["content"],
+        }
+
+    def test_pause_turn_is_a_pause_not_a_finished_reply(self, post: FakePost) -> None:
+        pending = {"type": "server_tool_use", "id": "srvtoolu_1", "name": "advisor", "input": {}}
+        post.reply = {"content": [pending], "stop_reason": "pause_turn"}
+        reply = provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30, advisor=OPUS)
+        assert reply.finish_reason == "pause"
+        assert not reply.advisor_called
+        assert reply.turn()["anthropic_content"] == [pending]
+
+    def test_a_turn_without_a_consult_carries_no_raw_content(self, post: FakePost) -> None:
+        post.reply = ANTHROPIC_TOOL_REPLY
+        reply = provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30, advisor=OPUS)
+        assert "anthropic_content" not in reply.turn()
+        assert not reply.advisor_called
+
+    def test_xai_never_sees_the_raw_content(self, post: FakePost) -> None:
+        post.reply = ADVISED_REPLY
+        reply = provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30, advisor=OPUS)
+        post.reply = {"choices": [{"message": {"content": "ok"}}]}
+        provider.chat(GROK, [{"role": "user", "content": "x"}, reply.turn()], timeout=30)
+        assert "anthropic_content" not in post.body["messages"][1]
+
+    def test_unpriced_advisor_books_only_the_executor(self, post: FakePost) -> None:
+        post.reply = {
+            "content": [],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 0,
+                "iterations": [
+                    {"type": "advisor_message", "model": "claude-x", "output_tokens": 9}
+                ],
+            },
+        }
+        reply = provider.chat(HAIKU, [{"role": "user", "content": "x"}], timeout=30)
+        assert reply.cost == pytest.approx(1000 * 0.10 / 1e6)
+
+    @pytest.mark.parametrize(
+        ("executor", "advisor", "allowed"),
+        [
+            (HAIKU, OPUS, True),
+            (HAIKU, "anthropic/claude-sonnet-5-5", True),
+            (HAIKU, HAIKU, True),
+            (OPUS, OPUS, True),
+            (OPUS, FABLE, True),
+            (OPUS, "anthropic/claude-sonnet-5-5", False),
+            (FABLE, OPUS, False),
+            (FABLE_52, FABLE_52, True),
+            (FABLE_52, OPUS, False),
+            (GROK, OPUS, False),
+            (HAIKU, GROK, False),
+            ("anthropic/claude-unknown", OPUS, False),
+            (HAIKU, "anthropic/claude-unknown", False),
+        ],
+    )
+    def test_advisor_pairs(self, executor: str, advisor: str, allowed: bool) -> None:
+        assert provider.advisor_pairs(executor, advisor) is allowed
 
 
 # ---------------------------------------------------------------------------
@@ -646,8 +810,152 @@ class TestSearch:
         }
         assert provider.search("xai/grok-4.3", "q", timeout=60).grounded is False
 
-    def test_needs_xai(self, post: FakePost) -> None:
+    def test_needs_a_provider_with_search(self, post: FakePost) -> None:
         with pytest.raises(provider.BadRequestError):
+            provider.search("openai/gpt-5", "q", timeout=60)
+        assert post.calls == []
+
+
+def _searched_reply(*, searches: int = 1, stop: str = "end_turn") -> dict[str, Any]:
+    """A Messages reply in which Claude announced, searched, then answered."""
+    return {
+        "content": [
+            {"type": "text", "text": "I'll look that up."},
+            {
+                "type": "server_tool_use",
+                "id": "srvtoolu_1",
+                "name": "web_search",
+                "input": {"query": "toronto weather"},
+            },
+            {
+                "type": "web_search_tool_result",
+                "tool_use_id": "srvtoolu_1",
+                "content": [
+                    {"type": "web_search_result", "url": "https://a.example", "title": "A"}
+                ],
+            },
+            {"type": "text", "text": "It is "},
+            {
+                "type": "text",
+                "text": "5C and cloudy",
+                "citations": [{"type": "web_search_result_location", "url": "https://a.example"}],
+            },
+            {"type": "text", "text": "."},
+        ],
+        "stop_reason": stop,
+        "usage": {
+            "input_tokens": 1000,
+            "output_tokens": 100,
+            "server_tool_use": {"web_search_requests": searches},
+        },
+    }
+
+
+class TestAnthropicSearch:
+    """Search on an anthropic/ model runs Anthropic's own web tools."""
+
+    def test_request_offers_web_search_and_fetch(self, post: FakePost) -> None:
+        post.reply = _searched_reply()
+        provider.search(HAIKU, "weather in toronto?", timeout=60, cache_key="ignored")
+        call = post.calls[-1]
+        assert call["url"] == "https://api.anthropic.com/v1/messages"
+        assert call["headers"]["x-api-key"] == "sk-ant-test-key-0123456789"
+        assert "anthropic-beta" not in call["headers"]
+        assert call["body"]["model"] == "claude-haiku-5-5"
+        assert call["body"]["messages"] == [{"role": "user", "content": "weather in toronto?"}]
+        assert [(t["type"], t["name"]) for t in call["body"]["tools"]] == [
+            ("web_search_20250305", "web_search"),
+            ("web_fetch_20250910", "web_fetch"),
+        ]
+        assert "prompt_cache_key" not in call["body"]
+
+    def test_answer_is_the_text_after_the_last_result(self, post: FakePost) -> None:
+        post.reply = _searched_reply()
+        reply = provider.search(HAIKU, "q", timeout=60)
+        assert reply.text == "It is 5C and cloudy."
+        assert reply.grounded is True
+
+    def test_each_search_adds_a_cent_to_the_token_cost(self, post: FakePost) -> None:
+        post.reply = _searched_reply(searches=2)
+        reply = provider.search(HAIKU, "q", timeout=60)
+        # 1000 input × $0.10 + 100 output × $0.50, per million, plus 2 × $0.01
+        assert reply.usage == provider.Usage(1000, 100, 0)
+        assert reply.cost == pytest.approx((100 + 50) / 1e6 + 0.02)
+
+    def test_a_failed_search_does_not_ground_the_reply(self, post: FakePost) -> None:
+        post.reply = {
+            "content": [
+                {"type": "server_tool_use", "id": "s1", "name": "web_search", "input": {}},
+                {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "s1",
+                    "content": {
+                        "type": "web_search_tool_result_error",
+                        "error_code": "unavailable",
+                    },
+                },
+                {"type": "text", "text": "I couldn't search."},
+            ],
+            "stop_reason": "end_turn",
+        }
+        reply = provider.search(HAIKU, "q", timeout=60)
+        assert (reply.text, reply.grounded) == ("I couldn't search.", False)
+
+    def test_a_fetched_page_grounds_the_reply(self, post: FakePost) -> None:
+        post.reply = {
+            "content": [
+                {"type": "server_tool_use", "id": "f1", "name": "web_fetch", "input": {}},
+                {
+                    "type": "web_fetch_tool_result",
+                    "tool_use_id": "f1",
+                    "content": {"type": "web_fetch_result", "url": "https://a.example"},
+                },
+                {"type": "text", "text": "The page says hi."},
+            ],
+            "stop_reason": "end_turn",
+        }
+        reply = provider.search(HAIKU, "summarize https://a.example", timeout=60)
+        assert (reply.text, reply.grounded) == ("The page says hi.", True)
+
+    def test_a_paused_turn_is_sent_back_to_finish(
+        self, post: FakePost, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        paused = {
+            "content": [{"type": "server_tool_use", "id": "s1", "name": "web_search", "input": {}}],
+            "stop_reason": "pause_turn",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 1,
+                "server_tool_use": {"web_search_requests": 1},
+            },
+        }
+        replies = [paused, _searched_reply(searches=1)]
+        fake = FakePost()
+
+        def answer(url, headers, body, *, timeout, provider):  # noqa: ANN001
+            fake(url, headers, body, timeout=timeout, provider=provider)
+            return replies[len(fake.calls) - 1]
+
+        monkeypatch.setattr(provider, "_post", answer)
+        reply = provider.search(HAIKU, "q", timeout=60)
+        assert len(fake.calls) == 2
+        resumed = fake.calls[1]["body"]["messages"]
+        assert resumed == [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": paused["content"]},
+        ]
+        assert reply.text == "It is 5C and cloudy."
+        assert reply.usage == provider.Usage(1010, 101, 0)
+        assert reply.cost == pytest.approx((101 + 50.5) / 1e6 + 0.02)
+
+    def test_resumes_stop_after_two(self, post: FakePost) -> None:
+        post.reply = {"content": [], "stop_reason": "pause_turn"}
+        provider.search(HAIKU, "q", timeout=60)
+        assert len(post.calls) == 3
+
+    def test_a_refusal_raises(self, post: FakePost) -> None:
+        post.reply = {"content": [], "stop_reason": "refusal"}
+        with pytest.raises(provider.RefusalError):
             provider.search(HAIKU, "q", timeout=60)
 
 
