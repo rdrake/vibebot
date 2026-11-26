@@ -39,7 +39,7 @@ API keys are **not** part of the Limnoria registry. They come from environment v
 | `ANTHROPIC_API_KEY` | Anthropic (`anthropic/` models) |
 | `XAI_API_KEY` | xAI (`xai/` models) |
 
-These are the only two providers the bot can call. With the defaults, chat and the `@meme` template picker need `ANTHROPIC_API_KEY` (a named template with captions renders locally and calls no model), and search, subject research, `@draw`, meme picture edits and the refusal fallback need `XAI_API_KEY`, because they run on fixed xAI models (see [Model selection](#model-selection)).
+These are the only two providers the bot can call. With the defaults, chat and the `@meme` template picker need `ANTHROPIC_API_KEY` (a named template with captions renders locally and calls no model), and `@draw`, meme picture edits and the refusal fallback need `XAI_API_KEY`, because they run on fixed xAI models (see [Model selection](#model-selection)). Search and subject research use the key of whichever provider runs them: `ANTHROPIC_API_KEY` while `assistantModel` is an `anthropic/` model, `XAI_API_KEY` otherwise.
 
 Copy `.env.example` to `~/.config/vibebot/env` and set the variables there; the systemd unit passes that file to the container with `--env-file` (see [Installation](installation.md)). A model whose provider has no key configured fails with an error naming the missing variable, for example `no API key configured for provider 'xai' (set XAI_API_KEY)`.
 
@@ -50,6 +50,7 @@ Models are `provider/name` strings, and the provider must be `anthropic/` or `xa
 | Setting | Scope | Default | Description |
 |---------|-------|---------|-------------|
 | `assistantModel` | channel | `anthropic/claude-haiku-5-5` | All assistant text and tool work: chat, planner, memory, reminders, scheduled tasks. Needs vision support if users paste image URLs |
+| `advisorModel` | channel | `anthropic/claude-opus-5-5` | A stronger model chat may consult at most once a turn, through Anthropic's advisor tool. The assistant model decides when; most chat never calls it. A consult runs inside the same request, so a step that may consult gets a 120-second timeout instead of `timeout`, and an Opus consult costs about $0.05, booked at Opus rates. Chat turns only, never verse or `@draw`. Must be an `anthropic/` model at least as capable as `assistantModel`; any other pairing is skipped with a log warning, and an `xai/` assistant model never consults. Empty turns it off |
 | `memoryModel` | channel | empty | Model for the memory extraction that runs after a stored `@ask` or chat reply to an authenticated user. Falls back to `assistantModel`. A cheap model is enough |
 | `verseModel` | channel | empty | Model for verse-mode replies. Falls back to `assistantModel`. Set this when the assistant model is a terse reasoning model that writes poor prose |
 
@@ -59,7 +60,7 @@ The other roles run on fixed models:
 |------|-------|-------|
 | Refusal fallback | `xai/grok-4-1-fast-non-reasoning` | Re-runs a chat turn once when its model refuses: an Anthropic `stop_reason` refusal (at once, with no retry), a policy refusal that survives its one retry, or a provider refusal error. The fallback gets the original request without the refusal. Skipped when the turn already runs on this model, when `XAI_API_KEY` is unset, or when a tool that changes something (a reminder, an image, a memory) already worked this turn, since the re-run would repeat it. Its cost books at `xai/grok-4.3` rates, the model behind the alias |
 | Images | `xai/grok-imagine-image` | `@draw`, `@story` and the `generate_image` tool |
-| Search | `xai/grok-4.3` | Web search, URL fetch and [subject research](#subject-research). GitHub links skip it: they are read through GitHub's API. A request can run at most three searches |
+| Search | `assistantModel` when it is an `anthropic/` model, else `xai/grok-4.3` | Web search, URL fetch and [subject research](#subject-research). On an Anthropic model these use Anthropic's `web_search` and `web_fetch` server tools ($10 per 1,000 searches on top of tokens); on xAI, the Responses API's `web_search`. GitHub links skip it: they are read through GitHub's API. A request can run at most three searches |
 | Meme picker | `anthropic/claude-haiku-5-5` | Picks a template and writes captions when `@meme` (or `make_meme`'s `brief`) names no template the catalog knows. It opens on a short list (the 40 most popular templates plus up to 20 sharing a word with the request, about 5K prompt tokens) and can call a `search_templates` tool up to twice to reach the rest of the catalog. No search: one call, about 5K tokens, 2 s. Each search is another round trip: about 12K tokens and 4 s with one, 19K and 6 s with two. Under $0.003 either way. [Subject research](#subject-research) runs first, adding one search-model call and a few seconds to every picker request |
 | Meme picture edits | `xai/grok-imagine-image` | The picker's `draw` (and `make_meme`'s). Templates with picture slots get one generated picture per slot (`/v1/images/generations`), masked into the blank; other templates send the captioned meme to `/v1/images/edits`. About $0.02 per picture, refusals billed too |
 | Verse compaction | `anthropic/claude-haiku-5-5` | The daily verse compaction job |
@@ -102,8 +103,9 @@ other failure: asked about a name that exists nowhere, a grounded model guesses
 an appearance from the words in it rather than answering `NONE`, and a guess
 has nothing to cite. The tag is stripped before the line reaches the planner.
 
-The research runs on the search model (`xai/grok-4.3`), which in most
-deployments means the researcher is a different provider from the planner.
+The research runs on the search model: the channel's `assistantModel` when it
+is an `anthropic/` model, otherwise `xai/grok-4.3`, so the researcher may be a
+different provider from the planner.
 
 ## System prompts
 
@@ -192,24 +194,17 @@ Because the bot skips Limnoria's automatic WHO on join when `account-tag` and `e
 |---------|-------|---------|-------------|
 | `httpRoot` | global | empty | Filesystem path for output files. Empty keeps them under Limnoria's `data/web/llm/` and serves them from its built-in HTTP server. Setting it **unhooks that server** — an external server such as nginx must serve the path, and `httpUrlBase` must be set to match, or every generated link 404s |
 | `httpUrlBase` | global | empty | Public base URL for output files. Empty uses Limnoria's `publicUrl` plus `/llm`; if `publicUrl` is also unset the bot falls back to `http://localhost:<http port>/llm`, which nobody off the host can open |
-| `imageUploadUrl` | global | empty | External image host for generated images. Empty stores them locally |
 | `fileCleanupAge` | global | `720` | Delete output files older than this many hours (30 days) |
 
 Replies that wrap to at most 3 IRC lines go inline as one IRCv3 `draft/multiline` batch (this needs `supybot.protocols.irc.experimentalExtensions`); longer replies are saved as HTML and announced with a one-line teaser of up to 220 characters and a link. The output directory keeps at most 1,000 files.
 
-### Offloading images to an external host
+### Generated images and the network's file host
 
-Set `imageUploadUrl` to an uploader that takes a multipart `POST` on the `images[]` field and answers with JSON:
+When the server advertises IRCv3 `draft/FILEHOST` and grants `draft/authtoken`, generated images go to the network's file host and storybook pages embed the absolute URL. There is nothing to configure and no key to hold: the bot asks the server for a single-use token (`TOKEN GENERATE FILEHOST`) for each image. Pages themselves (long answers, stories) still come from your own HTTP server.
 
-```json
-{"results": [{"success": true, "filePath": "/img/img_abc123.png"}]}
-```
+It needs `supybot.protocols.irc.experimentalExtensions` on, a server that advertises a host, and the bot logged in to an account. On AfterNET, FractalRealities advertises `paste.boxlabs.uk`, and not every server advertises a host.
 
-Generated images then live on that host instead of under `httpRoot`, and storybook pages embed the absolute URL. Pages themselves (long answers, stories) still come from your own HTTP server, so this offloads bandwidth rather than replacing it.
-
-Every failure falls back to local storage: endpoint unreachable, upload rejected, image over 10 MB, or a reply naming a URL that is not an image on the configured host. An outage costs a slower draw, nothing more.
-
-[paste.boxlabs.uk/img/](https://paste.boxlabs.uk/img/) is an externally operated uploader, the host this contract follows, and it needs no key. Ask the host's owner before pointing the bot at somebody else's uploader.
+Every failure stores the image locally under `httpRoot` instead, at the cost of a slower draw. Look for log lines starting `filehost:` or `Filehost upload`. A bot that is not logged in logs `server refused a token: ACCOUNT_REQUIRED`. The host sets its own retention and limits: `paste.boxlabs.uk` keeps uploads for 30 days, so an old storybook page loses its pictures, and the software behind it defaults to 30 uploads an hour per account, so a large storybook can finish on local storage.
 
 ## Limnoria tool bridge
 

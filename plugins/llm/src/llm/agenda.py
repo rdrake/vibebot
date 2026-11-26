@@ -10,6 +10,8 @@ echoes or runs a reminder; the service dispatches a task). Everything about
 - the next fire of a recurring entry, anchored to the start of the fire that
   just ran (so a long LLM turn does not drift the cadence) and never earlier
   than a second from now;
+- the horizon: how far out a reminder may first fire (through the same
+  date one year on, in the owner's zone);
 - the chain cap, per kind (a reminder chain may run 50 times, a scheduled
   task 5), enforced in one place;
 - the cancel check: the database row is the only truth about whether an
@@ -43,7 +45,8 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
+from datetime import time as dt_time
 from enum import StrEnum
 from typing import Protocol
 
@@ -101,6 +104,27 @@ def cadence_too_short(recurrence_seconds: int | None, recurrence_rrule: str | No
         if len(first_two) == 2:
             gap = (first_two[1] - first_two[0]).total_seconds()
     return gap is not None and gap < MIN_RECURRENCE_SECONDS
+
+
+def one_year_on(today: date) -> date:
+    """The same date next year; 29 February moves to 1 March."""
+    try:
+        return today.replace(year=today.year + 1)
+    except ValueError:  # 29 February, and next year is not a leap year
+        return date(today.year + 1, 3, 1)
+
+
+def reminder_horizon(now: float, tz: tzinfo = UTC) -> float:
+    """The first instant a reminder set at ``now`` may no longer fire.
+
+    A reminder may fire any time up to the end of the same date one year on,
+    in ``tz`` (the owner's zone), so "next year" and "same day next year at
+    5pm" both fit whatever the time of day and whether a 29 February falls
+    in between. The bound is the following midnight, exclusive.
+    """
+    today = datetime.fromtimestamp(now, tz=tz).date()
+    last_day = one_year_on(today)
+    return datetime.combine(last_day + timedelta(days=1), dt_time(0), tzinfo=tz).timestamp()
 
 
 def next_rrule_fire(rule_str: str, now: float, tz: tzinfo = UTC) -> float | None:

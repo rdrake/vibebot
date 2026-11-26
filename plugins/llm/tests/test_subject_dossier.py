@@ -197,11 +197,21 @@ class TestDossierParsing:
 
 
 class TestDossierModel:
-    def test_runs_on_the_search_model(self, make_service, mocker) -> None:
-        """GIVEN any channel model WHEN researched THEN the search model runs it."""
+    def test_runs_on_an_anthropic_channel_model(self, make_service, mocker) -> None:
+        """GIVEN an anthropic/ channel model WHEN researched THEN that model runs it."""
+        service, _ = make_service(assistantModel="anthropic/claude-haiku-5-5")
+        call = _answering(mocker, service, "- A — b")
+
+        result = service.subject_dossier("x", channel="#test")
+
+        assert call.call_args.args[0] == "anthropic/claude-haiku-5-5"
+        assert result.model == "anthropic/claude-haiku-5-5"
+
+    def test_runs_on_the_search_model_for_an_xai_channel(self, make_service, mocker) -> None:
+        """GIVEN an xai/ channel model WHEN researched THEN the xAI search model runs it."""
         from llm.service import SEARCH_MODEL
 
-        service, _ = make_service(assistantModel="anthropic/claude-haiku-5-5")
+        service, _ = make_service(assistantModel="xai/grok-4-1-fast-non-reasoning")
         call = _answering(mocker, service, "- A — b")
 
         result = service.subject_dossier("x", channel="#test")

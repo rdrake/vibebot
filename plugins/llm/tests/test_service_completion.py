@@ -55,6 +55,26 @@ class TestGroundedCompletion:
         assert search.call_args.args == ("xai/grok-4.3", "what is grok")
         assert search.call_args.kwargs["timeout"] == 30
 
+    def test_search_runs_on_an_anthropic_assistant_model(self, make_service) -> None:
+        """GIVEN an anthropic/ assistantModel WHEN searching THEN that model searches."""
+        service, _ = make_service(timeout=30, assistantModel="anthropic/claude-sonnet-5-5")
+        search = self.mocker.patch("llm.service.provider.search", return_value=_search_reply())
+
+        service.search_completion("q", channel="#dev")
+        service.url_completion("https://example.com", channel="#dev")
+
+        assert [c.args[0] for c in search.call_args_list] == ["anthropic/claude-sonnet-5-5"] * 2
+        assert search.call_args.kwargs["cache_key"] is None
+
+    def test_search_stays_on_grok_for_an_xai_assistant_model(self, make_service) -> None:
+        """GIVEN an xai/ assistantModel WHEN searching THEN the xAI search model runs it."""
+        service, _ = make_service(timeout=30, assistantModel="xai/grok-4-1-fast-non-reasoning")
+        search = self.mocker.patch("llm.service.provider.search", return_value=_search_reply())
+
+        service.search_completion("q", channel="#dev")
+
+        assert search.call_args.args[0] == "xai/grok-4.3"
+
     def test_url_prompt_names_the_url(self) -> None:
         search = self.mocker.patch("llm.service.provider.search", return_value=_search_reply())
 
@@ -297,16 +317,6 @@ class TestSearchCompletion:
 
         assert isinstance(result, ToolResult)
         assert result.content == "Search answer"
-
-    def test_uses_the_search_model(self, service: LLMService, mocker: MockerFixture) -> None:
-        """search_completion runs on the search model, not assistantModel."""
-        from llm.service import SEARCH_MODEL
-
-        search = mocker.patch("llm.service.provider.search", return_value=_search_reply())
-
-        service.search_completion("test", channel="#test")
-
-        assert search.call_args.args[0] == SEARCH_MODEL
 
     def test_returns_error_on_exception(self, service: LLMService, mocker: MockerFixture) -> None:
         """search_completion returns error ToolResult on failure."""

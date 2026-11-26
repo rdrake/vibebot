@@ -118,7 +118,7 @@ A real image takes roughly 15–20 seconds and always leaves a line:
 docker logs vibebot 2>&1 | grep "op=image_generation"
 ```
 
-A reply that came back in two or three seconds with no matching line was made up. The bot catches most of these itself: an image URL on a host only the bot publishes to (`httpUrlBase` or `imageUploadUrl`) that the turn did not generate makes it force the tool and retry once, logging:
+A reply that came back in two or three seconds with no matching line was made up. The bot catches most of these itself: an image URL on a host only the bot publishes to (`httpUrlBase` or the network's file host) that the turn did not generate makes it force the tool and retry once, logging:
 
 ```
 assistant_completion: reply invented image URL <url> without calling generate_image;
