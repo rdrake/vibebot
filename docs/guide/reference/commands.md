@@ -119,7 +119,8 @@ tasks — marked `[task]` — alongside your reminders.
 @remind admin list someone        # owner only
 ```
 
-Limits: 25 pending reminders each, 10 seconds to 7 days out, 500
+Limits: 25 pending reminders each, 10 seconds to a year out (through
+the same date next year), 500
 characters of text; 5 active scheduled tasks per channel. While you are
 over your `@ask` rate limit, an action reminder delivers its text without
 running the action and a scheduled task is skipped; neither uses up the

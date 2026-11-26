@@ -12,6 +12,7 @@ regressions in the real command code are caught.
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -1874,21 +1875,42 @@ class TestRemindSetCommand:
         error_text = mock_irc.error.call_args[0][0]
         assert "10 seconds" in error_text
 
-    def test_remind_rejects_too_long_duration(self, plugin_env, mocker: MockerFixture):
-        """GIVEN duration > 7 days WHEN remind called THEN error is returned."""
+    def test_remind_accepts_the_same_date_next_year(self, plugin_env, mocker: MockerFixture):
+        """GIVEN a reminder a year out, later in the day WHEN remind called THEN it is set."""
         plugin, mock_irc, mock_msg = plugin_env
+        now = datetime(2026, 11, 26, 9, 0, tzinfo=UTC).timestamp()
+        mocker.patch("llm.plugin.time.time", return_value=now)
+        fire = datetime(2027, 11, 26, 23, 0, tzinfo=UTC).timestamp()
         plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
             action="schedule",
-            seconds=604801,  # >7 days
+            seconds=int(fire - now),
+            message="test",
+            confirmation="Reminder set for next year.",
+        )
+        mocker.patch("llm.plugin.schedule.addEvent")
+
+        plugin.remind(mock_irc, mock_msg, ["next year at 11pm test"])
+
+        mock_irc.error.assert_not_called()
+        assert "Reminder set" in mock_irc.reply.call_args[0][0]
+
+    def test_remind_rejects_more_than_a_year_out(self, plugin_env, mocker: MockerFixture):
+        """GIVEN a reminder the day after the same date next year WHEN remind called THEN error."""
+        plugin, mock_irc, mock_msg = plugin_env
+        now = datetime(2026, 11, 26, 9, 0, tzinfo=UTC).timestamp()
+        mocker.patch("llm.plugin.time.time", return_value=now)
+        fire = datetime(2027, 11, 27, 0, 0, tzinfo=UTC).timestamp()
+        plugin.llm_service.parse_reminder.return_value = ReminderParseResult(
+            action="schedule",
+            seconds=int(fire - now),
             message="test",
             confirmation="ok",
         )
 
-        plugin.remind(mock_irc, mock_msg, ["in 8d test"])
+        plugin.remind(mock_irc, mock_msg, ["in 367d test"])
 
         mock_irc.error.assert_called_once()
-        error_text = mock_irc.error.call_args[0][0]
-        assert "7 days" in error_text
+        assert "a year" in mock_irc.error.call_args[0][0]
 
     def test_remind_rejects_none_seconds(self, plugin_env, mocker: MockerFixture):
         """GIVEN parse result has seconds=None WHEN remind called THEN error is returned."""

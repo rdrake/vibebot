@@ -9651,7 +9651,6 @@ class LLM(callbacks.Plugin):
                 return name
         return None
 
-    _REMINDER_MAX_SECONDS = 604800  # 7 days
     _REMINDER_MAX_PENDING_PER_USER = 25  # cap one-shot accumulation per user
     # A restatement of a reminder set this recently reads as a correction to it
     # ("no, wait, make it 2 minutes") rather than a second reminder. Keyed on
@@ -9878,12 +9877,12 @@ class LLM(callbacks.Plugin):
                 ok=False, message="Reminder must be at least 10 seconds from now."
             )
 
-        if result.seconds > self._REMINDER_MAX_SECONDS:
+        now = time.time()
+        if now + result.seconds >= agenda.reminder_horizon(now, user_tz.tz):
             return ReminderScheduleResult(
-                ok=False, message="Reminder can't be more than 7 days out."
+                ok=False, message="Reminder can't be more than a year out."
             )
 
-        now = time.time()
         pending = len(self._get_user_reminders(identity))
         if pending >= self._REMINDER_MAX_PENDING_PER_USER:
             return ReminderScheduleResult(
