@@ -4066,6 +4066,7 @@ Rules:
 - For relative times ("in 30 minutes"), set note to null — timezone is irrelevant
 - Absolute and calendar times ("at 3pm", "tomorrow morning", "tonight") without a timezone are in the user's local time above; {zone_rule}. "Morning" means 09:00, "afternoon" 15:00, "evening" 19:00, "tonight" 21:00.
 - RRULE BYHOUR/BYMINUTE are the user's local wall-clock time, not UTC.
+- "Next year" with no date means one year from now: the same date and time next year.
 - If request is too vague (missing time or message), use "clarify"
 - "confirmation" is shown to the user immediately at scheduling time. It MUST only state that the reminder was set and when. Do NOT speculate about what the bot can or cannot do at fire time, do NOT mention tool limits, do NOT add disclaimers like "though I can only ..." — capability decisions happen at fire time, not now.
 - Keep confirmation concise (under 100 chars)

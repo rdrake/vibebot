@@ -6,7 +6,7 @@ scheduler. Plugin-level tests cover arming the one wakeup and delivery.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -19,6 +19,8 @@ from llm.agenda import (
     cadence_too_short,
     next_fire,
     next_rrule_fire,
+    one_year_on,
+    reminder_horizon,
 )
 from llm.persistence import EXPIRY_THRESHOLD_SECONDS, LLMDatabase
 
@@ -95,6 +97,43 @@ class TestCadenceFloor:
     def test_secondly_rrule_is_floored_at_fire_time(self) -> None:
         """The parse check sees one gap; the fire-time floor covers every later one."""
         assert next_rrule_fire("FREQ=SECONDLY", 1_000.0) == 1_060.0
+
+
+class TestReminderHorizon:
+    """A reminder may fire through the end of the same date one year on, in the owner's zone."""
+
+    def test_the_same_date_next_year_is_the_last_day(self) -> None:
+        assert one_year_on(date(2026, 11, 26)) == date(2027, 11, 26)
+
+    def test_29_february_moves_to_1_march(self) -> None:
+        assert one_year_on(date(2028, 2, 29)) == date(2029, 3, 1)
+
+    def test_the_bound_is_midnight_after_the_same_date_next_year(self) -> None:
+        now = datetime(2026, 11, 26, 11, 46, tzinfo=UTC).timestamp()
+        assert reminder_horizon(now) == datetime(2027, 11, 27, tzinfo=UTC).timestamp()
+
+    def test_a_later_hour_on_the_same_date_next_year_is_inside(self) -> None:
+        """'Same day next year at 11pm', set at 9am, is more than 365 days but allowed."""
+        now = datetime(2026, 11, 26, 9, 0, tzinfo=UTC).timestamp()
+        fire = datetime(2027, 11, 26, 23, 0, tzinfo=UTC).timestamp()
+        assert fire - now > 365 * 86400
+        assert fire < reminder_horizon(now)
+
+    def test_a_year_spanning_29_february_is_366_days_and_fits(self) -> None:
+        now = datetime(2027, 3, 1, 12, 0, tzinfo=UTC).timestamp()
+        next_year = datetime(2028, 3, 1, 12, 0, tzinfo=UTC).timestamp()
+        assert next_year - now == 366 * 86400
+        assert next_year < reminder_horizon(now)
+
+    def test_the_day_after_is_outside(self) -> None:
+        now = datetime(2026, 11, 26, 11, 46, tzinfo=UTC).timestamp()
+        assert datetime(2027, 11, 27, tzinfo=UTC).timestamp() >= reminder_horizon(now)
+
+    def test_the_day_is_the_owner_s_local_day(self) -> None:
+        """At 22:00 in Toronto it is already the next day in UTC; the bound follows Toronto."""
+        tz = ZoneInfo("America/Toronto")
+        now = datetime(2026, 11, 26, 22, 0, tzinfo=tz).timestamp()
+        assert reminder_horizon(now, tz) == datetime(2027, 11, 27, tzinfo=tz).timestamp()
 
 
 class TestNextRruleFire:
