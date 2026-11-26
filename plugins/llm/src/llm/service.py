@@ -20,7 +20,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 from urllib.parse import urlparse
@@ -1928,6 +1928,25 @@ class PendingTaskResult(NamedTuple):
     # when the submitting path had no msgid (no message-tags, or a synthetic
     # msg), in which case delivery falls back to an untagged PRIVMSG.
     reply_msgid: str = ""
+
+
+def seconds_until_local(fire_at: object, tz: tzinfo, now: float) -> int | None:
+    """Whole seconds from ``now`` until ``fire_at``, a local ISO date-time in ``tz``.
+
+    ``fire_at`` comes from the reminder parser: "2027-11-26T09:00", read as
+    wall-clock time in ``tz``. One that carries its own offset keeps it.
+    Returns None when it is not a date-time; a past one gives a negative
+    count, which the caller rejects.
+    """
+    if not isinstance(fire_at, str):
+        return None
+    try:
+        when = datetime.fromisoformat(fire_at.strip())
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=tz)
+    return round(when.timestamp() - now)
 
 
 class ReminderParseResult(NamedTuple):
@@ -4057,27 +4076,28 @@ class LLMService:
 Current time: {current_time}
 
 Response format (choose one):
-{{"action": "schedule", "seconds": <int>, "message": "<string>", "confirmation": "<string>", "note": "<string or null>", "action_prompt": "<string>", "recurrence_seconds": <int or null>, "recurrence_rrule": "<RRULE string or null>", "watch_mode": <bool>}}
+{{"action": "schedule", "fire_at": "<YYYY-MM-DDTHH:MM or null>", "seconds": <int or null>, "message": "<string>", "confirmation": "<string>", "note": "<string or null>", "action_prompt": "<string>", "recurrence_seconds": <int or null>, "recurrence_rrule": "<RRULE string or null>", "watch_mode": <bool>}}
 or
 {{"action": "clarify", "confirmation": "<question to ask user>"}}
 
 Rules:
-- "seconds" = seconds from now until reminder fires (must be positive)
+- "fire_at" = the local date and time the reminder fires, "YYYY-MM-DDTHH:MM" with no offset, in the user's local time above. Use it for every absolute or calendar time ("at 3pm", "tomorrow morning", "on March 3", "next year"); set "seconds" to null. Do NOT count the seconds yourself: the bot works them out from "fire_at".
+- "seconds" = seconds from now until reminder fires (must be positive). Use it only for relative times ("in 30 minutes", "in 2 hours"); set "fire_at" to null.
 - For relative times ("in 30 minutes"), set note to null — timezone is irrelevant
 - Absolute and calendar times ("at 3pm", "tomorrow morning", "tonight") without a timezone are in the user's local time above; {zone_rule}. "Morning" means 09:00, "afternoon" 15:00, "evening" 19:00, "tonight" 21:00.
 - RRULE BYHOUR/BYMINUTE are the user's local wall-clock time, not UTC.
-- "Next year" with no date means one year from now: the same date and time next year.
+- "Next year" with no date means one year from now: the same date and time next year (the same "fire_at" with the year plus one).
 - If request is too vague (missing time or message), use "clarify"
 - "confirmation" is shown to the user immediately at scheduling time. It MUST only state that the reminder was set and when. Do NOT speculate about what the bot can or cannot do at fire time, do NOT mention tool limits, do NOT add disclaimers like "though I can only ..." — capability decisions happen at fire time, not now.
 - Keep confirmation concise (under 100 chars)
 - Extract just the reminder message, not the time part
 - For relative times ("in 30 minutes"), calculate seconds directly
-- For absolute times ("at 3pm"), calculate seconds until that time
+- For absolute times ("at 3pm"), give "fire_at", not "seconds"
 - Set "action_prompt" to a non-empty bare instruction whenever the message contains an imperative verb the BOT can execute. The bot can: search the web, fetch URLs, draw images, write/run code, summarize text, look up status, check builds/CVEs/feeds, generate content, query its own memory, send messages. If any of those verbs (draw, search, fetch, look up, check, summarize, generate, write, post, query, find, list, compute, ...) appears as the main verb of the user's request, that is an action — not an echo.
 - Set "action_prompt" to "" (empty) only when the user is clearly asking THEMSELVES to do something later (passive "remind me to X" where X is a human action like "call Bob", "go to the store", "take a break") OR the message is a pure label/note with no verb at all.
 - "action_prompt" is fed directly to the same engine that handles `@ask`. Write it as a self-contained instruction the user could literally type AFTER `@ask` and get the result they want — no `@ask` prefix, no time qualifier ("in 2 hours"), no "remind me", just the bare task. Preserve the user's wording where possible.
 - "message" should still be a short human-readable description shown in `@remind list` (e.g., "check Debian CVE-2026-31431 status", "draw copy fail").
-- Recurrence is now structured. For recurring requests, set "seconds" to the NEXT occurrence (the first fire time), then choose ONE of the following to populate:
+- Recurrence is now structured. For recurring requests, set "fire_at" (or "seconds", for a cadence starting from now) to the NEXT occurrence (the first fire time), then choose ONE of the following to populate:
   - For numeric cadences ("every 5 minutes", "every hour", "daily" interpreted as 86400 seconds), populate "recurrence_seconds" with the integer cadence in seconds; leave "recurrence_rrule" as null.
   - For calendar cadences ("every Monday at 9am", "first of the month", "every weekday at 5pm", "daily at 8am"), populate "recurrence_rrule" with a valid RFC 5545 RRULE string; leave "recurrence_seconds" as null. Do NOT include DTSTART in the rrule string — only the RRULE body (e.g. "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0").
   - For one-shot reminders, BOTH must be null.
@@ -4130,6 +4150,13 @@ Examples (echo → action_prompt: ""):
             action = data.get("action", "clarify")
             if action == "schedule":
                 seconds = data.get("seconds")
+                fire_at = data.get("fire_at")
+                # The model names the wall-clock time; the arithmetic is ours,
+                # so a year out lands on the right day across a 29 February
+                # or a DST change. An unreadable fire_at falls back to seconds.
+                from_fire_at = seconds_until_local(fire_at, user_tz.tz, time.time())
+                if from_fire_at is not None:
+                    seconds = from_fire_at
                 if not isinstance(seconds, int) or seconds <= 0:
                     return ReminderParseResult(
                         action="clarify",

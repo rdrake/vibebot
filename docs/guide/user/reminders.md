@@ -33,7 +33,7 @@ A repeating reminder or task doesn't tell you when it has fired for the last tim
 @remind next year renew the domain
 ```
 
-The bot parses times such as "in 30 minutes", "at 5 p.m.", and "tomorrow at 9 a.m." "Next year" with no date means the same date and time a year from now. An absolute time with no time zone is read in your time zone, found in this order:
+The bot parses times such as "in 30 minutes", "at 5 p.m.", and "tomorrow at 9 a.m." "Next year" with no date means the same date and time a year from now. For a date or clock time the bot reads the day and time it names and works out the wait itself, so leap years and daylight saving changes land on the right time. An absolute time with no time zone is read in your time zone, found in this order:
 
 1. The zone you set with `@tz`, such as `@tz America/Toronto`. Recurring reminders keep their wall-clock time across daylight saving changes.
 2. Your IRC client's clock, if it answers CTCP TIME. The bot asks only when the request names a clock time or a day, remembers the answer, and asks again after a week. That gives an offset, not a zone, so a recurring reminder drifts an hour at a daylight saving change. A bouncer answers with its own clock.
