@@ -70,8 +70,10 @@ filterwarnings = [
 python-version = "3.14"
 
 [tool.ty.rules]
-unresolved-import = "ignore"  # External deps (supybot) not in workspace
-unresolved-attribute = "ignore"  # Supybot has no type stubs
+import-not-found = "ignore"  # External deps (supybot) not in workspace
+missing-module-member = "ignore"  # Split out of import-not-found in ty 0.0.105
+missing-attribute = "ignore"  # Supybot has no type stubs
+missing-union-attribute = "ignore"  # Split out of unresolved-attribute in ty 0.0.100
 
 [tool.coverage.run]
 source = ["plugins/llm/src", "plugins/nickinmiddle/src"]
