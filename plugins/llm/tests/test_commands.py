@@ -636,7 +636,8 @@ class TestSendLongReplyMultiline:
         plugin._send_long_reply(mock_irc, mock_msg, "one\ntwo")
 
         batch = self._batch(mock_irc)
-        assert batch[0].server_tags == {"+draft/reply": "abc123"}
+        # Limnoria sends the ratified +reply beside +draft/reply.
+        assert batch[0].server_tags == {"+reply": "abc123", "+draft/reply": "abc123"}
         assert all(set(m.server_tags) <= {"batch", "draft/multiline-concat"} for m in batch[1:])
 
     def test_three_lines_still_batch(self, env):
